@@ -4,7 +4,7 @@
 > sandboxes, skills, and runs.
 
 A model alone forgets everything the moment a response ends. The harness is everything
-else. Nexo gives the fragmented RubyLLM ecosystem one front door with safe defaults —
+else. Nexo gives the RubyLLM ecosystem one cohesive front door with safe defaults —
 build a working agent in five lines without wiring anything.
 
 **What Nexo adds (everything else it composes):**
