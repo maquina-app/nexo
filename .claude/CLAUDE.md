@@ -59,6 +59,16 @@ bin/console                         # IRB with the gem loaded
 - **Tests** are Minitest (`test/test_helper.rb` + `test/*.rb`). `Minitest::TestTask` provides
   the `test` rake task.
 
+## Gotchas
+
+- **Zeitwerk two-file entry.** `lib/nexo.rb` calls `Zeitwerk::Loader.for_gem` (roots at `lib/`,
+  main file `lib/nexo.rb`) and autoloads `lib/nexo/**` into `Nexo`. Two paths under `lib/` are
+  NOT managed constants and must stay ignored, or `for_gem`'s extra-file check warns / Zeitwerk
+  tries to define a constant from `nexo_ai.rb`: `loader.ignore("#{__dir__}/nexo_ai.rb")` (the
+  require-shim) and `loader.ignore("#{__dir__}/generators")` (Rails loads generators). The
+  `agent_sdk => AgentSDK` inflection is registered up front for later specs. New runtime code
+  just drops into `lib/nexo/<name>.rb` inside `module Nexo` — no `require_relative` needed.
+
 ## Repo
 
 `origin` → `git@github.com:maquina-app/nexo.git` (note: repo is `nexo`, gem is `nexo_ai`).
