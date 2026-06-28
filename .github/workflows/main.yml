@@ -11,9 +11,9 @@ permissions:
   contents: read
 
 jobs:
-  build:
+  test:
     runs-on: ubuntu-latest
-    name: Ruby ${{ matrix.ruby }}
+    name: Tests (Ruby ${{ matrix.ruby }})
     strategy:
       matrix:
         ruby:
@@ -28,5 +28,20 @@ jobs:
         with:
           ruby-version: ${{ matrix.ruby }}
           bundler-cache: true
-      - name: Run the default task
-        run: bundle exec rake
+      - name: Run the test suite
+        run: bundle exec rake test
+
+  lint:
+    runs-on: ubuntu-latest
+    name: Lint (StandardRB)
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '4.0.0'
+          bundler-cache: true
+      - name: Run StandardRB
+        run: bundle exec standardrb
