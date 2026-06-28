@@ -1,4 +1,25 @@
 module Nexo
   VERSION: String
-  # See the writing guide of rbs: https://github.com/ruby/rbs#guides
+
+  class Error < StandardError
+  end
+
+  class MissingDependencyError < Error
+  end
+
+  class ConfigurationError < Error
+  end
+
+  def self.configure: () { (Configuration) -> void } -> Configuration
+  def self.config: () -> Configuration
+  def self.reset_config!: () -> Configuration
+
+  class Configuration
+    attr_accessor default_model: String?
+    attr_accessor default_sandbox: Symbol
+    attr_accessor default_permissions: Symbol
+    attr_accessor skills_path: String | Pathname
+
+    def initialize: () -> void
+  end
 end
