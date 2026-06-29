@@ -1,5 +1,10 @@
 ## [Unreleased]
 
+### Changed
+
+- Raised minimum Ruby to 3.3; `Nexo.generate_run_id` now uses
+  `SecureRandom.uuid_v7` unconditionally (dropped the 3.2 UUID v4 fallback).
+
 ## [0.5.0] - 2026-06-29
 
 ### Added
@@ -78,7 +83,7 @@
   selected automatically by `Nexo::RunStore.default`.
 - `Nexo::WorkflowRun` ActiveRecord model and a `nexo:workflows` generator that
   installs a portable (`json` columns, UUID string primary key) migration.
-- `Nexo.generate_run_id` (UUID v7 on Ruby 3.3+, UUID v4 fallback on 3.2).
+- `Nexo.generate_run_id` (time-ordered UUID v7).
 - A guarded `Nexo::Engine` wiring the generator, rake task, and model into a
   host Rails app; the core still runs in plain Ruby with no Rails loaded.
 

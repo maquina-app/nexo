@@ -31,8 +31,8 @@ scaffolded skeleton — most of the above is not yet implemented.
 
 ## Commands
 
-Local Ruby is 4.0.0 via mise, but the gem targets Ruby 3.2+ (`required_ruby_version >= 3.2.0`).
-Keep new code compatible with 3.2.
+Local Ruby is 4.0.0 via mise, but the gem targets Ruby 3.3+ (`required_ruby_version >= 3.3.0`).
+Keep new code compatible with 3.3.
 
 ```bash
 bundle install                      # install deps (regenerates the gitignored Gemfile.lock)

@@ -419,7 +419,7 @@ never widens what an agent can do** beyond its configured sandbox/permission mod
 
 ## Requirements
 
-- Ruby 3.2+
+- Ruby 3.3+
 - [ruby_llm](https://github.com/crmne/ruby_llm) >= 1.16
 - [ruby_llm-skills](https://github.com/kieranklaassen/ruby_llm-skills) — optional, only
   when you use the `skills` macro
