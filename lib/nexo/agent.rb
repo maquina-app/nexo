@@ -35,6 +35,18 @@ module Nexo
       def instructions(value = nil)
         value.nil? ? @instructions : (@instructions = value)
       end
+
+      # Declares the skills attached to this agent. With no args it returns the
+      # configured list (default +[]+); with args it records the names. Follows the
+      # same class-ivar convention as the macros above.
+      #
+      #   class TriageAgent < Nexo::Agent
+      #     model ENV.fetch("NEXO_MODEL")
+      #     skills :triage          # one macro, no loader setup
+      #   end
+      def skills(*names)
+        names.empty? ? (@skills || []) : (@skills = names)
+      end
     end
 
     attr_reader :cwd, :model, :sandbox, :permissions, :instructions
@@ -56,7 +68,8 @@ module Nexo
     end
 
     # Builds a configured RubyLLM::Chat with the four sandbox-backed tools
-    # attached as instances bound to this agent's sandbox and permissions.
+    # attached as instances bound to this agent's sandbox and permissions, then
+    # layers on the instructions of every declared skill.
     def chat
       c = RubyLLM.chat(model: @model)
       c = c.with_instructions(@instructions) if @instructions
@@ -66,6 +79,7 @@ module Nexo
         Tools::Shell.new(sandbox: @sandbox, permissions: @permissions),
         Tools::Glob.new(sandbox: @sandbox, permissions: @permissions)
       )
+      apply_skills(c)
       c
     end
 
@@ -77,6 +91,20 @@ module Nexo
     end
 
     private
+
+    # Attaches each declared skill's instructions to +chat+, after the
+    # sandbox-backed tools and on top of the agent's own instructions, in
+    # declaration order (deterministic). A skill contributes instructions only;
+    # it ships no independent tools (its scripts/references are reached through the
+    # already-gated sandbox tools), so attaching a skill never widens what the
+    # agent can do. +append: true+ adds an extra system message rather than
+    # replacing the base instructions.
+    def apply_skills(chat)
+      self.class.skills.each do |name|
+        skill = Skills.find(name)
+        chat.with_instructions(skill.content, append: true)
+      end
+    end
 
     def resolve_sandbox(value)
       return value if value.is_a?(Sandbox)

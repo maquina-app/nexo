@@ -134,6 +134,23 @@ Match the agent to the file type touched; skip an agent when no file of its type
   `RunStore::Memory` per call, so the in-memory runs live in a class-level `Memory.runs` hash (keyed
   by UUID) — otherwise `Workflow.logs(id)` (a later `RunStore.default` call) could never find a run
   created by `Workflow.run`. `Memory.reset!` clears it for test isolation.
+- **Skills inject instructions only — the gem's `SkillTool` is deliberately NOT attached (Spec 3).**
+  Verified against `ruby_llm-skills` 0.3.0: `require "ruby_llm/skills"`; `RubyLLM::Skills.load(dir)`
+  returns a `Skill` exposing `#content` (SKILL.md body, lazy) — its `scripts`/`references`/`assets`
+  are arrays of *file paths*, not `RubyLLM::Tool`s. A loaded skill ships no tools. `Nexo::Agent#chat`
+  appends `skill.content` via `with_instructions(content, append: true)` (after base instructions, in
+  declaration order). It does **not** call `chat.with_skills` / attach `RubyLLM::Skills::SkillTool`,
+  whose `#execute` does ungated `File.read` of skill resources — attaching it would let the agent
+  read files outside the sandbox/permission seam. The model reaches a skill's `references/`/`scripts/`
+  through Nexo's own gated `ReadFile`/`Shell` tools instead. (Longer rationale: Recuerd0 ws 62.)
+- **`Nexo::Skills.load!` keeps a bare `require` (Spec 3).** The lazy `require "ruby_llm/skills"`
+  rescues **stdlib** `LoadError` → `Nexo::MissingDependencyError` (the gem's own
+  `RubyLLM::Skills::LoadError` is a `StandardError`, not stdlib `LoadError`). `find` does its own
+  `File.exist?` check and raises `Nexo::Error` naming the path *before* calling the gem loader. Tests
+  simulate the gem being absent by stubbing `Nexo::Skills.require` to raise `LoadError`, so the call
+  must stay a bare `require` resolving to the module's own (Kernel) method — don't rewrite it to
+  `Kernel.require`/`require_relative`. `ruby_llm-skills` is a dev dep + soft runtime dep (never a
+  gemspec `add_dependency`); `require "nexo"` with it absent must not raise.
 
 ## Repo
 
