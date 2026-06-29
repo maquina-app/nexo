@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require "securerandom"
 require "zeitwerk"
 
 # ruby_llm is Nexo's only hard runtime LLM dependency (provider neutrality is a
@@ -48,6 +49,18 @@ module Nexo
     def reset_config!
       @config = Configuration.new
     end
+
+    # Returns a fresh run id as a UUID string. Uses UUID v7 (time-ordered)
+    # when available (Ruby 3.3+) and falls back to UUID v4 on Ruby 3.2 so the
+    # gem stays 3.2-compatible. Both run stores and the WorkflowRun model obtain
+    # ids only through this helper, keeping id shape identical across backends.
+    def generate_run_id
+      if SecureRandom.respond_to?(:uuid_v7)
+        SecureRandom.uuid_v7
+      else
+        SecureRandom.uuid
+      end
+    end
   end
 end
 
@@ -63,6 +76,15 @@ loader.inflector.inflect("agent_sdk" => "AgentSDK")
 loader.ignore("#{__dir__}/nexo_ai.rb")
 # Rails generators are loaded by Rails, never autoloaded by us.
 loader.ignore("#{__dir__}/generators")
+# Rake tasks live under lib/tasks and are loaded by the Rails engine (or a host
+# app's Rakefile), never autoloaded as constants.
+loader.ignore("#{__dir__}/tasks")
+# The WorkflowRun ActiveRecord model is Rails-only: its body subclasses
+# ::ActiveRecord::Base, which the plain-Ruby path must never touch. Ignoring it
+# here means no autoload is registered, so defined?(Nexo::WorkflowRun) stays
+# false without Rails and RunStore.default correctly selects the Memory backend.
+# The engine requires it once ActiveRecord is loaded.
+loader.ignore("#{__dir__}/nexo/workflow_run.rb")
 loader.setup
 
 # Rails-optional: only pull in the engine when Rails is present. Loading Nexo

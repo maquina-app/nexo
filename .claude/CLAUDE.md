@@ -111,6 +111,29 @@ Match the agent to the file type touched; skip an agent when no file of its type
   require-shim) and `loader.ignore("#{__dir__}/generators")` (Rails loads generators). The
   `agent_sdk => AgentSDK` inflection is registered up front for later specs. New runtime code
   just drops into `lib/nexo/<name>.rb` inside `module Nexo` — no `require_relative` needed.
+- **`Nexo::WorkflowRun` is Zeitwerk-ignored, not autoloaded (Spec 2).** Its body subclasses
+  `::ActiveRecord::Base`, which the plain-Ruby path must never touch. `lib/nexo.rb` does
+  `loader.ignore("#{__dir__}/nexo/workflow_run.rb")` (and `.../tasks`) so no autoload is
+  registered — `defined?(Nexo::WorkflowRun)` stays false offline and `RunStore.default` picks the
+  Memory store. The model is loaded only by `Nexo::Engine`, via `require "nexo/workflow_run"` in an
+  **initializer** (NOT `ActiveSupport.on_load(:active_record)`: that hook only fires once AR::Base
+  is touched, so `rake nexo:logs` could boot, never load AR, and wrongly fall back to Memory). The
+  file body is also `if defined?(::ActiveRecord::Base)`-guarded, so requiring it in a Rails app with
+  no AR is a harmless no-op.
+- **Don't double-wire engine rake tasks (Spec 2).** `Rails::Engine` already auto-loads
+  `lib/tasks/*.rake` into the host app. Also `load`ing the file from a `rake_tasks do … end` block
+  defines the task body twice, and Rake runs *both* — `nexo:logs` printed every event twice until the
+  redundant block was removed.
+- **AR-backed tests run in a separate process (Spec 2).** Loading ActiveRecord into the offline
+  suite would flip `RunStore.default` to the AR backend for every other test (and break
+  `no_rails_test`). So `test/workflow_run_model_test.rb` shells out (via `Bundler.with_unbundled_env`)
+  to `test/support/workflow_run_model_check.rb`, which boots AR + in-memory SQLite and asserts on
+  printed OK markers. The Rails generator/migrate/runner path is verified through `test/dummy`
+  (a minimal SQLite app sharing the gem's Gemfile). Keep the offline `rake test` AR-free.
+- **MemoryStore is a process-wide singleton (Spec 2).** `RunStore.default` builds a fresh
+  `RunStore::Memory` per call, so the in-memory runs live in a class-level `Memory.runs` hash (keyed
+  by UUID) — otherwise `Workflow.logs(id)` (a later `RunStore.default` call) could never find a run
+  created by `Workflow.run`. `Memory.reset!` clears it for test isolation.
 
 ## Repo
 
