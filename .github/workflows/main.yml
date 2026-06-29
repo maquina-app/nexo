@@ -17,6 +17,7 @@ jobs:
     strategy:
       matrix:
         ruby:
+          - '3.3'
           - '4.0.0'
 
     steps:

@@ -50,16 +50,11 @@ module Nexo
       @config = Configuration.new
     end
 
-    # Returns a fresh run id as a UUID string. Uses UUID v7 (time-ordered)
-    # when available (Ruby 3.3+) and falls back to UUID v4 on Ruby 3.2 so the
-    # gem stays 3.2-compatible. Both run stores and the WorkflowRun model obtain
-    # ids only through this helper, keeping id shape identical across backends.
+    # Returns a fresh run id as a time-ordered UUID v7 string (Ruby 3.3+).
+    # Both run stores and the WorkflowRun model obtain ids only through this
+    # helper, keeping id shape identical across backends.
     def generate_run_id
-      if SecureRandom.respond_to?(:uuid_v7)
-        SecureRandom.uuid_v7
-      else
-        SecureRandom.uuid
-      end
+      SecureRandom.uuid_v7
     end
   end
 end
