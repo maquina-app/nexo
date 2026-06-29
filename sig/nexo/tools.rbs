@@ -1,0 +1,23 @@
+module Nexo
+  module Tools
+    class ReadFile < RubyLLM::Tool
+      def initialize: (sandbox: Sandbox, permissions: Permissions) -> void
+      def execute: (path: String) -> (String | Hash[Symbol, untyped])
+    end
+
+    class WriteFile < RubyLLM::Tool
+      def initialize: (sandbox: Sandbox, permissions: Permissions) -> void
+      def execute: (path: String, content: String) -> Hash[Symbol, untyped]
+    end
+
+    class Shell < RubyLLM::Tool
+      def initialize: (sandbox: Sandbox, permissions: Permissions) -> void
+      def execute: (command: String) -> Hash[Symbol, untyped]
+    end
+
+    class Glob < RubyLLM::Tool
+      def initialize: (sandbox: Sandbox, permissions: Permissions) -> void
+      def execute: (pattern: String) -> Hash[Symbol, untyped]
+    end
+  end
+end
