@@ -61,6 +61,24 @@ bin/console                         # IRB with the gem loaded
 
 ## Gotchas
 
+- **Test suite forces UTF-8 (Spec 1).** `ruby_llm` reads its bundled `models.json` (UTF-8) with
+  `File.read` during model resolution. CI here can start with `Encoding.default_external ==
+  US-ASCII`, under which that read raises `Encoding::InvalidByteSequenceError` the moment any test
+  builds a chat. `test/test_helper.rb` sets `Encoding.default_external = Encoding::UTF_8` to make the
+  suite environment-independent. Don't force this in library code — it's an env property, not a gem
+  concern.
+- **`ruby_llm-test` needs `delegate` + is gated off for live smoke (Spec 1).** `ruby_llm-test`
+  0.2.0's `TestProvider` references `SimpleDelegator` without requiring stdlib `delegate`, so
+  `test_helper` does `require "delegate"` first. It then prepends `ResolveWithTestProvider` (the
+  fake provider) — but only `unless ENV["NEXO_LIVE"] == "1"`, so `test/live_smoke_test.rb` reaches a
+  real provider. A dummy `openai_api_key` is configured so chat resolution never needs credentials.
+- **Verified `ruby_llm` 1.16 APIs (Spec 1).** Tool body method is `#execute` (`#call` dispatches to
+  it); attach tool instances with `chat.with_tools(*instances)` (stored in `chat.tools`, a Hash
+  keyed by tool-name symbol); set system prompt with `chat.with_instructions`. `Open3.capture3` has
+  no `timeout:` kwarg on this Ruby, so `Sandboxes::Local#shell` wraps it in `Timeout.timeout`.
+- **`require "nexo"` loads `ruby_llm`.** Spec 1 added `require "ruby_llm"` to `lib/nexo.rb` so the
+  `Nexo::Tools::*` files can subclass `RubyLLM::Tool` when Zeitwerk autoloads them. `ruby_llm` is the
+  one hard runtime dep, so this is always available and pulls in no Rails.
 - **Zeitwerk two-file entry.** `lib/nexo.rb` calls `Zeitwerk::Loader.for_gem` (roots at `lib/`,
   main file `lib/nexo.rb`) and autoloads `lib/nexo/**` into `Nexo`. Two paths under `lib/` are
   NOT managed constants and must stay ignored, or `for_gem`'s extra-file check warns / Zeitwerk
