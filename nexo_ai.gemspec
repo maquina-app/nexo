@@ -36,9 +36,16 @@ Gem::Specification.new do |spec|
   spec.executables = spec.files.grep(%r{\Aexe/}) { |f| File.basename(f) }
   spec.require_paths = ["lib"]
 
-  # Uncomment to register a new dependency of your gem
-  # spec.add_dependency "example-gem", "~> 1.0"
+  # Runtime dependencies. Provider neutrality is a hard rule: the only vendor-facing
+  # dependency is ruby_llm, which reaches every LLM provider through one interface.
+  # Soft deps (ruby_llm-skills / ruby_llm-mcp / ruby_llm-agent_sdk) are intentionally
+  # NOT declared here — they are lazily required in their own specs.
+  spec.add_dependency "ruby_llm", ">= 1.16"
+  spec.add_dependency "zeitwerk", "~> 2.6"
 
+  # Dev dependencies. ruby_llm-test stubs models so the suite runs offline (first
+  # exercised in Spec 1). minitest and rake remain declared in the Gemfile.
+  spec.add_development_dependency "ruby_llm-test"
   spec.add_development_dependency "standard"
 
   # For more information and examples about making a new gem, check out our

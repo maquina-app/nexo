@@ -7,7 +7,12 @@ A model alone forgets everything the moment a response ends. The harness is ever
 else. Nexo gives the RubyLLM ecosystem one cohesive front door with safe defaults —
 build a working agent in five lines without wiring anything.
 
-**What Nexo adds (everything else it composes):**
+## Compose, don't reimplement
+
+Nexo does not rebuild skill loading, the tool-call loop, MCP, or structured output — those
+already live in the RubyLLM ecosystem (`ruby_llm` core, `ruby_llm-skills`, `ruby_llm-mcp`,
+`ruby_llm-schema`). Nexo **composes** them behind one front door and adds only the two pieces
+the ecosystem is missing:
 
 - **Sandbox + Permissions seam** — pluggable execution environment (virtual / local /
   remote) with explicit authorization gating. Default: `:virtual` + `:read_only`.
@@ -28,10 +33,43 @@ Or install directly:
 gem install nexo_ai
 ```
 
+In a Rails app, run the install generator to create the conventional layout and an initializer:
+
+```sh
+rails g nexo:install
+```
+
+```
+      create  app/agents/.keep
+      create  app/workflows/.keep
+      create  app/skills/.keep
+      create  config/initializers/nexo.rb
+```
+
+## Configuration
+
+Configure the harness in one place with `Nexo.configure`. Defaults are safe and
+provider-neutral — there is intentionally no hardcoded model:
+
+```ruby
+Nexo.configure do |config|
+  config.default_model       = ENV["NEXO_MODEL"] # provider-neutral: no default
+  config.default_sandbox     = :virtual          # :virtual | :local
+  config.default_permissions = :read_only        # :read_only | :auto | :ask
+  config.skills_path         = "app/skills"
+end
+
+Nexo.config.default_sandbox      # => :virtual
+Nexo.config.default_permissions  # => :read_only
+Nexo.config.default_model        # => nil unless set
+```
+
+`require "nexo"` (and `require "nexo_ai"`) works in plain Ruby with no Rails loaded.
+
 ## Requirements
 
 - Ruby 3.2+
-- [ruby_llm](https://github.com/crmne/ruby_llm) ~> 1.0
+- [ruby_llm](https://github.com/crmne/ruby_llm) >= 1.16
 
 ## Status
 
