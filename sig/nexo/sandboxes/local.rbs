@@ -1,0 +1,9 @@
+module Nexo
+  module Sandboxes
+    class Local < Sandbox
+      attr_reader cwd: String
+
+      def initialize: (?cwd: String, ?env: Hash[String, String]) -> void
+    end
+  end
+end

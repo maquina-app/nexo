@@ -1,0 +1,14 @@
+module Nexo
+  class Permissions
+    MODES: Array[Symbol]
+
+    class Denied < StandardError
+    end
+
+    type capability = Symbol
+    type ask_hook = ^(capability, untyped) -> boolish
+
+    def initialize: (?mode: Symbol, ?allow: Array[Symbol], ?on_ask: ask_hook?) -> void
+    def authorize!: (capability capability, ?untyped detail) -> bool
+  end
+end
