@@ -1,0 +1,9 @@
+module Nexo
+  class Sandbox
+    def read: (String path) -> String
+    def write: (String path, String content) -> void
+    def shell: (String command, ?timeout: Integer) -> Hash[Symbol, untyped]
+    def glob: (String pattern) -> Array[String]
+    def close: () -> void
+  end
+end

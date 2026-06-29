@@ -1,0 +1,18 @@
+module Nexo
+  class Agent
+    def self.model: (?untyped value) -> untyped
+    def self.sandbox: (?untyped value) -> untyped
+    def self.permissions: (?untyped value) -> untyped
+    def self.instructions: (?String value) -> String?
+
+    attr_reader cwd: String
+    attr_reader model: untyped
+    attr_reader sandbox: Sandbox
+    attr_reader permissions: Permissions
+    attr_reader instructions: String?
+
+    def initialize: (?cwd: String, ?model: untyped, ?sandbox: untyped, ?permissions: untyped) -> void
+    def chat: () -> RubyLLM::Chat
+    def prompt: (String text) ?{ (untyped) -> void } -> untyped
+  end
+end

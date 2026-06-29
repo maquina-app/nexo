@@ -1,0 +1,7 @@
+module Nexo
+  module Sandboxes
+    class Virtual < Sandbox
+      def initialize: (?cwd: String) -> void
+    end
+  end
+end

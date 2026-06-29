@@ -2,6 +2,12 @@
 
 require "zeitwerk"
 
+# ruby_llm is Nexo's only hard runtime LLM dependency (provider neutrality is a
+# hard rule — every provider is reached through this one interface). It is
+# required up front so the sandbox-backed tools under lib/nexo/tools/ can
+# subclass RubyLLM::Tool when Zeitwerk autoloads them.
+require "ruby_llm"
+
 require_relative "nexo/version"
 
 # Nexo composes the RubyLLM ecosystem into one front door, adding a
