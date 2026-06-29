@@ -1,5 +1,34 @@
 ## [Unreleased]
 
+## [0.4.0] - 2026-06-29
+
+### Added
+
+- **Skills.** Drop a `SKILL.md` package into `app/skills/<name>/` and attach it
+  to an agent with a single `skills :name` class macro — Nexo composes the
+  existing `ruby_llm-skills` gem to load the skill's instructions, with zero
+  loader setup. Skills guide *reasoning*; the sandbox-backed tools from Spec 1
+  still perform *execution*.
+- `Nexo::Skills.load!` lazily requires `ruby_llm-skills` (a SOFT/optional runtime
+  dependency) and raises `Nexo::MissingDependencyError` with install guidance when
+  it is absent; `require "nexo"` without the gem still loads cleanly.
+- `Nexo::Skills.find(name)` resolves a skill from `Nexo.config.skills_path`
+  (default `app/skills` under Rails), raising `Nexo::Error` that names the missing
+  `SKILL.md` path when not found.
+- `Nexo::Agent.skills(*names)` class macro; `#chat` layers each declared skill's
+  instructions on top of the agent's own, in declaration order, after the
+  sandbox-backed tools.
+- A `nexo:skill NAME` generator scaffolding `app/skills/NAME/SKILL.md` (valid
+  Agent Skills frontmatter) plus a kept `references/` directory.
+
+### Safety
+
+- Skill packages contribute **instructions only**: a loaded skill ships no
+  independent tools, and Nexo deliberately does not attach `ruby_llm-skills`'
+  progressive-disclosure tool (which reads files outside the sandbox). A skill's
+  `references/`/`scripts/` files are reached through Nexo's own permission-gated,
+  sandbox-backed tools, so attaching a skill never widens what an agent can do.
+
 ## [0.3.0] - 2026-06-29
 
 ### Added

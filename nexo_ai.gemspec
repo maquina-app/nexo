@@ -48,6 +48,13 @@ Gem::Specification.new do |spec|
   spec.add_development_dependency "ruby_llm-test"
   spec.add_development_dependency "standard"
 
+  # ruby_llm-skills is a SOFT/optional runtime dependency (Spec 3): Nexo::Skills.load!
+  # requires it lazily behind a rescue that raises Nexo::MissingDependencyError, so it
+  # is intentionally NOT a runtime add_dependency — `require "nexo"` with the gem absent
+  # must not raise. It is a DEV dependency so the offline suite exercises real skill
+  # loading against an on-disk fixture.
+  spec.add_development_dependency "ruby_llm-skills"
+
   # Rails path (Spec 2): the engine, generator, WorkflowRun model, and the
   # test/dummy app. These are never runtime deps — the core runs in plain Ruby
   # with no Rails loaded, and the offline test suite never touches ActiveRecord.

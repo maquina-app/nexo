@@ -1,0 +1,10 @@
+---
+name: <%= file_name %>
+description: One-line summary of when the model should use this skill.
+---
+
+# <%= skill_title %>
+
+## Process
+1. <first step>
+2. <second step>
