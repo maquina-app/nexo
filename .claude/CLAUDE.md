@@ -151,6 +151,36 @@ Match the agent to the file type touched; skip an agent when no file of its type
   must stay a bare `require` resolving to the module's own (Kernel) method — don't rewrite it to
   `Kernel.require`/`require_relative`. `ruby_llm-skills` is a dev dep + soft runtime dep (never a
   gemspec `add_dependency`); `require "nexo"` with it absent must not raise.
+- **Loop seam Zeitwerk placement + inflections (Spec 4).** The base class is `lib/nexo/loop.rb` →
+  `Nexo::Loop`; the backends live under `lib/nexo/loops/` → `Nexo::Loops`. Do **not** put
+  `class Loop` in `lib/nexo/loops.rb` (that path resolves to `Nexo::Loops` and breaks autoloading).
+  `lib/nexo.rb` registers **two** inflections — `"ruby_llm" => "RubyLLM"` and
+  `"agent_sdk" => "AgentSDK"` — so `loops/ruby_llm.rb` → `Loops::RubyLLM` and `loops/agent_sdk.rb` →
+  `Loops::AgentSDK`. `Agent#prompt` now just delegates to the injected `@loop` (default
+  `Loops::RubyLLM.new`); the old inline `chat.ask` body lives only in `Loops::RubyLLM`.
+- **`Loops::AgentSDK` keeps a bare `require` + is dep-free (Spec 4).** `#run` does
+  `require "ruby_llm/agent_sdk"` and rescues stdlib `LoadError` → `Nexo::MissingDependencyError`.
+  `ruby_llm-agent_sdk` is **not** a dependency — not runtime, **not even dev** (per the spec), so the
+  offline suite can't reach a real `.query`. Tests stub it two ways: define a recording
+  `::RubyLLM::AgentSDK` module and stub `require` on the **loop instance** (`loop.stub(:require, …)`)
+  to no-op for the happy path / raise `LoadError` for the missing-dep path. Keep it a bare `require`
+  resolving to the instance's own (Kernel) method. `RubyLLM::AgentSDK.query`'s signature + the
+  `:result` terminal message shape remain **VERIFY-on-install** — confirm against the gem's README the
+  moment it's added, then record under "Verified APIs".
+- **Turn-count observability is real but cap-less (Spec 4).** `RubyLLM::Chat#before_tool_call` /
+  `#after_tool_result` **exist** on `ruby_llm` 1.16.0 (legacy aliases of `#on_tool_call`/
+  `#on_tool_result`); `Loops::RubyLLM` wires them guarded by `respond_to?(:before_tool_call)`, so a
+  version lacking them degrades to no observability, not a crash. The `turns` counter is incremented
+  for visibility only — `ruby_llm` runs the whole loop inside `#ask` and exposes **no** public
+  max-turns setting, so `Loops::RubyLLM` has no hard cap (use `Loops::AgentSDK` for that). Nexo→SDK
+  permission map: `:read_only → :default`, `:auto → :bypass_permissions`, `:ask → :default` (ask
+  stays gated in Nexo's own `on_ask`).
+- **`Sandboxes::Remote` is pure delegation, vendor-free (Spec 4).** It wraps any client responding to
+  `read`/`write`/`exec`/`close`; `shell → client.exec(cmd, timeout:)` and `glob` parses
+  `exec("ls …")[:stdout]`. The client's `exec` must return `{ stdout:, stderr:, status: }` (the
+  `Sandbox#shell` contract) — adapting a vendor SDK to that shape is the shim's job. No real
+  `Sandboxes::E2B`/`Daytona` classes ship in v1 (vendor APIs unpinned) — only `Remote` + the
+  README's documented shim pattern.
 
 ## Repo
 

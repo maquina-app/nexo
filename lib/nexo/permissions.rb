@@ -19,6 +19,11 @@ module Nexo
     # +{ error: ... }+ so the agent loop continues.
     class Denied < StandardError; end
 
+    # The configured Nexo permission mode (one of {MODES}). Read by the agent to
+    # map onto an opt-in backend's own permission vocabulary (see
+    # +Agent#permission_mode+).
+    attr_reader :mode
+
     def initialize(mode: :read_only, allow: %i[read glob], on_ask: nil)
       raise ArgumentError, "unknown mode #{mode}" unless MODES.include?(mode)
 

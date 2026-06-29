@@ -1,5 +1,39 @@
 ## [Unreleased]
 
+## [0.5.0] - 2026-06-29
+
+### Added
+
+- **Pluggable loop backends.** `Nexo::Loop` is the new engine seam:
+  `#run(agent:, prompt:, max_turns:, &on_event)`. Swap the loop by constructor
+  injection (`loop:`) without changing the agent class.
+- `Nexo::Loops::RubyLLM` (DEFAULT, provider-neutral) — the Spec 1 `Agent#prompt`
+  loop logic extracted verbatim. It runs on any `ruby_llm` model and contains no
+  vendor code. Wires turn-count *observability* through `RubyLLM::Chat`'s
+  `before_tool_call`/`after_tool_result` callbacks (guarded by `respond_to?`),
+  forwarding `:tool_call`/`:tool_result`/`:done` to an optional `on_event` block.
+- `Nexo::Loops::AgentSDK` (opt-in, Anthropic-oriented) — wraps
+  `RubyLLM::AgentSDK.query` for native `max_turns`, permission modes, and the
+  SDK's built-in tools. `ruby_llm-agent_sdk` is a SOFT/optional dependency,
+  required lazily; a clear `Nexo::MissingDependencyError` is raised when it's
+  absent. Not a dependency of this release (its `.query` signature is
+  verified-on-install).
+- `Nexo::Sandboxes::Remote` — run an agent's tools inside a remote container by
+  injecting any client satisfying the four-method contract (`read`/`write`/
+  `exec`/`close`). Contains zero vendor code; switching providers is swapping the
+  injected object. Vendor SDKs are adapted with a tiny documented shim.
+- `Agent` gains a `loop:` option (default `Loops::RubyLLM.new`); `#prompt`
+  delegates to it. New readers `#permission_mode` (Nexo→AgentSDK mode mapping:
+  `:read_only`→`:default`, `:auto`→`:bypass_permissions`, `:ask`→`:default`) and
+  `#allowed_tools` support the AgentSDK backend. `Permissions#mode` is now
+  readable.
+
+### Documented
+
+- README: the loop/sandbox matrix, the two-configurations / same-agent example,
+  the Remote shim pattern, the Nexo→AgentSDK permission mapping, and the turn-cap
+  caveat (`Loops::RubyLLM` has no proven hard turn cap — observability only).
+
 ## [0.4.0] - 2026-06-29
 
 ### Added

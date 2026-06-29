@@ -49,12 +49,28 @@ module Nexo
       end
     end
 
-    attr_reader :cwd, :model, :sandbox, :permissions, :instructions
+    # The set of tool names handed to an opt-in backend that ships its own tools
+    # (e.g. {Loops::AgentSDK}). The default {Loops::RubyLLM} ignores this — it
+    # uses the agent's own sandbox-backed tools instead.
+    ALLOWED_TOOLS = %w[Read Write Edit Bash Glob Grep].freeze
+
+    # Maps Nexo's permission modes onto AgentSDK's own permission vocabulary,
+    # consumed by {Loops::AgentSDK}. +:ask+ maps to +:default+ on purpose: human
+    # gating stays in Nexo's own +on_ask+ path and is not delegated to the SDK.
+    PERMISSION_MODE_MAP = {
+      read_only: :default,
+      auto: :bypass_permissions,
+      ask: :default
+    }.freeze
+
+    attr_reader :cwd, :model, :sandbox, :permissions, :instructions, :loop
 
     # Every argument is optional; each resolves arg -> class macro -> config.
     # Symbol shorthands (:virtual/:local, :read_only/:auto/:ask) and pre-built
-    # Sandbox/Permissions instances are both accepted.
-    def initialize(cwd: Dir.pwd, model: nil, sandbox: nil, permissions: nil)
+    # Sandbox/Permissions instances are both accepted. +loop:+ injects the engine
+    # that drives a prompt — the provider-neutral {Loops::RubyLLM} by default, or
+    # an opt-in backend like {Loops::AgentSDK}.
+    def initialize(cwd: Dir.pwd, model: nil, sandbox: nil, permissions: nil, loop: Loops::RubyLLM.new)
       @cwd = cwd
       @model = model || self.class.model || Nexo.config.default_model
       if @model.nil?
@@ -65,6 +81,7 @@ module Nexo
       @sandbox = resolve_sandbox(sandbox || self.class.sandbox)
       @permissions = resolve_permissions(permissions || self.class.permissions)
       @instructions = self.class.instructions
+      @loop = loop
     end
 
     # Builds a configured RubyLLM::Chat with the four sandbox-backed tools
@@ -83,11 +100,25 @@ module Nexo
       c
     end
 
-    # Runs one prompt through the agent. For Spec 1 the loop logic lives here and
-    # is just +chat.ask+; Spec 4 extracts it behind +Loops::RubyLLM+. The
-    # +&on_event+ block is accepted now (reserving the signature) but unused.
-    def prompt(text, &on_event)
-      chat.ask(text)
+    # Runs one prompt through the agent by delegating to the injected loop. The
+    # loop body that used to live here is now in {Loops::RubyLLM} (the default),
+    # so swapping +loop:+ swaps the engine without touching this class. The
+    # optional +&on_event+ block receives +(type, payload)+ progress events.
+    def prompt(text, max_turns: 25, &on_event)
+      @loop.run(agent: self, prompt: text, max_turns: max_turns, &on_event)
+    end
+
+    # The agent's Nexo permission mode mapped onto an opt-in backend's own
+    # permission vocabulary (see {PERMISSION_MODE_MAP}). Consumed by
+    # {Loops::AgentSDK}; the default {Loops::RubyLLM} does its gating inside the
+    # sandbox-backed tools and ignores this.
+    def permission_mode
+      PERMISSION_MODE_MAP.fetch(@permissions.mode, :default)
+    end
+
+    # The tool names handed to an opt-in backend that ships its own tools.
+    def allowed_tools
+      ALLOWED_TOOLS
     end
 
     private

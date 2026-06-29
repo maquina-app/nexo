@@ -134,6 +134,114 @@ and the agent loop continues — it does not raise. A path that escapes the work
   expanded against `cwd` and must stay inside it (else `SecurityError`), and the shell sees
   only `PATH`, `HOME`, `LANG` (plus explicit `env:` additions) — never the full process
   environment.
+- **`Remote`** — run the tools inside a remote container (E2B / Daytona / Modal / Docker /
+  your own) by injecting a client. Escalating to `:remote` is always an explicit choice in
+  your code — the default stays `:virtual`.
+
+### Remote sandbox — bring your own container
+
+`Sandboxes::Remote` contains **zero vendor code**. It wraps any object that satisfies a
+four-method contract — `read`, `write`, `exec`, `close` — and delegates the `Sandbox`
+interface to it. Switching providers is swapping the injected object, nothing else:
+
+```ruby
+sandbox = Nexo::Sandboxes::Remote.new(client: my_container_client)
+# read(path)  -> client.read(path)
+# write(path, content) -> client.write(path, content)
+# shell(cmd, timeout:) -> client.exec(cmd, timeout:)
+# glob(pattern)        -> client.exec("ls #{pattern}")[:stdout].split("\n")
+# close                -> client.close
+```
+
+Vendor SDKs rarely expose exactly `read/write/exec/close`, so adapt them with a tiny shim
+object. Keep the vendor gem a **soft** dependency behind a lazy `require` that raises
+`Nexo::MissingDependencyError` when it's absent:
+
+```ruby
+# A ~10-line adapter wrapping a hypothetical vendor client to the four-method contract.
+class E2BAdapter
+  def initialize(api_key:)
+    require "e2b"            # soft dep — lazy, only when you actually use it
+    @sbx = E2B::Sandbox.create(api_key: api_key)
+  rescue LoadError
+    raise Nexo::MissingDependencyError, "E2BAdapter needs `gem \"e2b\"` in your Gemfile."
+  end
+
+  def read(path)            = @sbx.files.read(path)
+  def write(path, content)  = @sbx.files.write(path, content)
+  def exec(cmd, timeout: 30) = (r = @sbx.commands.run(cmd, timeout: timeout)
+                                {stdout: r.stdout, stderr: r.stderr, status: r.exit_code})
+  def close                 = @sbx.kill
+end
+
+agent = Nexo::Agent.new(model: ENV.fetch("NEXO_MODEL"),
+                        sandbox: Nexo::Sandboxes::Remote.new(client: E2BAdapter.new(api_key: ENV["E2B_API_KEY"])))
+```
+
+Nexo ships **only** `Remote` plus this documented pattern — purpose-built
+`Sandboxes::E2B` / `Sandboxes::Daytona` classes are a possible future addition, deliberately
+left out of v1 because their vendor client APIs aren't pinned yet.
+
+## Loop backends — swap the engine, not the agent
+
+The **loop** is the engine that drives one prompt to completion. Swapping it is constructor
+injection (`loop:`) — the agent class never changes. Two backends ship:
+
+|                    | `Loops::RubyLLM` (default)         | `Loops::AgentSDK` (opt-in)            |
+| ------------------ | ---------------------------------- | ------------------------------------- |
+| Provider neutral   | ✅ any `ruby_llm` model            | ❌ Anthropic-oriented                 |
+| Tool source        | your sandbox-backed tools          | the SDK's own built-in/host tools     |
+| Turn cap           | observability only (see caveat)    | native `max_turns` hard cap           |
+| Execution location | your sandbox (virtual/local/remote)| the host process                      |
+
+The whole point: **same agent code, swapped backends**. Both examples are model-agnostic
+(`ENV.fetch("NEXO_MODEL")` — never a hardcoded `"claude-…"`):
+
+```ruby
+# Claude fast path — AgentSDK's own loop + host tools + native max_turns
+claude = Nexo::Agent.new(
+  model: ENV.fetch("NEXO_MODEL"),
+  sandbox: Nexo::Sandboxes::Local.new(cwd: "/srv/checkout"),
+  permissions: Nexo::Permissions.new(mode: :auto),
+  loop: Nexo::Loops::AgentSDK.new
+)
+
+# Any-provider path — your sandbox, your tools, human-in-the-loop
+gpt = Nexo::Agent.new(
+  model: ENV.fetch("NEXO_MODEL"),                # gpt-5.5, gemini, gemma3:12b via Ollama…
+  sandbox: Nexo::Sandboxes::Remote.new(client: my_container_client),
+  permissions: Nexo::Permissions.new(mode: :ask, on_ask: ->(cap, detail) {
+    SlackApproval.request!(capability: cap, detail: detail)
+  }),
+  loop: Nexo::Loops::RubyLLM.new
+)
+```
+
+`Loops::AgentSDK` wraps `RubyLLM::AgentSDK.query` and requires the **optional**
+`ruby_llm-agent_sdk` gem (lazy `require`; a clear `Nexo::MissingDependencyError` if it's
+absent). It maps Nexo's permission modes onto the SDK's own vocabulary:
+
+| Nexo mode    | AgentSDK `permission_mode` |
+| ------------ | -------------------------- |
+| `:read_only` | `:default`                 |
+| `:auto`      | `:bypass_permissions`      |
+| `:ask`       | `:default` (human gating stays in Nexo's own `on_ask` path, not delegated to the SDK) |
+
+### The turn-cap caveat (read before running untrusted/expensive workloads)
+
+`ruby_llm` runs the whole tool loop inside `ask`, so `Loops::RubyLLM` has **no clean public
+hard "stop after N turns" halt** — `before_tool_call` gives turn-count *observability*, not a
+hard stop. (Confirmed: `ruby_llm` 1.16.0's `Chat` exposes no public max-turns/max-iterations
+setting.) Your three real options:
+
+(a) use `Loops::AgentSDK` (native `max_turns`) for untrusted/expensive workloads;
+(b) have a tool return `{ error: "turn limit reached, stop and summarize" }` once a turn
+    counter trips;
+(c) check whether the installed `ruby_llm` exposes a max-iterations config (in 1.16.0 it
+    does not).
+
+Do **not** ship `Loops::RubyLLM` for untrusted workloads claiming a hard cap that isn't
+proven.
 
 ### Verified vs assumed
 
@@ -142,6 +250,13 @@ Built against **`ruby_llm` 1.16** and **`ruby_llm-test` 0.2**. The tool body met
 `chat.with_instructions`. `Open3.capture3` has no `timeout:` keyword on the target Ruby, so
 `Local#shell` bounds the command with `Timeout.timeout`. These may differ on other
 `ruby_llm` versions.
+
+`Loops::RubyLLM`'s turn-count observability uses `RubyLLM::Chat#before_tool_call` /
+`#after_tool_result`, confirmed present on `ruby_llm` 1.16.0 and guarded with `respond_to?`
+so a version lacking them degrades to no observability rather than crashing.
+`Loops::AgentSDK` targets `RubyLLM::AgentSDK.query`; `ruby_llm-agent_sdk` is **not** a
+dependency of this release, so that signature is **assumed** (per the gem's README) and
+verified-on-install — confirm it the moment you add the gem.
 
 ### Live smoke (optional)
 
@@ -308,6 +423,8 @@ never widens what an agent can do** beyond its configured sandbox/permission mod
 - [ruby_llm](https://github.com/crmne/ruby_llm) >= 1.16
 - [ruby_llm-skills](https://github.com/kieranklaassen/ruby_llm-skills) — optional, only
   when you use the `skills` macro
+- [ruby_llm-agent_sdk](https://github.com/crmne/ruby_llm) — optional, only when you choose
+  the Anthropic-oriented `Loops::AgentSDK` backend
 
 ## Status
 
