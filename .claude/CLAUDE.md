@@ -59,6 +59,31 @@ bin/console                         # IRB with the gem loaded
 - **Tests** are Minitest (`test/test_helper.rb` + `test/*.rb`). `Minitest::TestTask` provides
   the `test` rake task.
 
+### Conventions are owned by agents — don't re-document them
+
+Run these against changed code before calling work done; don't restate their rules here:
+
+- **`rails-simplifier`** — Ruby/Rails structure (37signals / One Person Framework). Run on
+  changed `.rb` files.
+- **`maquina-ui-standards`** — `maquina_components` UI, forms, Tailwind v4 design tokens. Run on
+  changed views/components (`.erb`, `.html`, view helpers, Tailwind).
+- **`better-stimulus`** — Stimulus controllers. Run on changed `*_controller.js` Stimulus files.
+
+Match the agent to the file type touched; skip an agent when no file of its type changed.
+
+## Memory & "how does X work?" (Recuerd0 — workspace 62)
+
+- **Always delegate Recuerd0 work to the `recuerd0:remember` agent** — never call the `recuerd0`
+  CLI directly.
+- **Search before assuming, and before reading code.** Search Recuerd0 (workspace 62) first. Read
+  code only if the search comes back empty or code is explicitly requested — then save the
+  explanation back as a memory.
+- **Capture new decisions, gotchas, and preferences as they emerge.** Before recording, search for
+  an existing memory and update it with a new version rather than creating a duplicate.
+- **CLAUDE.md vs. Recuerd0 split:** keep here the durable, repo-shaping rules every session needs
+  (naming, layout, commands, conventions, the gotchas below). Send to Recuerd0 the longer-form
+  "why we decided X", debugging narratives, and discoveries that don't need to load every session.
+
 ## Gotchas
 
 - **Test suite forces UTF-8 (Spec 1).** `ruby_llm` reads its bundled `models.json` (UTF-8) with
