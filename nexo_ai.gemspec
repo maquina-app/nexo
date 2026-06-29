@@ -48,6 +48,12 @@ Gem::Specification.new do |spec|
   spec.add_development_dependency "ruby_llm-test"
   spec.add_development_dependency "standard"
 
+  # Rails path (Spec 2): the engine, generator, WorkflowRun model, and the
+  # test/dummy app. These are never runtime deps — the core runs in plain Ruby
+  # with no Rails loaded, and the offline test suite never touches ActiveRecord.
+  spec.add_development_dependency "rails", ">= 8.0"
+  spec.add_development_dependency "sqlite3", ">= 2.0"
+
   # For more information and examples about making a new gem, check out our
   # guide at: https://guides.rubygems.org/make-your-own-gem/
 end
