@@ -24,6 +24,23 @@ module Nexo
         value.nil? ? @model : (@model = value)
       end
 
+      # Opt out of ruby_llm's models.json registry validation for this agent so
+      # it can run unregistered models (Ollama tags, self-hosted, brand-new
+      # releases). Boolean opt-in: because +nil?+ still distinguishes read from
+      # write, +assume_model_exists false+ is an explicit write (sets +false+),
+      # not a read. Unset reads as +false+, keeping registry validation on.
+      def assume_model_exists(value = nil)
+        value.nil? ? (@assume_model_exists || false) : (@assume_model_exists = value)
+      end
+
+      # The provider symbol/string (e.g. +:ollama+) passed straight through to
+      # +RubyLLM.chat+. Required whenever +assume_model_exists+ is set, since
+      # ruby_llm cannot infer a provider once the registry lookup is skipped.
+      # Unset resolves to +nil+.
+      def provider(value = nil)
+        value.nil? ? @provider : (@provider = value)
+      end
+
       def sandbox(value = nil)
         value.nil? ? (@sandbox || Nexo.config.default_sandbox) : (@sandbox = value)
       end
@@ -63,7 +80,7 @@ module Nexo
       ask: :default
     }.freeze
 
-    attr_reader :cwd, :model, :sandbox, :permissions, :instructions, :loop
+    attr_reader :cwd, :model, :provider, :assume_model_exists, :sandbox, :permissions, :instructions, :loop
 
     # Every argument is optional; each resolves arg -> class macro -> config.
     # Symbol shorthands (:virtual/:local, :read_only/:auto/:ask) and pre-built
@@ -78,6 +95,13 @@ module Nexo
           "no model set — use the `model` macro, pass model:, or set Nexo.config.default_model"
       end
 
+      @assume_model_exists = self.class.assume_model_exists
+      @provider = self.class.provider
+      if @assume_model_exists && @provider.nil?
+        raise ConfigurationError,
+          "assume_model_exists is set but no provider given — add the `provider` macro (e.g. `provider :ollama`)"
+      end
+
       @sandbox = resolve_sandbox(sandbox || self.class.sandbox)
       @permissions = resolve_permissions(permissions || self.class.permissions)
       @instructions = self.class.instructions
@@ -88,7 +112,7 @@ module Nexo
     # attached as instances bound to this agent's sandbox and permissions, then
     # layers on the instructions of every declared skill.
     def chat
-      c = RubyLLM.chat(model: @model)
+      c = RubyLLM.chat(**chat_model_options)
       c = c.with_instructions(@instructions) if @instructions
       c.with_tools(
         Tools::ReadFile.new(sandbox: @sandbox, permissions: @permissions),
@@ -122,6 +146,17 @@ module Nexo
     end
 
     private
+
+    # Builds the +RubyLLM.chat+ options conditionally so the default agent's
+    # call is byte-for-byte what it was before this feature: +{model: @model}+.
+    # +provider+ is added only when resolved; +assume_model_exists: true+ only
+    # when opted in (never passed as +false+).
+    def chat_model_options
+      opts = {model: @model}
+      opts[:provider] = @provider if @provider
+      opts[:assume_model_exists] = true if @assume_model_exists
+      opts
+    end
 
     # Attaches each declared skill's instructions to +chat+, after the
     # sandbox-backed tools and on top of the agent's own instructions, in
