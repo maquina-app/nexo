@@ -26,6 +26,21 @@ class AgentTest < Minitest::Test
     sandbox :virtual
   end
 
+  # Opts out of registry validation with a matching provider.
+  class AssumeAgent < Nexo::Agent
+    model "gemma3:12b"
+    provider :ollama
+    assume_model_exists true
+    sandbox :virtual
+  end
+
+  # assume_model_exists set but no provider — a guaranteed-broken config.
+  class AssumeWithoutProviderAgent < Nexo::Agent
+    model "gemma3:12b"
+    assume_model_exists true
+    sandbox :virtual
+  end
+
   def setup
     # These assert wiring against the ruby_llm-test fake provider, which
     # test_helper installs only when NEXO_LIVE != "1". Skip first (before any
@@ -101,11 +116,70 @@ class AgentTest < Minitest::Test
     assert_same gate, agent.permissions
   end
 
+  def test_default_agent_passes_only_model_to_ruby_llm_chat
+    captured = capture_chat_options { VirtualAgent.new.chat }
+
+    assert_equal({model: TEST_MODEL}, captured)
+  end
+
+  def test_agent_with_both_macros_passes_provider_and_assume_model_exists
+    captured = capture_chat_options { AssumeAgent.new.chat }
+
+    assert_equal "gemma3:12b", captured[:model]
+    assert_equal :ollama, captured[:provider]
+    assert_equal true, captured[:assume_model_exists]
+  end
+
+  def test_assume_model_exists_without_provider_raises_configuration_error
+    error = assert_raises(Nexo::ConfigurationError) { AssumeWithoutProviderAgent.new }
+
+    assert_match(/assume_model_exists/, error.message)
+    assert_match(/provider/, error.message)
+  end
+
+  def test_assume_model_exists_macro_read_write_semantics
+    klass = Class.new(Nexo::Agent)
+
+    assert_equal false, klass.assume_model_exists
+
+    klass.assume_model_exists true
+    assert_equal true, klass.assume_model_exists
+
+    klass.assume_model_exists false
+    assert_equal false, klass.assume_model_exists
+  end
+
+  def test_provider_macro_read_write_semantics
+    klass = Class.new(Nexo::Agent)
+
+    assert_nil klass.provider
+
+    klass.provider :ollama
+    assert_equal :ollama, klass.provider
+  end
+
   def test_prompt_runs_chat_ask_with_stubbed_response
     RubyLLM::Test.stub_response("review complete")
 
     response = VirtualAgent.new.prompt("Review it")
 
     assert_equal "review complete", response.content
+  end
+
+  private
+
+  # Captures the kwargs a block's `Agent#chat` hands to `RubyLLM.chat` while
+  # still returning a resolvable chat (built with the fake provider's test
+  # model) so the rest of `#chat` — `with_instructions`/`with_tools` — succeeds
+  # regardless of the captured, possibly-unregistered, model options.
+  def capture_chat_options
+    captured = nil
+    original = RubyLLM.method(:chat)
+    stub = lambda do |**opts|
+      captured = opts
+      original.call(model: TEST_MODEL)
+    end
+    RubyLLM.stub(:chat, stub) { yield }
+    captured
   end
 end

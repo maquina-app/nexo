@@ -1,12 +1,16 @@
 module Nexo
   class Agent
     def self.model: (?untyped value) -> untyped
+    def self.assume_model_exists: (?untyped value) -> untyped
+    def self.provider: (?untyped value) -> untyped
     def self.sandbox: (?untyped value) -> untyped
     def self.permissions: (?untyped value) -> untyped
     def self.instructions: (?String value) -> String?
 
     attr_reader cwd: String
     attr_reader model: untyped
+    attr_reader provider: untyped
+    attr_reader assume_model_exists: bool
     attr_reader sandbox: Sandbox
     attr_reader permissions: Permissions
     attr_reader instructions: String?
