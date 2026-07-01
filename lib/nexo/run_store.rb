@@ -33,7 +33,9 @@ module Nexo
       # A run record with the shared store shape. +update!+ assigns attributes,
       # +push_event+ appends to the event log, and +save_events!+ is a no-op
       # (the AR backend persists; Memory keeps everything in the Struct).
-      # Built with positional arguments, so no keyword_init: true is needed.
+      # Built with keyword arguments; a Struct defined without +keyword_init:+
+      # accepts them on Ruby 3.2+, so (well within the 3.3 floor) +keyword_init:
+      # true+ is unnecessary.
       Run = Struct.new(:id, :workflow_class, :status, :payload, :result, :error, :events) do
         def update!(attrs) = attrs.each { |k, v| self[k] = v }
 
