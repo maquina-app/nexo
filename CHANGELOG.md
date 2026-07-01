@@ -1,5 +1,46 @@
 ## [Unreleased]
 
+## [0.6.0] - 2026-07-01
+
+### Added
+
+- **Opt-in fiber concurrency (`async`).** `Nexo.concurrent(max_in_flight:) { |c| c.add { … } }`
+  runs many agent/workflow calls inside one `async` reactor, bounded by an
+  `Async::Semaphore` and coordinated by an `Async::Barrier`. Results come back in
+  **submission order**; the first task to raise is re-raised (errors are never
+  swallowed) and the remaining in-flight tasks are stopped. `max_in_flight`
+  (default `Nexo.config.max_in_flight`, i.e. `8`) keeps fan-out under provider
+  rate limits — the reason to prefer it over a hand-rolled `Async {}`.
+- **`async` is a SOFT/optional dependency** — lazily required only when a
+  concurrency feature is used. `require "nexo"` with `async` absent does not
+  raise; using `Nexo.concurrent` (or the `:async` sandbox offload) without it
+  raises `Nexo::MissingDependencyError` with install guidance
+  (`gem "async", "~> 2.0"`).
+- **`Nexo::Configuration` gains three settings:** `concurrency`
+  (`:threaded` default | `:async`), `max_in_flight` (`8`), and
+  `buffer_workflow_events` (`false`).
+- **`Sandboxes::Local` async offload.** `read`/`write`/`glob`/`shell` route
+  through a private `#offload`; when `Nexo.config.concurrency == :async` the
+  blocking file/subprocess I/O runs on a worker thread so it doesn't stall the
+  reactor, otherwise it runs inline (byte-for-byte the previous behavior, zero
+  overhead). The path-escape `SecurityError` guard, narrowed ENV, and
+  `Timeout`-wrapped `Open3.capture3` are all preserved unchanged.
+- **`Workflow.run(payload, buffer_events:)` buffered emit.** With
+  `buffer_events: true` (default `Nexo.config.buffer_workflow_events`) events are
+  buffered in memory and flushed to the store exactly once (in `run`'s `ensure`,
+  so they persist on success and failure), avoiding a blocking per-event DB write
+  under a reactor. The default (unbuffered) path is unchanged from 0.4.0.
+
+### Notes
+
+- `Loops::RubyLLM` needs **no changes** to run inside a reactor — `ruby_llm`'s
+  Faraday `net/http` adapter already yields on socket I/O under Ruby's fiber
+  scheduler. A regression test proves a prompt driven from inside `Async {}`
+  returns unchanged.
+- `Async::WorkerPool` is not present in the installed `async` (2.x), so the
+  offload primitive is `Thread.new(&block).value` (re-raises block exceptions in
+  the caller).
+
 ### Changed
 
 - Raised minimum Ruby to 3.3; `Nexo.generate_run_id` now uses

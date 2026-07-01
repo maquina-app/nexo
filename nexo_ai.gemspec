@@ -61,6 +61,14 @@ Gem::Specification.new do |spec|
   spec.add_development_dependency "rails", ">= 8.0"
   spec.add_development_dependency "sqlite3", ">= 2.0"
 
+  # async is a SOFT/optional runtime dependency (Spec 5): the concurrency
+  # features (Nexo.concurrent, the Sandboxes::Local offload path) lazily
+  # `require "async"` behind a rescue that raises Nexo::MissingDependencyError,
+  # so it is intentionally NOT a runtime add_dependency — `require "nexo"` with
+  # async absent must not raise. It is a DEV dependency so the offline suite
+  # exercises the real reactor (semaphore/barrier bounding, error propagation).
+  spec.add_development_dependency "async", "~> 2.0"
+
   # For more information and examples about making a new gem, check out our
   # guide at: https://guides.rubygems.org/make-your-own-gem/
 end

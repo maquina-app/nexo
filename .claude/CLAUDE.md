@@ -182,6 +182,47 @@ Match the agent to the file type touched; skip an agent when no file of its type
   `Sandboxes::E2B`/`Daytona` classes ship in v1 (vendor APIs unpinned) — only `Remote` + the
   README's documented shim pattern.
 
+- **`Workflow.run` keyword/positional trap (Spec 5).** Spec 2's `run(payload = {})` let callers pass
+  the payload as bare keywords (`run(doc_id: 7, text: "x")` → positional Hash). Adding *any* real
+  keyword (`buffer_events:`) flips Ruby's parsing: bare `key: val` args now bind to keywords and
+  `doc_id`/`text` raise `unknown keyword`. Fix that keeps both forms: `run(payload = nil,
+  buffer_events: …, **kwargs)` then `payload ||= kwargs` — an explicit positional Hash wins
+  (`run({a: 1}, buffer_events: true)`), otherwise the collected keywords become the payload. The
+  `Boom` test subclass that overrides `initialize(run)` must become `initialize(run, **opts)` since
+  `Workflow.run` now does `new(run, buffer_events:)`.
+
+- **Async is a SOFT dev-only dep; offload is config-gated (Spec 5).** `async ~> 2.0` is a
+  `development_dependency` only (never `add_dependency`) — `require "nexo"` with it absent must not
+  raise; `Nexo::Concurrent#require_async!` bare-`require`s it (stub `require` on the instance to
+  simulate absence) and rescues stdlib `LoadError` → `MissingDependencyError`. `Sandboxes::Local#offload`
+  decides by **`Nexo.config.concurrency == :async`**, NOT `Fiber.scheduler` detection: `:async` →
+  worker thread, `:threaded` (default) → inline (zero overhead, byte-for-byte Spec 1). Set the worker
+  thread's `report_on_exception = false` so a re-raised path-escape `SecurityError` (via `Thread#value`)
+  isn't also dumped to stderr.
+
+- **`Nexo.concurrent` submission-order + fail-fast (Spec 5).** One `Async` reactor, `Async::Semaphore`
+  bounds in-flight, `Async::Barrier` coordinates; `results[i] = block.call` (index-assigned, so
+  submission order regardless of completion). `barrier.wait` re-raises the first task failure; the
+  `ensure barrier&.stop` stops the rest. NEVER rescue-and-ignore inside a `barrier.async` block or
+  failures vanish. Tests: `sleep` yields under the reactor so fibers genuinely overlap (peak-counter
+  assertion); `ruby_llm-test`'s `stub_response` is a **queue** (one response per request) — use
+  `stub_responses(*n)` for fan-out or the extra prompts raise `NoResponseProvidedError`.
+
+## Verified APIs (Spec 5)
+
+- **ruby_llm 1.16.0 HTTP adapter is fiber-friendly.** `RubyLLM::Connection` builds Faraday with
+  `@config.faraday_adapter || :net_http` (default `:net_http`), which yields on socket I/O under the
+  fiber scheduler. No native "async mode" to prefer; `Loops::RubyLLM` needs no change to run in a
+  reactor.
+- **Offload primitive = `Thread.new(&block).value`.** `Async::WorkerPool` is NOT present in the
+  installed `async` 2.41.0 (`require "async/worker_pool"` → LoadError; const undefined). Shipped the
+  always-works `Thread#value` fallback (it re-raises block exceptions in the caller).
+- **SPIKE — parallel tool calls: a clean public seam EXISTS (still out of scope for v1).** ruby_llm
+  1.16.0 already supports concurrent tool execution via a public API: `chat.with_tools(*tools,
+  concurrency:)` / `RubyLLM.config.tool_concurrency` → `Chat#handle_tool_calls` dispatches to
+  `handle_concurrent_tool_calls` → `ToolConcurrency.run`. No monkeypatch needed. Left unbuilt per the
+  spec; a future spec can wire `concurrency:` through `Agent`/`Loops::RubyLLM` cleanly.
+
 ## Repo
 
 `origin` → `git@github.com:maquina-app/nexo.git` (note: repo is `nexo`, gem is `nexo_ai`).
