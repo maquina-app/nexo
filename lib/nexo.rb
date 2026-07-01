@@ -56,6 +56,21 @@ module Nexo
     def generate_run_id
       SecureRandom.uuid_v7
     end
+
+    # Bounded, fiber-based fan-out (Spec 5). Yields a collector; every block
+    # added via +c.add { ... }+ runs concurrently inside one +async+ reactor,
+    # capped at +max_in_flight+ in flight, with results returned in submission
+    # order and the first task error re-raised. Requires the optional +async+
+    # gem — raises {MissingDependencyError} if it is not installed.
+    #
+    #   results = Nexo.concurrent(max_in_flight: 8) do |c|
+    #     docs.each { |d| c.add { SummarizeDocument.run(text: d.body).result } }
+    #   end
+    def concurrent(max_in_flight: config.max_in_flight, &setup)
+      c = Concurrent.new(max_in_flight: max_in_flight)
+      setup.call(c)
+      c.run
+    end
   end
 end
 

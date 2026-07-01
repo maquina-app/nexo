@@ -38,12 +38,27 @@ module Nexo
       # payload, and records the outcome. On success the run is "done" with the
       # return value as +result+; on any raised error it is "failed" with the
       # message as +error+ and the exception is re-raised. Returns the run.
-      def run(payload = {})
+      #
+      # +buffer_events:+ (Spec 5, default {Nexo.config.buffer_workflow_events})
+      # controls persistence of the event log. When +false+ each +emit+ persists
+      # immediately (Spec 2 behavior). When +true+ events are buffered in memory
+      # and flushed to the store exactly once — the flush runs in the +ensure+ so
+      # events land on both success and failure. Buffering avoids a blocking
+      # per-event DB write under a fiber reactor.
+      #
+      # The payload keeps its Spec 2 shape: it may be passed as an explicit Hash
+      # (+run({doc_id: 1}, buffer_events: true)+) or as bare keywords
+      # (+run(doc_id: 1)+) — when no positional Hash is given, the collected
+      # keywords (minus +buffer_events:+) become the payload. This keeps the
+      # documented +Workflow.run(doc_id: …, text: …)+ form working now that
+      # +buffer_events:+ is a real keyword.
+      def run(payload = nil, buffer_events: Nexo.config.buffer_workflow_events, **kwargs)
+        payload ||= kwargs
         store = Nexo::RunStore.default
         run = store.create(workflow_class: name, payload: stringify(payload))
         run.update!(status: "running")
 
-        instance = new(run)
+        instance = new(run, buffer_events: buffer_events)
         result = instance.call(symbolize(payload))
         run.update!(status: "done", result: stringify_keys(result))
         run.save! if run.respond_to?(:save!)
@@ -54,6 +69,17 @@ module Nexo
           run.save! if run.respond_to?(:save!)
         end
         raise
+      ensure
+        # Flush buffered events on both success and failure. $! is the exception
+        # already propagating out of #call (nil on the success path); a flush
+        # failure must never mask that original error, so it is only surfaced
+        # when the workflow itself succeeded.
+        pending = $!
+        begin
+          instance&.flush_events!
+        rescue
+          raise if pending.nil?
+        end
       end
 
       # Looks up a run by its UUID string id through whichever store
@@ -78,8 +104,10 @@ module Nexo
       def stringify_keys(result) = result.is_a?(Hash) ? stringify(result) : result
     end
 
-    def initialize(run)
+    def initialize(run, buffer_events: false)
       @run = run
+      @buffer_events = buffer_events
+      @event_buffer = []
     end
 
     # Subclasses implement the work here. The +payload+ is symbol-keyed; the
@@ -95,9 +123,28 @@ module Nexo
     # in-memory store, stringify through the json column). Returns the event hash.
     def emit(type, data = {})
       ev = {"type" => type.to_s, "data" => data, "at" => Time.now.utc.iso8601}
-      @run.push_event(ev)
-      @run.save_events! if @run.respond_to?(:save_events!)
+      if @buffer_events
+        # Defer the DB hit — accumulate in memory and persist once in
+        # {#flush_events!} (called from Workflow.run's ensure).
+        @event_buffer << ev
+      else
+        @run.push_event(ev)
+        @run.save_events! if @run.respond_to?(:save_events!)
+      end
       ev
+    end
+
+    # Replays any buffered events through the run and persists them in a single
+    # +save_events!+, then clears the buffer. A no-op when buffering is off or the
+    # buffer is empty. Called from {Workflow.run}'s +ensure+, so buffered events
+    # are saved on both success and failure. Idempotent (a second call, e.g. if a
+    # workflow calls it explicitly, finds an empty buffer and does nothing).
+    def flush_events!
+      return unless @buffer_events && @event_buffer.any?
+
+      @event_buffer.each { |ev| @run.push_event(ev) }
+      @run.save_events! if @run.respond_to?(:save_events!)
+      @event_buffer.clear
     end
   end
 end

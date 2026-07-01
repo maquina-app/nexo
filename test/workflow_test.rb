@@ -20,7 +20,7 @@ class WorkflowTest < Minitest::Test
       attr_accessor :last_run
     end
 
-    def initialize(run)
+    def initialize(run, **opts)
       super
       self.class.last_run = run
     end
