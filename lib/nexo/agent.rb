@@ -64,6 +64,30 @@ module Nexo
       def skills(*names)
         names.empty? ? (@skills || []) : (@skills = names)
       end
+
+      # Declares an MCP server for this agent (Spec 6). Accumulating: multiple
+      # +mcp+ lines are collected. With no args (+name+ nil and +opts+ empty) it
+      # reads the list (default +[]+); otherwise it appends the friendly,
+      # transport-shaped config consumed by {Nexo::MCP.build}.
+      #
+      #   class InboxDigest < Nexo::Agent
+      #     model ENV.fetch("NEXO_MODEL")
+      #     mcp :gmail, transport: :stdio, command: "npx", args: %w[-y srv-gmail]
+      #     mcp :fetch, transport: :sse,   url: "http://localhost:8080/sse"
+      #   end
+      def mcp(name = nil, **opts)
+        return @mcp || [] if name.nil? && opts.empty?
+
+        (@mcp ||= []) << opts.merge(name: name)
+      end
+
+      # The MCP tool-name allow-list threaded into this agent's {Permissions} (see
+      # +mcp_allow:+ in {#resolve_permissions}). Exact tool-name match only — no
+      # globs. Same read-vs-write convention as {skills}: with args it records the
+      # flattened names as strings; with none it reads the list (default +[]+).
+      def mcp_allow(*names)
+        names.empty? ? (@mcp_allow || []) : (@mcp_allow = names.flatten.map(&:to_s))
+      end
     end
 
     # The set of tool names handed to an opt-in backend that ships its own tools
@@ -121,6 +145,7 @@ module Nexo
         Tools::Glob.new(sandbox: @sandbox, permissions: @permissions)
       )
       apply_skills(c)
+      apply_mcp(c)
       c
     end
 
@@ -143,6 +168,24 @@ module Nexo
     # The tool names handed to an opt-in backend that ships its own tools.
     def allowed_tools
       ALLOWED_TOOLS
+    end
+
+    # Releases any MCP server connections held by this agent instance. Clients are
+    # memoized on the instance and reused across prompts (Spec 6 lifecycle default),
+    # so a long-lived agent holding stdio/SSE servers should call +#close+ when
+    # done. Idempotent: safe to call with no MCP servers attached or more than once.
+    #
+    # VERIFY (Group 0, ruby_llm-mcp 1.0.0): the client teardown method is +#stop+
+    # (guarded by +respond_to?+, falling back to +#close+ for other client shapes).
+    def close
+      @mcp_clients&.each do |client|
+        if client.respond_to?(:stop)
+          client.stop
+        elsif client.respond_to?(:close)
+          client.close
+        end
+      end
+      @mcp_clients = nil
     end
 
     private
@@ -172,6 +215,27 @@ module Nexo
       end
     end
 
+    # Lazily connects the declared MCP servers and attaches their tools, each
+    # wrapped in a {MCP::GatedTool} so every invocation is authorized through this
+    # agent's {Permissions} first. Attached after the four sandbox tools and the
+    # skills, so MCP tools fire the chat's +before_tool_call+/+after_tool_result+
+    # callbacks (wired in {Loops::RubyLLM}) and appear in the run's event log with
+    # no extra wiring. Returns early when no server is declared.
+    #
+    # Clients are built once and memoized on the instance (Spec 6 lifecycle
+    # default): the +ruby_llm-mcp+ client connects on construction and is reusable
+    # across prompts, so subsequent +#chat+ calls reuse the live connections until
+    # {#close}. VERIFY (Group 0): tools accessor is +client.tools+ (an Array).
+    def apply_mcp(chat)
+      return if self.class.mcp.empty?
+
+      @mcp_clients ||= self.class.mcp.map { |cfg| Nexo::MCP.build(**cfg) }
+      gated = @mcp_clients.flat_map(&:tools).map do |tool|
+        Nexo::MCP::GatedTool.new(tool: tool, permissions: @permissions)
+      end
+      chat.with_tools(*gated) unless gated.empty?
+    end
+
     def resolve_sandbox(value)
       return value if value.is_a?(Sandbox)
 
@@ -183,12 +247,16 @@ module Nexo
     end
 
     def resolve_permissions(value)
+      # A user-supplied Permissions sets its own mcp_allow: — leave it untouched.
       return value if value.is_a?(Permissions)
 
+      # Thread the class-level mcp_allow into each symbol branch (Spec 6) so the
+      # MCP capability axis is populated alongside the sandbox axis.
+      allow = self.class.mcp_allow
       case value
-      when :read_only then Permissions.new(mode: :read_only)
-      when :auto then Permissions.new(mode: :auto, allow: %i[read glob write shell])
-      when :ask then Permissions.new(mode: :ask) # pass a Permissions with on_ask for a real gate
+      when :read_only then Permissions.new(mode: :read_only, mcp_allow: allow)
+      when :auto then Permissions.new(mode: :auto, allow: %i[read glob write shell], mcp_allow: allow)
+      when :ask then Permissions.new(mode: :ask, mcp_allow: allow) # pass a Permissions with on_ask for a real gate
       else raise ConfigurationError, "unknown permissions: #{value.inspect}"
       end
     end

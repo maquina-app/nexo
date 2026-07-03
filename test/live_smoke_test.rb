@@ -43,6 +43,49 @@ class LiveSmokeTest < Minitest::Test
     end
   end
 
+  # Live MCP smoke: connect the real filesystem MCP server over stdio and assert the
+  # gate lets an allowed read tool through while a denied write tool returns { error: }.
+  # No live model needed — it exercises Nexo::MCP.build + MCP::GatedTool against the
+  # real ruby_llm-mcp client. Requires npx (the server is an npm package).
+  #
+  #   NEXO_LIVE=1 bundle exec rake test TEST=test/live_smoke_test.rb
+  def test_live_mcp_filesystem_gate_smoke
+    skip "set NEXO_LIVE=1 to run live MCP smoke tests" unless ENV["NEXO_LIVE"] == "1"
+    skip "npx not found — install Node to run the MCP filesystem server" unless system("which", "npx", out: File::NULL, err: File::NULL)
+
+    require "tmpdir"
+
+    Dir.mktmpdir do |dir|
+      File.write(File.join(dir, "note.txt"), "hello from mcp\n")
+
+      client = Nexo::MCP.build(
+        name: "fs",
+        transport: :stdio,
+        command: "npx",
+        args: ["-y", "@modelcontextprotocol/server-filesystem", dir]
+      )
+
+      tools = client.tools
+      read_tool = tools.find { |t| t.name.match?(/read/i) }
+      write_tool = tools.find { |t| t.name.match?(/write/i) }
+      skip "filesystem server exposed no read/write tools" unless read_tool && write_tool
+
+      # read_tool is allowed; write_tool is not → fails closed under :read_only.
+      perms = Nexo::Permissions.new(mode: :read_only, mcp_allow: [read_tool.name])
+
+      allowed = Nexo::MCP::GatedTool.new(tool: read_tool, permissions: perms)
+      result = allowed.call({path: File.join(dir, "note.txt")})
+      refute(result.is_a?(Hash) && result[:error], "allowed read should not be gated: #{result.inspect}")
+
+      denied = Nexo::MCP::GatedTool.new(tool: write_tool, permissions: perms)
+      denied_result = denied.call({path: File.join(dir, "new.txt"), content: "nope"})
+      assert denied_result[:error], "denied write should return { error: }"
+      refute_path_exists File.join(dir, "new.txt")
+    ensure
+      client&.stop
+    end
+  end
+
   private
 
   def agent_tools(agent)

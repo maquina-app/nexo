@@ -83,7 +83,8 @@ loader = Zeitwerk::Loader.for_gem
 # lib/nexo/loops/agent_sdk.rb -> Nexo::Loops::AgentSDK (Spec 4).
 loader.inflector.inflect(
   "ruby_llm" => "RubyLLM",
-  "agent_sdk" => "AgentSDK"
+  "agent_sdk" => "AgentSDK",
+  "mcp" => "MCP"
 )
 # The require-shim is not a managed constant — Zeitwerk must not infer a constant
 # from its filename (the namespace is always Nexo), and ignoring it suppresses
