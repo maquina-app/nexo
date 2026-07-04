@@ -51,6 +51,15 @@ module Nexo
         value.nil? ? (@cwd || Dir.pwd) : (@cwd = value)
       end
 
+      # The {Agent} subclass this workflow drives (Spec 8). Follows the same
+      # read-vs-write ivar convention as {.sandbox}/{.cwd}: with no argument it
+      # reads (default +nil+ — a workflow need not drive an agent); with one it
+      # sets. Consumed by {#run_agent}, which binds the agent to the run's shared
+      # sandbox. There is no per-call override — this macro is the only source.
+      def agent(klass = nil)
+        klass.nil? ? @agent : (@agent = klass)
+      end
+
       # One-shot boot/deploy sweep (Spec 7 R6) that rewrites runs orphaned in
       # +"running"+ to +"interrupted"+ so a crashed worker doesn't leave zombie
       # runs. Touches *only* +"running"+ rows — +"done"+ and +"failed"+ are never
@@ -237,7 +246,98 @@ module Nexo
       art
     end
 
+    # Drives the workflow's declared {.agent} (Spec 8), bound to *this* run's
+    # sandbox (Spec 7), forwarding every +(type, payload)+ event the agent's loop
+    # yields into the run log as an +agent_*+ event, and ensuring the agent is
+    # closed afterward (tearing down any memoized MCP servers from Spec 6).
+    # Returns the agent's response object (read +response.content+).
+    #
+    # Composition only — no new loop, no orchestration engine: it wires the
+    # existing {Agent#prompt} + +before_tool_call+/+after_tool_result+ seam
+    # (source: {Loops::RubyLLM}) through the existing {#emit} path, so the events
+    # honor the run's +buffer_events+ setting and persist in both run stores with
+    # no extra wiring.
+    #
+    # Shared-sandbox precedence: under +run_agent+ the agent uses the workflow's
+    # sandbox; the agent's own +sandbox+ class macro is ignored (it only applies
+    # when the agent runs standalone via +.new.prompt+). The agent keeps its own
+    # +permissions+/+skills+/+mcp+/+mcp_allow+ — the workflow provides the *where*
+    # (sandbox), the agent owns the *what* (permissions) and *how* (skills). Driving
+    # an agent never widens its authority; its safe default (+:read_only+) is
+    # untouched. Raises {ConfigurationError} when no +agent+ is declared.
+    def run_agent(prompt, max_turns: 25)
+      klass = self.class.agent or raise Nexo::ConfigurationError,
+        "#{self.class} has no `agent` declared; add `agent MyAgent`"
+      agent = klass.new(sandbox: sandbox)
+      agent.prompt(prompt, max_turns: max_turns) do |type, payload|
+        emit(:"agent_#{type}", serializable(type, payload))
+      end
+    ensure
+      # Guarded so it's safe if Spec 6 (Agent#close) isn't present in the agent.
+      agent.close if agent.respond_to?(:close)
+    end
+
     private
+
+    # Reduces a loop event payload to a plain, json-safe Hash *before* {#emit},
+    # so it round-trips through both the Memory store and the ActiveRecord json
+    # column — a raw +ruby_llm+ object (a {RubyLLM::ToolCall}, a tool result, a
+    # response {RubyLLM::Message}) is never emitted. The reducer is type-aware
+    # (the event +type+ selects the fields rather than guessing from object shape)
+    # and degrades gracefully — a missing field falls back to +to_s+ rather than
+    # raising, so observability never breaks the run.
+    #
+    # Field mapping (VERIFIED Group 0, ruby_llm 1.16.0):
+    # - +:tool_call+   → +ToolCall#name+ + +#arguments+ (or a plain +{name:, args:}+ Hash).
+    # - +:tool_result+ → the tool's return value: a String (ok), or a +{error:}+/
+    #   +{content:}+ Hash from a Nexo gated tool (+ok+ derived from +error+).
+    # - +:done+        → the final response +Message#content+.
+    def serializable(type, payload)
+      case type
+      when :tool_call then reduce_tool_call(payload)
+      when :tool_result then reduce_tool_result(payload)
+      when :done then reduce_done(payload)
+      else {"value" => payload.to_s}
+      end
+    end
+
+    def reduce_tool_call(payload)
+      if payload.is_a?(Hash)
+        h = payload.transform_keys(&:to_s)
+        {"name" => h["name"].to_s, "args" => h["args"] || h["arguments"]}
+      elsif payload.respond_to?(:name)
+        {"name" => payload.name.to_s, "args" => tool_call_args(payload)}
+      else
+        {"value" => payload.to_s}
+      end
+    end
+
+    def tool_call_args(payload)
+      return payload.arguments if payload.respond_to?(:arguments)
+      return payload.args if payload.respond_to?(:args)
+
+      nil
+    end
+
+    def reduce_tool_result(payload)
+      unless payload.is_a?(Hash)
+        # A bare content value (e.g. file contents) — a successful read.
+        return {"ok" => true, "content" => payload.to_s}
+      end
+
+      h = payload.transform_keys(&:to_s)
+      error = h["error"]
+      ok = h.key?("ok") ? h["ok"] : error.nil?
+      content = h["content"] || h["output"] || error
+      out = {"ok" => ok}
+      out["content"] = content.to_s unless content.nil?
+      out
+    end
+
+    def reduce_done(payload)
+      content = payload.respond_to?(:content) ? payload.content : payload
+      {"content" => content.to_s}
+    end
 
     # Mirrors {Agent#resolve_sandbox}: a pre-built {Sandbox} passes through;
     # +:virtual+ builds an in-memory {Sandboxes::Virtual}; +:local+ builds a

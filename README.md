@@ -413,6 +413,84 @@ rails g nexo:artifacts
 rails db:migrate
 ```
 
+### Tasks & Actions
+
+A workflow can **declare and drive an agent** so the two primitives Nexo owns —
+a `Workflow` (the run lifecycle) and an `Agent` (the skilled, sandbox-backed
+model loop) — compose into one recipe: *stage inputs → run the agent → capture
+artifacts*. The `agent` class macro names the `Agent` subclass this workflow
+drives; `run_agent(prompt, max_turns: 25)` runs it **bound to the run's own
+sandbox**, forwards every tool call/result and the final response into the run
+log as `agent_*` events, and closes the agent afterward (tearing down any MCP
+servers). It returns the agent's response — read `response.content`.
+
+```ruby
+class ReviewBaseline < Nexo::Workflow
+  agent CodeReviewer            # the Agent subclass this workflow drives
+
+  def call(payload)
+    stage(payload[:files])                          # inputs into the run's sandbox
+    resp = run_agent("Review the staged baseline and report OK or the issues.")
+    artifact("review.md", content: resp.content)    # capture the agent's output
+    { content: resp.content }
+  end
+end
+```
+
+Because it composes the existing agent loop's observability seam through the
+same `emit` path, a driven run reads as one coherent story —
+`Nexo::Workflow.logs(run.id)` (and `nexo:logs`) interleaves the workflow's own
+events with the agent's:
+
+```
+[…] staged            {"count"=>1}
+[…] agent_tool_call   {"name"=>"read_file", "args"=>{"path"=>"/workspace/baseline.md"}}
+[…] agent_tool_result {"ok"=>true, "content"=>"…"}
+[…] agent_done        {"content"=>"REVIEW OK"}
+```
+
+The **same** workflow runs two ways with no code difference — Nexo stays
+*schedulable*, never a scheduler.
+
+**As a scheduled Task** — invoke it from a background job (the scheduling itself
+lives in the host: cron / GoodJob / `whenever` / any job system):
+
+```ruby
+class ReviewBaselineJob < ApplicationJob
+  def perform(files:)
+    ReviewBaseline.run(files: files)   # same run entry point
+  end
+end
+
+# scheduled elsewhere in the host — Nexo does not schedule:
+ReviewBaselineJob.perform_later(files: nightly_baseline)
+```
+
+**As an interactive Action** — invoke the *same* `run` from a controller after
+staging the uploaded files:
+
+```ruby
+class ReviewsController < ApplicationController
+  def create
+    files = params[:files].map { |f| { path: f.original_filename, content: f.read } }
+    run = ReviewBaseline.run(files: files)   # identical call — no code difference
+    redirect_to review_path(run.id)
+  end
+end
+```
+
+> **⚠️ Shared-sandbox precedence.** Under `run_agent` the agent uses the
+> **workflow's** sandbox; the agent's own `sandbox` class macro is **ignored**
+> (it only applies when the agent runs standalone via `.new.prompt`). The agent
+> keeps its **own** `permissions`, `skills`, `mcp`, and `mcp_allow`: the workflow
+> provides the *where* (sandbox), the agent owns the *what* (permissions) and the
+> *how* (skills/instructions). Driving an agent never widens its authority — its
+> safe default (`:read_only`) is untouched.
+
+See [`examples/inbox_digest_task.rb`](examples/inbox_digest_task.rb) for a live
+example that wraps the MCP-backed `InboxTriage` agent in a workflow and captures
+the digest as an artifact.
+
 ### Reconciling interrupted runs
 
 A crashed worker leaves runs stuck in `"running"`. `Nexo::Workflow.reconcile_interrupted!`
