@@ -223,6 +223,38 @@ Match the agent to the file type touched; skip an agent when no file of its type
   `handle_concurrent_tool_calls` → `ToolConcurrency.run`. No monkeypatch needed. Left unbuilt per the
   spec; a future spec can wire `concurrency:` through `Agent`/`Loops::RubyLLM` cleanly.
 
+## Verified APIs (Spec 6 — ruby_llm-mcp 1.0.0)
+
+Group-0 probes against the installed `ruby_llm-mcp` 1.0.0 (soft dev-only dep; unversioned in
+the Gemfile, NOT a gemspec `add_dependency` — `require "nexo"` with it absent must not raise;
+`Nexo::MCP.load!` bare-`require`s `ruby_llm/mcp` and rescues stdlib `LoadError` →
+`MissingDependencyError`, mirroring `Skills.load!`):
+
+- **Client constructor:** `RubyLLM::MCP.client(name:, transport_type:, config: {})`. Nexo's
+  `MCP.build(name:, transport:, **config)` maps `name→name`, `transport→transport_type`, and
+  collects **every other kwarg into `config:`** verbatim (stdio: `command:`/`args:`; sse:
+  `url:`). Client **connects on construction** (`start: true` default) and is reusable across
+  prompts until torn down.
+- **Tools + tool shape:** `client.tools` → Array of `RubyLLM::MCP::Tool` (which **subclasses
+  `RubyLLM::Tool`**). `#name`, `#description`, `#params_schema`; the tool body is `#execute(**params)`
+  but the chat loop invokes `tool.call(args)` with a **positional Hash** (`RubyLLM::Tool#call`
+  normalizes + dispatches to `#execute`).
+- **Attach = duck-typed, no subclass required.** `RubyLLM::Chat#with_tool` does NOT type-check —
+  it stores any object responding to `#name` and the loop calls `tool.call(args)`. So
+  `MCP::GatedTool` is a **plain delegating wrapper** (explicit `#name`/`#call`, `method_missing`
+  forwards `description`/`params_schema`/`to_h`), NOT a `RubyLLM::Tool` subclass. `#call`
+  authorizes via `authorize_mcp!` then delegates; `rescue Denied → {error:}` (never raised into
+  the loop), mirroring `tools/write_file.rb`.
+- **Teardown = `#stop`, not `close`.** `RubyLLM::MCP::Client` exposes `start`/`stop`/`restart!`
+  (no `close`). `Agent#close` calls `client.stop` (guarded, falls back to `close` for other
+  client shapes) and clears the instance memo (`@mcp_clients`).
+- **Gate is a second axis.** `authorize_mcp!(name, args)` is a sibling of `authorize!` — the
+  sandbox `authorize!`/`@allow` path is byte-for-byte unchanged. `mcp_allow` (exact-match, no
+  globs) defaults to `[]` ⇒ under `:read_only` every MCP tool is denied (fail closed). The
+  `test_missing_gem` guard must check `Gem::Specification.find_all_by_name` (installability),
+  NOT `defined?(RubyLLM::MCP)` — the constant is absent until first lazy `require` even when the
+  gem is installed.
+
 ## Repo
 
 `origin` → `git@github.com:maquina-app/nexo.git` (note: repo is `nexo`, gem is `nexo_ai`).

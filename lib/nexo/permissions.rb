@@ -24,11 +24,12 @@ module Nexo
     # +Agent#permission_mode+).
     attr_reader :mode
 
-    def initialize(mode: :read_only, allow: %i[read glob], on_ask: nil)
+    def initialize(mode: :read_only, allow: %i[read glob], mcp_allow: [], on_ask: nil)
       raise ArgumentError, "unknown mode #{mode}" unless MODES.include?(mode)
 
       @mode = mode
       @allow = allow
+      @mcp_allow = mcp_allow.map(&:to_s)
       @on_ask = on_ask
     end
 
@@ -48,6 +49,36 @@ module Nexo
       when :ask
         unless @on_ask&.call(capability, detail)
           raise Denied, "#{capability} (#{detail}) denied by user"
+        end
+        true
+      end
+    end
+
+    # Authorizes an MCP tool *call* by name. A deliberate sibling of {#authorize!}
+    # on a separate capability axis: an MCP tool runs inside the MCP server,
+    # outside the sandbox, so this gates the authority to *invoke* it — a different
+    # guarantee than sandbox capability. Fails closed under +:read_only+ (nothing
+    # allowed unless the exact +tool_name+ is listed in +mcp_allow+).
+    #
+    # * +:auto+      — allow every MCP tool.
+    # * +:read_only+ — allow only names in +mcp_allow+ (default +[]+ ⇒ deny all).
+    # * +:ask+       — defer to +on_ask+ with +(:mcp, {tool:, args:})+; a truthy
+    #   return allows, anything else denies.
+    #
+    # Returns +true+ when allowed; raises {Denied} otherwise.
+    def authorize_mcp!(tool_name, args = {})
+      name = tool_name.to_s
+
+      case @mode
+      when :auto
+        true
+      when :read_only
+        return true if @mcp_allow.include?(name)
+
+        raise Denied, "mcp tool #{name} denied in read_only mode (not in mcp_allow)"
+      when :ask
+        unless @on_ask&.call(:mcp, {tool: name, args: args})
+          raise Denied, "mcp tool #{name} denied by user"
         end
         true
       end
