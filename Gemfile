@@ -16,3 +16,8 @@ gem "minitest", "~> 5.16"
 # absent must not raise. Kept unversioned (dev group) so the offline suite can
 # exercise the real client shape without pinning the API surface.
 gem "ruby_llm-mcp", group: :development
+
+# webmock stubs external HTTP in the offline suite (Spec 9). Dev/test-only — the
+# core suite never makes a live request; Tools::Fetch uses only stdlib net/http, so
+# webmock is NOT a gemspec add_dependency (mirrors the ruby_llm-mcp soft-dep precedent).
+gem "webmock", group: :development
