@@ -227,6 +227,26 @@ Match the agent to the file type touched; skip an agent when no file of its type
   stays Zeitwerk-ignored and undefined offline. (`WorkflowsGenerator` has no such test, which is
   why this trap only surfaced now.)
 
+- **`run_agent` is pure glue over the existing seam (Spec 8).** `Workflow#run_agent(prompt,
+  max_turns: 25)` reads the `self.agent` macro (reader/writer ivar like `sandbox`/`cwd`), does
+  `klass.new(sandbox: sandbox)` so the agent runs in the run's **shared** sandbox (`Agent#resolve_sandbox`
+  passes a pre-built `Sandbox` straight through — the agent's own `sandbox` macro is ignored; its
+  `permissions`/`skills`/`mcp` still apply), then forwards every `Agent#prompt` loop event via
+  `emit(:"agent_#{type}", serializable(type, payload))`. `a.close if a.respond_to?(:close)` runs in
+  the `ensure` (guarded so it's safe pre-Spec-6). No new loop — it composes `Loops::RubyLLM`'s
+  `before_tool_call`/`after_tool_result` + `:done` seam. The `Workflow.run` lifecycle/failure
+  contract is byte-for-byte unchanged; `run_agent` is a plain instance method, no Rails coupling.
+- **Loop event payload shapes → the type-aware `serializable` reducer (Spec 8, VERIFIED ruby_llm
+  1.16.0).** Never `emit` a raw ruby_llm object (won't round-trip through the AR json column). The
+  reducer keys off the event **type** (not object shape): `:tool_call` payload is a
+  `RubyLLM::ToolCall` (`#name`, `#arguments` — a Hash; `#to_h`); `:tool_result` payload is the tool's
+  **return value** — for Nexo gated tools a bare `String` (successful read) or `{error: msg}` Hash, so
+  `ok` is derived from the presence of `error`; `:done` payload is the final `RubyLLM::Message`
+  (`#content`). The reducer also accepts plain Hashes (so a spy agent can yield `{name:, args:}` /
+  `{ok: true}` without building real ruby_llm objects) and degrades with `to_s` rather than raising —
+  observability must never break the run. Group 1 tests use a **real spy agent** (not `Minitest::Mock`)
+  that reads the staged file from the shared sandbox and records `close`; core suite stays offline.
+
 ## Verified APIs (Spec 5)
 
 - **ruby_llm 1.16.0 HTTP adapter is fiber-friendly.** `RubyLLM::Connection` builds Faraday with
