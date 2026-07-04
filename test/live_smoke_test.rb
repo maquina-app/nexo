@@ -86,6 +86,26 @@ class LiveSmokeTest < Minitest::Test
     end
   end
 
+  # Live fetch smoke (Spec 9): hit a real allow-listed URL and assert a body came
+  # back, then assert an off-list host is refused with { error: } and no request.
+  # No live model needed — it exercises Nexo::Tools::Fetch against the real network.
+  #
+  #   NEXO_LIVE=1 bundle exec rake test TEST=test/live_smoke_test.rb
+  def test_live_fetch_smoke
+    skip "set NEXO_LIVE=1 to run live fetch smoke tests" unless ENV["NEXO_LIVE"] == "1"
+
+    perms = Nexo::Permissions.new(mode: :read_only, allow: %i[read glob fetch])
+    tool = Nexo::Tools::Fetch.new(sandbox: Nexo::Sandboxes::Virtual.new,
+      permissions: perms, allow_hosts: %w[example.com])
+
+    allowed = tool.execute(url: "https://example.com/")
+    refute allowed[:error], "allow-listed fetch should not be denied: #{allowed.inspect}"
+    refute_empty allowed[:body].to_s
+
+    denied = tool.execute(url: "https://icanhazip.com/")
+    assert denied[:error], "off-list host should return { error: }"
+  end
+
   private
 
   def agent_tools(agent)

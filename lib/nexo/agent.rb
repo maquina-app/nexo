@@ -88,6 +88,20 @@ module Nexo
       def mcp_allow(*names)
         names.empty? ? (@mcp_allow || []) : (@mcp_allow = names.flatten.map(&:to_s))
       end
+
+      # The host allow-list scoping this agent's {Nexo::Tools::Fetch} (Spec 9).
+      # Subdomain-aware, exact-host-suffix matching only — no globs. Same
+      # read-vs-write convention as {mcp_allow}: with args it records the flattened
+      # hosts as strings; with none it reads the list (default +[]+).
+      #
+      # Declaring +fetch_allow+ only SCOPES hosts — it does not grant the +:fetch+
+      # capability, which is default-denied like +:shell+. An agent that wants
+      # egress must also run under +:auto+ or carry an explicit
+      # +Permissions.new(mode: :read_only, allow: %i[read glob fetch])+. Both locks
+      # must open before a fetch happens.
+      def fetch_allow(*hosts)
+        hosts.empty? ? (@fetch_allow || []) : (@fetch_allow = hosts.flatten.map(&:to_s))
+      end
     end
 
     # The set of tool names handed to an opt-in backend that ships its own tools
@@ -146,6 +160,7 @@ module Nexo
       )
       apply_skills(c)
       apply_mcp(c)
+      apply_fetch(c)
       c
     end
 
@@ -236,6 +251,21 @@ module Nexo
       chat.with_tools(*gated) unless gated.empty?
     end
 
+    # Attaches a single {Nexo::Tools::Fetch} scoped to the agent's +fetch_allow+
+    # hosts (Spec 9). Returns early when no host is declared, so an agent that never
+    # calls +fetch_allow+ gets no fetch tool. Attached right after +apply_mcp+ so
+    # the tool participates in the chat's +before_tool_call+/+after_tool_result+
+    # event stream (wired in {Loops::RubyLLM}) with no extra wiring. The +:fetch+
+    # capability itself is gated through {Permissions#authorize!} at call time — the
+    # allow-list only scopes hosts, it is not the capability grant.
+    def apply_fetch(chat)
+      return if self.class.fetch_allow.empty?
+
+      chat.with_tools(
+        Tools::Fetch.new(sandbox: @sandbox, permissions: @permissions, allow_hosts: self.class.fetch_allow)
+      )
+    end
+
     def resolve_sandbox(value)
       return value if value.is_a?(Sandbox)
 
@@ -255,7 +285,7 @@ module Nexo
       allow = self.class.mcp_allow
       case value
       when :read_only then Permissions.new(mode: :read_only, mcp_allow: allow)
-      when :auto then Permissions.new(mode: :auto, allow: %i[read glob write shell], mcp_allow: allow)
+      when :auto then Permissions.new(mode: :auto, allow: %i[read glob write shell fetch], mcp_allow: allow)
       when :ask then Permissions.new(mode: :ask, mcp_allow: allow) # pass a Permissions with on_ask for a real gate
       else raise ConfigurationError, "unknown permissions: #{value.inspect}"
       end

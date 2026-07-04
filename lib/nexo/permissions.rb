@@ -7,11 +7,11 @@ module Nexo
   #
   # Modes:
   # * +:auto+      — allow everything.
-  # * +:read_only+ — allow +:read+/+:glob+, deny +:write+/+:shell+ (the default).
+  # * +:read_only+ — allow +:read+/+:glob+, deny +:write+/+:shell+/+:fetch+ (the default).
   # * +:ask+       — defer to +on_ask+; a truthy return allows, anything else denies.
   #
-  # Capabilities are +:read+, +:glob+, +:write+, +:shell+. Anything listed in
-  # +allow:+ is permitted regardless of mode.
+  # Capabilities are +:read+, +:glob+, +:write+, +:shell+, +:fetch+. Anything
+  # listed in +allow:+ is permitted regardless of mode.
   class Permissions
     MODES = %i[auto read_only ask].freeze
 
@@ -42,7 +42,7 @@ module Nexo
       when :auto
         true
       when :read_only
-        if %i[write shell].include?(capability)
+        if %i[write shell fetch].include?(capability)
           raise Denied, "#{capability} denied in read_only mode"
         end
         true

@@ -247,6 +247,24 @@ Match the agent to the file type touched; skip an agent when no file of its type
   observability must never break the run. Group 1 tests use a **real spy agent** (not `Minitest::Mock`)
   that reads the staged file from the shared sandbox and records `close`; core suite stays offline.
 
+- **`:fetch` is a two-lock capability (Spec 9).** `Nexo::Tools::Fetch` (stdlib `net/http` GET) needs
+  BOTH the `:fetch` capability (default-denied under `:read_only` like `:shell` — added to the
+  `%i[write shell fetch]` set in `authorize!`; `:auto`'s `allow:` gained `:fetch`) AND a host in
+  `fetch_allow`. `fetch_allow` alone does NOT grant the capability — it only scopes hosts, so a
+  `:read_only` egress agent must pass `Permissions.new(mode: :read_only, allow: %i[read glob fetch])`.
+  `apply_fetch` attaches the tool only when `fetch_allow` is non-empty (a default agent gets no fetch
+  tool), right after `apply_mcp` so it rides the same `before_tool_call`/`after_tool_result` stream.
+  Host matching is **subdomain-aware, not exact** (the tasks.md `@allow_hosts.include?` snippet is
+  wrong — spec R3/Q4 wins): `host == entry || host.end_with?(".#{entry}")`, case-insensitive, so
+  `example.com` permits `news.example.com` but refuses `notexample.com`/`example.com.evil.org`. The
+  private-address SSRF guard (`Resolv.getaddresses` → `IPAddr#loopback?/#private?/#link_local?`) runs
+  AFTER the allow-list and is never bypassed (an allow-listed `localhost` still `{error:}`); resolution
+  failure fails OPEN to the normal connect path. Return shape differs from `ReadFile`: `{body:}`
+  (byteslice to `MAX_BYTES = 200_000`) on success, `{error:}` on any denial/error (never raises into
+  the loop). `webmock` is a dev-only Gemfile dep (NOT a gemspec `add_dependency`); the tool is pure
+  stdlib. Tests glob the whole suite even with `TEST=…` (Minitest::TestTask), so a single-file run
+  still executes every test — check the summary line, not the filename.
+
 ## Verified APIs (Spec 5)
 
 - **ruby_llm 1.16.0 HTTP adapter is fiber-friendly.** `RubyLLM::Connection` builds Faraday with
