@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "time"
+require "erb"
 
 module Nexo
   # A finite-job lifecycle primitive. Subclass {Workflow}, implement
@@ -33,6 +34,43 @@ module Nexo
   # run is abandoned and you start a new one.
   class Workflow
     class << self
+      # The sandbox this workflow's runs stage inputs into and write artifacts to
+      # (Spec 7). Follows the same read-vs-write ivar convention as {Agent}'s
+      # macros: with no argument it reads (default +:virtual+ — safe, in-memory);
+      # with one it sets. Resolution is lazy — a data-only workflow that never
+      # stages or emits artifacts builds nothing (see {#sandbox}).
+      def sandbox(value = nil)
+        value.nil? ? (@sandbox || :virtual) : (@sandbox = value)
+      end
+
+      # The working directory used when this workflow's sandbox is +:local+. The
+      # +Dir.pwd+ default is evaluated at *read* time (in the macro body), so the
+      # working directory is captured when the sandbox is actually resolved, not
+      # at class-definition time. Never read for a +:virtual+ workflow.
+      def cwd(value = nil)
+        value.nil? ? (@cwd || Dir.pwd) : (@cwd = value)
+      end
+
+      # One-shot boot/deploy sweep (Spec 7 R6) that rewrites runs orphaned in
+      # +"running"+ to +"interrupted"+ so a crashed worker doesn't leave zombie
+      # runs. Touches *only* +"running"+ rows — +"done"+ and +"failed"+ are never
+      # rewritten. Under Rails it is a single +update_all+; offline it iterates the
+      # Memory store. NEVER auto-invoked — call it from a boot hook or the shipped
+      # +nexo:reconcile+ rake task.
+      #
+      # This is not a liveness check: it cannot distinguish an orphaned run from
+      # one genuinely running in another process. Run it once at boot, before any
+      # worker starts new runs. Returns the number of runs rewritten.
+      def reconcile_interrupted!
+        if defined?(::ActiveRecord::Base) && defined?(Nexo::WorkflowRun)
+          Nexo::WorkflowRun.where(status: "running").update_all(status: "interrupted")
+        else
+          running = Nexo::RunStore::Memory.runs.each_value.select { |run| run.status == "running" }
+          running.each { |run| run.update!(status: "interrupted") }
+          running.size
+        end
+      end
+
       # Runs the workflow end to end: creates a run record (status "pending"),
       # marks it "running", invokes the subclass's +#call+ with a symbol-keyed
       # payload, and records the outcome. On success the run is "done" with the
@@ -145,6 +183,74 @@ module Nexo
       @event_buffer.each { |ev| @run.push_event(ev) }
       @run.save_events! if @run.respond_to?(:save_events!)
       @event_buffer.clear
+    end
+
+    # The run's sandbox (Spec 7), resolved lazily from the class-level {.sandbox}
+    # macro and memoized. Built on first touch — by {#stage}, {#artifact}, or a
+    # workflow reading/writing files directly — so a data-only workflow that never
+    # calls any of them constructs nothing new and keeps the Spec 2 hot path
+    # byte-for-byte unchanged.
+    def sandbox
+      @sandbox ||= resolve_sandbox(self.class.sandbox)
+    end
+
+    # Stages provided files into the run's sandbox before work begins (Spec 7 R2).
+    # Accepts either a Hash +{ "path" => "content" }+ or an Array of
+    # +{ path:, content: }+ hashes; both normalize to +[path, content]+ pairs.
+    # Each pair is written via +sandbox.write+. Emits a +:staged+ event carrying
+    # the count (reusing the existing {#emit} path) and returns the number of
+    # files staged.
+    def stage(files)
+      pairs = files.is_a?(Hash) ? files.to_a : files.map { |f| [f[:path], f[:content]] }
+      pairs.each { |path, content| sandbox.write(path, content) }
+      emit(:staged, count: pairs.size)
+      pairs.size
+    end
+
+    # Records a named deliverable on the run (Spec 7 R3). The body comes from
+    # either +content:+ (used verbatim) or +from:+ (a **trusted, developer-authored**
+    # ERB template — a real disk file when +File.exist?(from)+, else a staged
+    # sandbox path via +sandbox.read+ — rendered with the given +locals+).
+    #
+    # SECURITY: ERB executes arbitrary Ruby. A +from:+ template must be a trusted
+    # file you control — NEVER model output or user-uploaded content. Templates are
+    # code, not data (see README).
+    #
+    # The body is written to the sandbox at +/artifacts/<name>+ (so scripts/agents
+    # can read it during the run) and recorded on the run as a string-keyed hash
+    # +{"name" =>, "content" =>, "at" =>}+, matching how {#emit} string-keys events
+    # so Memory and the AR json column round-trip identically. Artifacts persist
+    # immediately (never buffered). Raises {Nexo::Error} when neither +content:+ nor
+    # +from:+ produces a body. Returns the artifact hash.
+    def artifact(name, content: nil, from: nil, locals: {})
+      body = content
+      if from
+        template = File.exist?(from) ? File.read(from) : sandbox.read(from)
+        body = ERB.new(template, trim_mode: "-").result_with_hash(locals)
+      end
+      raise Nexo::Error, "artifact #{name} needs content: or from:" if body.nil?
+
+      sandbox.write("/artifacts/#{name}", body)
+      art = {"name" => name.to_s, "content" => body, "at" => Time.now.utc.iso8601}
+      @run.push_artifact(art)
+      @run.save_artifacts! if @run.respond_to?(:save_artifacts!)
+      art
+    end
+
+    private
+
+    # Mirrors {Agent#resolve_sandbox}: a pre-built {Sandbox} passes through;
+    # +:virtual+ builds an in-memory {Sandboxes::Virtual}; +:local+ builds a
+    # {Sandboxes::Local} rooted at the class-level {.cwd}. An unknown value is a
+    # configuration error.
+    def resolve_sandbox(value)
+      return value if value.is_a?(Sandbox)
+
+      case value
+      when :virtual then Sandboxes::Virtual.new
+      when :local then Sandboxes::Local.new(cwd: self.class.cwd)
+      else raise ConfigurationError, "unknown sandbox: #{value.inspect}"
+      end
     end
   end
 end

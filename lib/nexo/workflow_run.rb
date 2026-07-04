@@ -32,6 +32,19 @@ if defined?(::ActiveRecord::Base)
         save!(touch: false)
       end
 
+      # Appends an artifact to the ordered index (Spec 7). Reassigns the array
+      # (rather than mutating in place) so ActiveRecord tracks the json column as
+      # dirty — mirrors {#push_event} exactly.
+      def push_artifact(a)
+        self.artifacts = (artifacts || []) + [a]
+      end
+
+      # Persists the artifact index without bumping +updated_at+, mirroring
+      # {#save_events!}.
+      def save_artifacts!
+        save!(touch: false)
+      end
+
       private
 
       def assign_run_id

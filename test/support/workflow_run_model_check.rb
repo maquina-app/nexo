@@ -42,3 +42,14 @@ puts "EVENTS_OK"
 run.update!(status: "done", result: {foo: "bar"})
 abort "FAIL: result string keys (#{Nexo::WorkflowRun.find(run.id).result.inspect})" unless Nexo::WorkflowRun.find(run.id).result == {"foo" => "bar"}
 puts "RESULT_STRING_KEYS_OK"
+
+# artifacts default to [] and round-trip string-keyed through the json column,
+# with push_artifact/save_artifacts! mirroring the event path (Spec 7).
+abort "FAIL: artifacts default (#{run.artifacts.inspect})" unless Nexo::WorkflowRun.find(run.id).artifacts == []
+run.push_artifact({"name" => "digest.md", "content" => "body", "at" => "t1"})
+run.push_artifact({"name" => "report.md", "content" => "more", "at" => "t2"})
+run.save_artifacts!
+arts = Nexo::WorkflowRun.find(run.id).artifacts
+abort "FAIL: artifacts persisted (#{arts.inspect})" unless arts.map { |a| a["name"] } == %w[digest.md report.md]
+abort "FAIL: artifacts string keys (#{arts.first.keys.inspect})" unless arts.first.keys.sort == %w[at content name]
+puts "ARTIFACTS_OK"

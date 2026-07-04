@@ -354,6 +354,80 @@ ActiveRecord when it is available and the in-memory store otherwise. The schema
 uses portable `json` columns (SQLite and PostgreSQL alike) and a UUID string
 primary key.
 
+### Input staging and artifacts
+
+A run owns a **sandbox** — declared with the `sandbox` class macro (default
+`:virtual`, the safe in-memory sandbox; `:local` for the host filesystem rooted
+at the `cwd` macro, default `Dir.pwd`). It is resolved **lazily**: a data-only
+workflow that never touches files builds nothing, so the plain `emit`/`result`
+path stays free.
+
+`stage(files)` writes provided inputs into that sandbox *before* your `#call`
+work begins. It takes either a `{ "path" => "content" }` hash or an array of
+`{ path:, content: }` hashes, emits a `:staged` event with the count, and returns
+the count staged.
+
+`artifact(name, content:)` records a **named deliverable** on the run — a digest,
+a report, an improved file, a generated script. The body is written to the
+sandbox at `/artifacts/<name>` (so later steps can read it) and recorded on the
+run. `run.artifacts` reads it back as an **ordered array** of string-keyed hashes
+(`{"name" =>, "content" =>, "at" =>}`) in both stores:
+
+```ruby
+class BuildDigest < Nexo::Workflow
+  def call(payload)
+    stage(payload[:files])                       # baseline + extras into the sandbox
+    artifact("digest.md", content: summarize(sandbox.read("/workspace/baseline.md")))
+    { ok: true }
+  end
+end
+
+run = BuildDigest.run(files: [{ path: "baseline.md", content: "…" }])
+run.artifacts.first["name"]     # => "digest.md"
+run.artifacts.first["content"]  # => "…the digest body…"
+```
+
+You can also render an artifact from a **template you control** with `from:` —
+no templating engine, just stdlib `ERB`:
+
+```ruby
+# from: is a real disk file when it exists, else a staged sandbox path.
+artifact("digest.md", from: "app/templates/digest.md.erb",
+         locals: { title: "Weekly", baseline: sandbox.read("/workspace/baseline.md") })
+```
+
+> **⚠️ Templates are code, not data.** `ERB` executes arbitrary Ruby. A template
+> passed to `artifact(from:)` **must** be a trusted, developer-authored file —
+> **never** model output or user-uploaded content. Rendering a model-generated
+> or uploaded template is remote code execution. If a body is untrusted, pass it
+> as `content:` (inert data), not as a `from:` template.
+
+See [`examples/artifact_from_template.rb`](examples/artifact_from_template.rb) for
+the full offline flow (`ruby -Ilib examples/artifact_from_template.rb`).
+
+The `artifacts` column ships with fresh installs. Apps installed before this
+release add it with:
+
+```sh
+rails g nexo:artifacts
+rails db:migrate
+```
+
+### Reconciling interrupted runs
+
+A crashed worker leaves runs stuck in `"running"`. `Nexo::Workflow.reconcile_interrupted!`
+is a **one-shot boot/deploy sweep** that rewrites only `"running"` → `"interrupted"`
+(never touching `"done"` or `"failed"`) and returns the count. It is **never
+auto-invoked** — call it from a boot hook or the shipped rake task:
+
+```sh
+bundle exec rake nexo:reconcile
+```
+
+> This is **not** a liveness check. It cannot tell a genuinely-running run in
+> another process from an orphaned one — so run it once at boot, *before* any
+> worker starts new runs, not while workers are live.
+
 ## Concurrency (opt-in async)
 
 Async is **entirely optional**. Nexo installs and runs synchronously with no
