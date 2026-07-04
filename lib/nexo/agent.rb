@@ -146,11 +146,24 @@ module Nexo
       @loop = loop
     end
 
-    # Builds a configured RubyLLM::Chat with the four sandbox-backed tools
-    # attached as instances bound to this agent's sandbox and permissions, then
-    # layers on the instructions of every declared skill.
-    def chat
-      c = RubyLLM.chat(**chat_model_options)
+    # Builds a configured chat with the four sandbox-backed tools attached as
+    # instances bound to this agent's sandbox and permissions, then layers on the
+    # instructions of every declared skill.
+    #
+    # +base:+ lets a {Nexo::Session} pass a persisted +acts_as_chat+ record
+    # (hydrated via ruby_llm's +#to_llm+ delegation) so the very same wiring —
+    # instructions, the four sandbox tools, skills, MCP, fetch — is applied onto
+    # the continuing thread instead of a fresh chat. When +base+ is nil the path
+    # is byte-for-byte the standalone-agent build: a fresh +RubyLLM.chat+. A
+    # session therefore changes only *memory/persistence*, never authority or
+    # execution — the record supplies the thread, the agent supplies the wiring.
+    #
+    # Re-applying +@instructions+ on every resume stays idempotent because the
+    # persisted-chat +#with_instructions+ (default +append: false+) *replaces* the
+    # stored +role: :system+ messages rather than appending, so the thread keeps
+    # exactly one copy across resumes (VERIFIED, ruby_llm 1.16.0).
+    def chat(base: nil)
+      c = base || RubyLLM.chat(**chat_model_options)
       c = c.with_instructions(@instructions) if @instructions
       c.with_tools(
         Tools::ReadFile.new(sandbox: @sandbox, permissions: @permissions),

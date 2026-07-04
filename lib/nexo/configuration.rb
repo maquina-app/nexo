@@ -34,6 +34,14 @@ module Nexo
     # avoids a blocking per-event DB write under a fiber reactor.
     attr_accessor :buffer_workflow_events
 
+    # The host +acts_as_chat+ model that stores {Nexo::Session} threads (Spec 10),
+    # given as a **String** class name (default +"Chat"+ — ruby_llm's own default).
+    # It is constantized lazily at resume time so plain Ruby / no-ActiveRecord
+    # paths never reference an AR constant, mirroring how {RunStore} only touches
+    # {Nexo::WorkflowRun} when it is defined. The host app owns this model (columns
+    # + a unique +(agent_name, instance_id)+ index); Nexo ships no migration for it.
+    attr_accessor :session_chat_model
+
     def initialize
       @default_model = nil # provider-neutral: NO hardcoded default
       @default_sandbox = :virtual # safe default
@@ -42,6 +50,7 @@ module Nexo
       @concurrency = :threaded # async is opt-in; :threaded stays the default
       @max_in_flight = 8
       @buffer_workflow_events = false
+      @session_chat_model = "Chat" # ruby_llm's own default acts_as_chat host
     end
 
     private

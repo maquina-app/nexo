@@ -265,6 +265,48 @@ Match the agent to the file type touched; skip an agent when no file of its type
   stdlib. Tests glob the whole suite even with `TEST=…` (Minitest::TestTask), so a single-file run
   still executes every test — check the summary line, not the filename.
 
+- **`Nexo::Session` is a normal autoloaded class — host owns the schema (Spec 10).** Unlike
+  `WorkflowRun` (Nexo-owned, Zeitwerk-**ignored**), the session chat model is **host-owned**, so
+  `lib/nexo/session.rb` is a plain-Ruby, Zeitwerk-**autoloaded** class — do NOT add it to the
+  `loader.ignore(...)` list. It references AR only inside its `durable?` branch and only by the
+  configured **String** name (`Nexo.config.session_chat_model`, default `"Chat"`), constantized at
+  resume time — so `require "nexo"` stays AR-free. Persistence is ruby_llm's `acts_as_chat`; Nexo
+  ships **no** migration/generator for `Chat/Message/ToolCall/Model` (the host runs
+  `rails g ruby_llm:install`, which sets `config.use_new_acts_as = true` → the association-based API
+  in `active_record/acts_as.rb`, NOT the legacy one). The host adds `agent_name`/`instance_id`
+  columns + a **unique composite index** to `chats`; that's the one documented step beyond the
+  installer.
+- **Session backend guard is TWO-part, like `RunStore` (Spec 10).** `Session#durable?` is
+  `defined?(::ActiveRecord::Base) && Object.const_defined?(Nexo.config.session_chat_model)` — NOT AR
+  alone. The offline suite LOADS ActiveRecord (the generator tests require it), so an AR-only guard
+  would wrongly take the durable path and blow up constantizing `"Chat"`. Checking the host model is
+  defined mirrors `RunStore.default`'s `AR && Nexo::WorkflowRun` and keeps the memory fallback robust.
+  Corollary: you can't assert `refute defined?(::ActiveRecord::Base)` in the combined suite — assert
+  the guard doesn't flip instead (`refute Object.const_defined?(config.session_chat_model)` + memory
+  path reused).
+- **Instruction idempotency across resumes is `acts_as_chat`'s, not ours (Spec 10, VERIFIED
+  ruby_llm 1.16.0).** `Agent#chat(base: record)` re-applies `with_instructions(@instructions)` on
+  EVERY resume; the persisted-chat `#with_instructions` (default `append: false`) calls
+  `replace_persisted_system_instructions`, which **collapses all `role: :system` messages to one** and
+  updates it — so the stored thread keeps exactly one system copy no matter how many resumes. Skills
+  (`append: true`) re-append after that collapse, so `[instructions, skill1, skill2]` rebuilds
+  identically each resume. Verified end-to-end in `test/support/session_model_check.rb`.
+- **The reused-chat callback trap (Spec 10).** A `Session` runs `Loops::RubyLLM#run` repeatedly over
+  the SAME hydrated chat. ruby_llm's `before_tool_call`/`after_tool_result` **append** callbacks
+  (`add_callback`), so naive re-wiring stacks a fresh pair every prompt and fires each event N times
+  (and leaks across sessions sharing an in-memory chat). Fix: `wire_observability` flags the chat
+  (`@nexo_observed`) and wires once, stashing the current block in `@nexo_on_event` so a later prompt
+  observes with its own block. A fresh chat (the default per-prompt path) wires once → byte-for-byte
+  the prior behavior, so the existing `loops_ruby_llm_test` FakeChat still passes.
+- **Session Rails test shells out, like WorkflowRun (Spec 10).** `test/session_test.rb` execs
+  `test/support/session_model_check.rb` via `Bundler.with_unbundled_env` (boots AR + in-memory SQLite
+  + the four `acts_as_chat` host models WITH the addressing columns + a stubbed model) and asserts OK
+  markers. It threads the agent's model onto the persisted chat with `provider :openai` +
+  `assume_model_exists true` (R7) so `#to_llm` bypasses the AR model-registry lookup. The plain-Ruby
+  memory path is covered inline in `test/session_memory_test.rb` + `test/no_rails_test.rb`. `require
+  "ruby_llm/active_record/{model,message,tool_call,chat}_methods"` must precede
+  `require "ruby_llm/active_record/acts_as"` — `acts_as.rb` does not autoload those method modules.
+
 ## Verified APIs (Spec 5)
 
 - **ruby_llm 1.16.0 HTTP adapter is fiber-friendly.** `RubyLLM::Connection` builds Faraday with
