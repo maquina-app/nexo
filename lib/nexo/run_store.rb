@@ -7,8 +7,9 @@ module Nexo
   # the in-memory store (plain Ruby) or the ActiveRecord store (Rails).
   #
   # A run object responds to: +id+, +workflow_class+, +status+, +payload+,
-  # +result+, +error+, +events+, plus +update!(attrs)+, +push_event(event)+,
-  # and +save_events!+.
+  # +result+, +error+, +events+, +artifacts+, plus +update!(attrs)+,
+  # +push_event(event)+, +save_events!+, +push_artifact(artifact)+, and
+  # +save_artifacts!+.
   module RunStore
     # Selects a backend: the ActiveRecord store when both ::ActiveRecord::Base
     # and Nexo::WorkflowRun are defined (the Rails path), otherwise the in-memory
@@ -36,12 +37,16 @@ module Nexo
       # Built with keyword arguments; a Struct defined without +keyword_init:+
       # accepts them on Ruby 3.2+, so (well within the 3.3 floor) +keyword_init:
       # true+ is unnecessary.
-      Run = Struct.new(:id, :workflow_class, :status, :payload, :result, :error, :events) do
+      Run = Struct.new(:id, :workflow_class, :status, :payload, :result, :error, :events, :artifacts) do
         def update!(attrs) = attrs.each { |k, v| self[k] = v }
 
         def push_event(ev) = events << ev
 
         def save_events! = nil
+
+        def push_artifact(a) = artifacts << a
+
+        def save_artifacts! = nil
       end
 
       @runs = {}
@@ -65,7 +70,8 @@ module Nexo
           payload: payload,
           result: nil,
           error: nil,
-          events: []
+          events: [],
+          artifacts: []
         )
         self.class.runs[run.id] = run
       end

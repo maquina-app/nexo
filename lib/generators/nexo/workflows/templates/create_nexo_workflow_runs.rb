@@ -13,6 +13,7 @@ class CreateNexoWorkflowRuns < ActiveRecord::Migration[8.0]
       t.json :result
       t.text :error
       t.json :events, null: false, default: []
+      t.json :artifacts, null: false, default: []
       t.timestamps
     end
     add_index :nexo_workflow_runs, :workflow_class

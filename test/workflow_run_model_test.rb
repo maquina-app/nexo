@@ -22,5 +22,6 @@ class WorkflowRunModelTest < Minitest::Test
     assert_match(/PENDING_OK/, out)
     assert_match(/EVENTS_OK/, out)
     assert_match(/RESULT_STRING_KEYS_OK/, out)
+    assert_match(/ARTIFACTS_OK/, out)
   end
 end

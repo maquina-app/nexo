@@ -207,6 +207,25 @@ Match the agent to the file type touched; skip an agent when no file of its type
   failures vanish. Tests: `sleep` yields under the reactor so fibers genuinely overlap (peak-counter
   assertion); `ruby_llm-test`'s `stub_response` is a **queue** (one response per request) — use
   `stub_responses(*n)` for fan-out or the extra prompts raise `NoResponseProvidedError`.
+- **Artifacts mirror the event path exactly (Spec 7).** `stage`/`artifact`/`run.artifacts`
+  reuse the sandbox + WorkflowRun seams — no new deps (ERB is stdlib). `Workflow#sandbox` is a
+  **lazy memo** (`@sandbox ||= resolve_sandbox(self.class.sandbox)`), so a data-only workflow
+  builds nothing and the Spec 2 hot path (`run`/`initialize`/`emit`/`flush_events!`) is
+  byte-for-byte unchanged — never resolve the sandbox there. Artifacts persist **immediately**
+  (`push_artifact` + `save_artifacts!`), NOT buffered like events. Memory `Run` struct gained an
+  `:artifacts` member (init `artifacts: []` in `create`); the AR model reassigns the array for
+  json dirty-tracking (`self.artifacts = (artifacts || []) + [a]`) exactly like `push_event`.
+  `Workflow.reconcile_interrupted!` reuses `RunStore.default`'s
+  `defined?(::ActiveRecord::Base) && defined?(Nexo::WorkflowRun)` gate and rewrites **only**
+  `"running"` → `"interrupted"` (returns the count in both branches). SECURITY: `artifact(from:)`
+  runs ERB (arbitrary Ruby) — templates must be trusted developer files, never model/user input.
+- **The artifacts generator test must `require "active_record"` (Spec 7).** `ArtifactsGenerator`
+  (like `WorkflowsGenerator`) computes its migration timestamp via
+  `::ActiveRecord::Migration.next_migration_number`, so `test/generators/artifacts_generator_test.rb`
+  requires AR inside its `rails_generators_available` guard. This does NOT flip `RunStore.default`
+  to the AR backend for the rest of the offline suite: that also needs `Nexo::WorkflowRun`, which
+  stays Zeitwerk-ignored and undefined offline. (`WorkflowsGenerator` has no such test, which is
+  why this trap only surfaced now.)
 
 ## Verified APIs (Spec 5)
 

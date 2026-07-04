@@ -8,4 +8,10 @@ namespace :nexo do
       puts "[#{ev["at"]}] #{ev["type"].ljust(12)} #{ev["data"].inspect}"
     end
   end
+
+  desc "Sweep runs orphaned in 'running' to 'interrupted' (one-shot boot/deploy)"
+  task reconcile: :environment do
+    count = Nexo::Workflow.reconcile_interrupted!
+    puts "nexo: reconciled #{count} interrupted run(s)"
+  end
 end
