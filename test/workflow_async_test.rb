@@ -22,6 +22,10 @@ class WorkflowAsyncTest < Minitest::Test
     def push_event(ev) = @events << ev
 
     def save_events! = @save_count += 1
+
+    # A run always carries an id; the live notification path (Spec 11) reads it.
+    # Fixed so the double stays deterministic.
+    def id = "counting-run"
   end
 
   # A store double whose #create always returns the injected counting run.

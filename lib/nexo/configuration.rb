@@ -42,6 +42,18 @@ module Nexo
     # + a unique +(agent_name, instance_id)+ index); Nexo ships no migration for it.
     attr_accessor :session_chat_model
 
+    # Whether to mirror run event notifications over Turbo Streams (Spec 11 R2),
+    # default +false+ (safe-by-default). When true and turbo-rails is present, the
+    # engine subscribes {Nexo::TurboBroadcaster} at boot. The plain
+    # +nexo.workflow.event+/+nexo.workflow.status+ notifications fire regardless —
+    # this only gates the opt-in Turbo mirror.
+    attr_accessor :broadcast_events
+
+    # The ActiveJob queue {Workflow.run_later} enqueues onto (Spec 11 R1), default
+    # +nil+ → ActiveJob's default queue. Set to a symbol (e.g. +:nexo+) to route
+    # workflow jobs to a dedicated queue.
+    attr_accessor :job_queue
+
     def initialize
       @default_model = nil # provider-neutral: NO hardcoded default
       @default_sandbox = :virtual # safe default
@@ -51,6 +63,8 @@ module Nexo
       @max_in_flight = 8
       @buffer_workflow_events = false
       @session_chat_model = "Chat" # ruby_llm's own default acts_as_chat host
+      @broadcast_events = false # safe default: opt in to the Turbo mirror
+      @job_queue = nil # nil → ActiveJob's default queue
     end
 
     private

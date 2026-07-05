@@ -21,6 +21,23 @@ if defined?(::Rails::Engine)
         require "nexo/workflow_run"
       end
 
+      # Load the WorkflowJob once ActiveJob is available (Spec 11 R1), mirroring the
+      # workflow_run model initializer above. The require is safe with no ActiveJob:
+      # the file body is guarded, so it defines nothing and Workflow.run_later raises
+      # a MissingDependencyError instead.
+      initializer "nexo.workflow_job" do
+        require "nexo/workflow_job"
+      end
+
+      # Wire the opt-in Turbo mirror (Spec 11 R2). The require is always safe (the
+      # broadcaster's body is guarded on ActiveSupport::Notifications); subscribe! is
+      # a no-op without turbo-rails. Only subscribe when the host opted in via
+      # config.broadcast_events — safe-by-default (broadcast_events defaults false).
+      initializer "nexo.turbo_broadcaster" do
+        require "nexo/turbo_broadcaster"
+        Nexo::TurboBroadcaster.subscribe! if Nexo.config.broadcast_events
+      end
+
       # The nexo:logs rake task ships in lib/tasks/nexo.rake, which Rails::Engine
       # loads into the host app automatically — no explicit rake_tasks wiring
       # (loading it a second time would run the task body twice).
