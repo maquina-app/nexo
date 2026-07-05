@@ -307,6 +307,37 @@ Match the agent to the file type touched; skip an agent when no file of its type
   "ruby_llm/active_record/{model,message,tool_call,chat}_methods"` must precede
   `require "ruby_llm/active_record/acts_as"` — `acts_as.rb` does not autoload those method modules.
 
+- **`ActiveSupport::Notifications` becomes defined in the COMBINED offline suite (Spec 11).** A bare
+  `require "nexo_ai"` (or webmock/ruby_llm-test/async/ruby_llm each alone) leaves `::ActiveSupport::
+  Notifications` undefined — but running the full `rake test` in one process transitively loads it, so
+  `Workflow.execute`/`emit`'s guarded `notify_status`/`notify_event` paths DO fire and read `run.id`.
+  Consequence: any run double a test injects (e.g. the Spec 5 `CountingRun` in `workflow_async_test.rb`)
+  MUST respond to `:id`, or the notification path raises `NoMethodError`. Real runs always carry id;
+  only doubles are at risk. Corollary: a plain-core test asserting "emit is exactly Spec 2" must NOT
+  `refute defined?(::ActiveSupport::Notifications)` (flaky/load-order-dependent) — assert the
+  *persistence* path (push_event/save_events! per emit) instead, which notify_event never touches.
+  `ActiveJob`/`ActiveRecord` stay undefined in the combined suite (only `active_support` leaks in), so
+  the `run_later`-without-ActiveJob and durable-store selection tests still take the plain-Ruby branch.
+
+- **Spec 11 Rails-runtime test shells out, like WorkflowRun/Session.** `test/workflow_runtime_rails_test.rb`
+  execs `test/support/workflow_runtime_check.rb` via `Bundler.with_unbundled_env` (boots AR + SQLite +
+  `active_job` with the `:inline` adapter + a stubbed model). Top-level workflow classes so
+  `run.workflow_class.constantize` resolves in `WorkflowJob#perform`; the check `require`s
+  `active_support/core_ext/string` for `constantize` and sets `ActiveJob::Base.logger =
+  Logger.new(IO::NULL)` to silence the inline job log. It asserts `run_later`→done, sync `run`, a real
+  `nexo.workflow.event`/`status` subscriber, scopes/predicates, and `artifact_content`. The plain-Ruby
+  guarantees (original nested payload preserved, emit=Spec 2 persistence, `run_later` missing-dep raise)
+  live inline in `test/workflow_runtime_test.rb`.
+
+- **The dummy app loads `active_record/railtie` but NOT `active_job/railtie` (Spec 11).** So booting
+  `test/dummy` leaves `Nexo::WorkflowJob` undefined (its guarded body needs `::ActiveJob`) while
+  `Nexo::TurboBroadcaster` IS defined (guarded on `::ActiveSupport::Notifications`, always present under
+  Rails) but does not subscribe (broadcast_events defaults false, and turbo-rails is not a dep). This is
+  the correct Rails-optional behavior and proves the `nexo.workflow_job`/`nexo.turbo_broadcaster`
+  initializers never crash when their dependency is absent. turbo-rails is NOT a dev dependency —
+  `TurboBroadcaster.subscribe!` no-ops without `Turbo::StreamsChannel`, so Turbo mirroring is verified
+  only at the notification layer.
+
 ## Verified APIs (Spec 5)
 
 - **ruby_llm 1.16.0 HTTP adapter is fiber-friendly.** `RubyLLM::Connection` builds Faraday with

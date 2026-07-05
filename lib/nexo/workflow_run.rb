@@ -13,9 +13,44 @@ if defined?(::ActiveRecord::Base)
     class WorkflowRun < ::ActiveRecord::Base
       self.table_name = "nexo_workflow_runs"
 
+      # The status vocabulary a run moves through. The sync path is
+      # pending → running → done/failed; run_later adds "queued" (enqueued, not yet
+      # picked up); reconcile_interrupted! rewrites orphaned "running" runs to
+      # "interrupted". Documentation only — status is a plain string column.
+      STATUSES = %w[pending queued running done failed interrupted].freeze
+
+      # Status scopes for a host UI (Spec 11 R3) — Nexo dictates no controllers or
+      # views, only these query helpers.
+      scope :queued, -> { where(status: "queued") }
+      scope :running, -> { where(status: "running") }
+      scope :finished, -> { where(status: %w[done failed]) }
+
       # The primary key is a UUID string assigned through the shared
       # {Nexo.generate_run_id} helper, keeping id shape identical across stores.
       before_create :assign_run_id
+
+      # Status predicates for a host UI (Spec 11 R3).
+      def done? = status == "done"
+
+      def failed? = status == "failed"
+
+      def running? = status == "running"
+
+      def queued? = status == "queued"
+
+      # Finds a recorded artifact (Spec 7) by name, tolerating string- or
+      # symbol-keyed hashes so it works before and after a json round-trip. Returns
+      # the artifact hash or nil.
+      def artifact(name)
+        (artifacts || []).find { |a| (a["name"] || a[:name]) == name.to_s }
+      end
+
+      # Returns just the stored body of a named artifact (Spec 11 R4), or nil when
+      # absent. Nexo exposes content only — serving files stays the host
+      # controller's job (no Nexo routes/controllers for artifacts).
+      def artifact_content(name)
+        artifact(name)&.then { |a| a["content"] || a[:content] }
+      end
 
       # No presence validations on +result+ or +events+: both are empty until
       # the run finishes.

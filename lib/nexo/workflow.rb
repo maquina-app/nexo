@@ -101,19 +101,67 @@ module Nexo
       # +buffer_events:+ is a real keyword.
       def run(payload = nil, buffer_events: Nexo.config.buffer_workflow_events, **kwargs)
         payload ||= kwargs
-        store = Nexo::RunStore.default
-        run = store.create(workflow_class: name, payload: stringify(payload))
+        run = Nexo::RunStore.default.create(workflow_class: name, payload: stringify(payload))
+        # Pass the caller's ORIGINAL symbolized payload (nested Ruby values intact)
+        # — the sync path never crosses a JSON/DB boundary, so it must not read back
+        # the store-normalized run.payload. Only the async job symbolizes run.payload.
+        execute(run, payload: symbolize(payload), buffer_events: buffer_events)
+      end
+
+      # Enqueues the workflow on the host's ActiveJob adapter and hands back the run
+      # immediately (status "queued") so a controller can return while the work
+      # happens in the background. The job carries only the run id — the payload
+      # lives on the run record.
+      #
+      # Requires ActiveJob (Rails): with no ActiveJob loaded this raises
+      # {Nexo::MissingDependencyError} pointing at {.run} for synchronous execution.
+      # +queue:+ (default {Nexo.config.job_queue}) routes the job to a named queue;
+      # +nil+ uses ActiveJob's default queue.
+      #
+      # It is only meaningful with a shared run store — the AR store plus a real
+      # adapter, so a worker in another process finds the run in the database. Under
+      # the +:inline+/+:test+ adapter the job runs in-process, so the Memory store is
+      # also reachable. Not resumable: a crashed or retried job re-runs +#call+ from
+      # scratch (Nexo adds no +retry_on+); pair with {.reconcile_interrupted!} to
+      # catch runs orphaned in +"running"+.
+      def run_later(payload = nil, queue: Nexo.config.job_queue, **kwargs)
+        unless defined?(::ActiveJob)
+          raise Nexo::MissingDependencyError,
+            "run_later requires ActiveJob (Rails). Use `run` for synchronous execution."
+        end
+        payload ||= kwargs
+        run = Nexo::RunStore.default.create(workflow_class: name, payload: stringify(payload))
+        run.update!(status: "queued")
+        run.save! if run.respond_to?(:save!)
+        job = Nexo::WorkflowJob
+        job = job.set(queue: queue) if queue
+        job.perform_later(run.id)
+        run
+      end
+
+      # Executes an already-created run: "running" → +#call+ → "done"/"failed",
+      # flushing buffered events in the ensure (on both success and failure) and
+      # firing a status notification on each transition. Shared by {.run} (sync) and
+      # {WorkflowJob#perform} (async). Re-raises on failure.
+      #
+      # +payload:+ is symbol-keyed: {.run} passes the caller's original (nested Ruby
+      # values intact); the job passes the JSON-normalized +run.payload+ symbolized.
+      def execute(run, payload:, buffer_events: Nexo.config.buffer_workflow_events)
         run.update!(status: "running")
+        run.save! if run.respond_to?(:save!)
+        notify_status(run)
 
         instance = new(run, buffer_events: buffer_events)
-        result = instance.call(symbolize(payload))
+        result = instance.call(payload)
         run.update!(status: "done", result: stringify_keys(result))
         run.save! if run.respond_to?(:save!)
+        notify_status(run)
         run
       rescue => e
         if run
           run.update!(status: "failed", error: e.message)
           run.save! if run.respond_to?(:save!)
+          notify_status(run)
         end
         raise
       ensure
@@ -140,6 +188,18 @@ module Nexo
       end
 
       private
+
+      # Broadcasts a run's status transition over ActiveSupport::Notifications
+      # (Spec 11 R2) — a no-op without ActiveSupport, so the plain-Ruby core stays
+      # decoupled. Carries only the run id and status; no payload/credentials. Fired
+      # by {.execute} on each transition (running → done/failed).
+      def notify_status(run)
+        return unless defined?(::ActiveSupport::Notifications)
+
+        ::ActiveSupport::Notifications.instrument(
+          "nexo.workflow.status", run_id: run.id, status: run.status
+        )
+      end
 
       def stringify(hash) = hash.transform_keys(&:to_s)
 
@@ -178,6 +238,10 @@ module Nexo
         @run.push_event(ev)
         @run.save_events! if @run.respond_to?(:save_events!)
       end
+      # Live broadcast (Spec 11 R2): fires regardless of buffering — persistence
+      # stays separate/buffered above, but the notification is live. A no-op without
+      # ActiveSupport, so this is exactly the Spec 2 emit in the plain-Ruby core.
+      notify_event(ev)
       ev
     end
 
@@ -278,6 +342,19 @@ module Nexo
     end
 
     private
+
+    # Broadcasts a single event over ActiveSupport::Notifications (Spec 11 R2) as it
+    # is emitted — a no-op without ActiveSupport, so the plain-Ruby core's {#emit} is
+    # exactly Spec 2. Fires live even when persistence is buffered. The payload
+    # carries only the run id and the already-built event hash (what {#emit} was
+    # given) — no extra payload/credential dump.
+    def notify_event(ev)
+      return unless defined?(::ActiveSupport::Notifications)
+
+      ::ActiveSupport::Notifications.instrument(
+        "nexo.workflow.event", run_id: @run.id, event: ev
+      )
+    end
 
     # Reduces a loop event payload to a plain, json-safe Hash *before* {#emit},
     # so it round-trips through both the Memory store and the ActiveRecord json

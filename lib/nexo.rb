@@ -101,6 +101,12 @@ loader.ignore("#{__dir__}/tasks")
 # false without Rails and RunStore.default correctly selects the Memory backend.
 # The engine requires it once ActiveRecord is loaded.
 loader.ignore("#{__dir__}/nexo/workflow_run.rb")
+# The WorkflowJob (Rails-only, subclasses ::ActiveJob::Base) and TurboBroadcaster
+# (guarded on ::ActiveSupport::Notifications) mirror workflow_run.rb: guarded body,
+# Zeitwerk-ignored (no autoload registered, so they stay undefined without Rails),
+# required by engine initializers once ActiveJob / ActiveSupport are present.
+loader.ignore("#{__dir__}/nexo/workflow_job.rb")
+loader.ignore("#{__dir__}/nexo/turbo_broadcaster.rb")
 loader.setup
 
 # Rails-optional: only pull in the engine when Rails is present. Loading Nexo
