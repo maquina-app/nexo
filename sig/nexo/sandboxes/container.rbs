@@ -1,0 +1,25 @@
+module Nexo
+  module Sandboxes
+    class Container < Sandbox
+      RUNTIMES: Hash[Symbol, String]
+
+      attr_reader cwd: String
+      attr_reader runtime: Symbol
+      attr_reader image: String
+
+      def initialize: (?image: String?, ?runtime: Symbol, ?cwd: String,
+                       ?binds: Hash[String, untyped], ?network: untyped,
+                       ?cap_add: Array[untyped], ?memory: untyped, ?cpus: untyped,
+                       ?pids_limit: untyped, ?user: untyped, ?env: Hash[untyped, untyped],
+                       ?name: String?, ?reconnect: bool, ?readonly_rootfs: bool) -> void
+
+      def read: (String path) -> String
+      def write: (String path, String content) -> untyped
+      def glob: (String pattern) -> Array[String]
+      def shell: (String command, ?timeout: Numeric) -> Hash[Symbol, untyped]
+      def close: () -> void
+      def instructions: () -> String
+      def supports?: (Symbol cap) -> bool
+    end
+  end
+end

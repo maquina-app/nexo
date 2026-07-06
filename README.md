@@ -129,6 +129,7 @@ and the agent loop continues — it does not raise. A path that escapes the work
 | `:ask`                   | per `on_ask` | per `on_ask` | per `on_ask`   | per `on_ask`                      | per `on_ask`        |
 | `Virtual` sandbox        | ✅      | ✅      | ✅ (in-memory)      | ❌ `NotImplementedError`→`{error}` | ✅ (network egress)  |
 | `Local` sandbox          | ✅ (guarded) | ✅ | ✅ (guarded)        | ✅ (narrowed ENV)                 | ✅ (network egress)  |
+| `Container` sandbox      | ✅ (guarded) | ✅ | ✅ (guarded, scratch) | ✅ (in container)               | ❌ (`network: none`) |
 
 - **`Virtual`** (default) — in-memory, zero host access. `#shell` raises
   `NotImplementedError` on purpose: in-memory means no command execution. That is the
@@ -137,6 +138,10 @@ and the agent loop continues — it does not raise. A path that escapes the work
   expanded against `cwd` and must stay inside it (else `SecurityError`), and the shell sees
   only `PATH`, `HOME`, `LANG` (plus explicit `env:` additions) — never the full process
   environment.
+- **`Container`** — run the tools inside a throwaway local container via the `docker`
+  (default) or Apple `container` CLI. Shell-out only, no client gem. **Hardened by default**
+  (no network, dropped caps, read-only rootfs + ephemeral scratch, read-only host binds);
+  every hardening is an explicit opt-out. See [Container sandbox](#container-sandbox--docker--apple-container) below.
 - **`Remote`** — run the tools inside a remote container (E2B / Daytona / Modal / Docker /
   your own) by injecting a client. Escalating to `:remote` is always an explicit choice in
   your code — the default stays `:virtual`.
@@ -184,6 +189,99 @@ agent = Nexo::Agent.new(model: ENV.fetch("NEXO_MODEL"),
 Nexo ships **only** `Remote` plus this documented pattern — purpose-built
 `Sandboxes::E2B` / `Sandboxes::Daytona` classes are a possible future addition, deliberately
 left out of v1 because their vendor client APIs aren't pinned yet.
+
+## Container sandbox — Docker / Apple Container
+
+`Sandboxes::Container` runs an agent's tools inside a **throwaway OCI container** via the
+`docker` (default) or Apple `container` CLI — shell-out only through `Open3`, **no client
+gem**, no Compose, no image builder. A model-driven agent never touches your host filesystem
+or shell directly. Declare it with the `sandbox` macro (`image:` is required — there is no
+default image):
+
+```ruby
+class ContainerReviewer < Nexo::Agent
+  model   ENV.fetch("NEXO_MODEL")
+  sandbox :docker, image: "node:22-slim",
+          binds: { Dir.pwd => { to: "/workspace/repo", mode: :ro } }
+end
+```
+
+The container `cwd` defaults to `/workspace` (a container path, **not** your host directory);
+the host dir enters only through a `binds:` entry.
+
+### `runtime:` — one class, two CLIs
+
+`sandbox :docker` (or `runtime: :docker`) shells out to `docker`; `sandbox :apple`
+(`runtime: :apple`) shells out to Apple's `container` binary. The `run`/`exec` surface is
+largely shared; where the CLIs diverge (networking especially) the class branches on the
+runtime. **Apple `container` parity is verified, not assumed** — confirm against a live daemon
+(the flags are encoded from the reference mapping and the networking flag in particular is a
+verify-before-trust item). An unknown runtime raises `Nexo::ConfigurationError`.
+
+### Hardened by default — every knob an explicit opt-out
+
+All of the following are applied to the `run` argv by default and individually invertible:
+
+| Concern | Default | Loosen with |
+|---|---|---|
+| Network | `--network none` (no egress) | `network: :bridge` / `:host` / a network name |
+| Capabilities | `--cap-drop ALL` | `cap_add: %w[NET_BIND_SERVICE ...]` |
+| Rootfs | `--read-only` | `readonly_rootfs: false` |
+| Writable scratch | `--tmpfs <cwd>:rw` (ephemeral), only when `readonly_rootfs` | a `:rw` host bind for persistence |
+| Privilege escalation | `--security-opt no-new-privileges` | (not exposed) |
+| PIDs | `--pids-limit 512` (fork-bomb guard) | `pids_limit:` (`nil` omits the flag) |
+| Memory / CPU | unset (host decides) | `memory:` / `cpus:` |
+| User / uid | left to the image | `user:` (opt-in defense-in-depth) |
+| Host binds | **read-only** (`:ro`) | per-bind `{ to:, mode: :rw }` |
+| Env vars | none | `env: { "KEY" => "val" }` → one `-e KEY=val` per entry |
+
+Bind spec forms:
+
+```ruby
+binds: { "/host/proj" => "/workspace/proj" }                       # -> :ro
+binds: { "/host/proj" => { to: "/workspace/proj", mode: :rw } }    # -> :rw
+```
+
+**Non-root is not forced.** The image's own uid is respected; `user:` is an opt-in. The other
+hardening (`--cap-drop ALL`, `--security-opt no-new-privileges`, `--read-only`,
+`--network none`) applies **regardless of uid**.
+
+Every argument is passed to `Open3` as an **array**, never string-interpolated, so file
+contents and commands can't break out of the argv. Paths are expanded against the container
+`cwd` and a path that escapes raises `SecurityError`. A denied/failed **tool** op surfaces as
+`{ error: ... }` through the gated tool layer; the **sandbox** itself raises only on misuse —
+a missing binary (`Nexo::ConfigurationError` naming the binary), a path escape (`SecurityError`),
+or a container start failure (`Nexo::Error`).
+
+### Lifecycle — ephemeral by default, opt-in reconnect
+
+The container starts **lazily** on first tool use and its id is memoized.
+
+- **Ephemeral (default, `reconnect: false`):** `close` force-removes the container
+  (`<bin> rm -f <id>`) and clears the memo. Idempotent — safe with nothing started or called
+  twice. A workflow driving a container-backed agent through `run_agent` tears the container
+  down automatically when the run ends (`Agent#close` / `run_agent`'s `ensure`).
+- **Reconnect (`name:` + `reconnect: true`):** on start the sandbox first inspects for an
+  existing container by name and reuses/restarts it instead of creating a new one; `close`
+  leaves it running/stopped so a later sandbox with the same name reattaches. The default
+  container name is `nexo-<run-id>`.
+
+### Honest caveats
+
+- **Network-none breaks installs.** `npm install` / `bundle install` need egress; with the
+  default `network: :none` they fail. Pass `network: :bridge` or bake dependencies into the
+  image.
+- **Read-only rootfs needs the scratch.** With `--read-only`, only the tmpfs at `cwd` (and any
+  `:rw` bind) is writable, and the tmpfs is **ephemeral** — lost on `close`. Persist via a
+  `:rw` bind (this is where staged files and artifacts land).
+- **Non-root is recommended, not forced.** The default hardening holds regardless of uid; set
+  `user:` for defense-in-depth.
+- **Apple `container` parity is verified, not assumed** — especially networking. Confirm the
+  flag/subcommand against Apple's CLI before trusting the `:apple` runtime in production.
+
+Live container runs are exercised by `NEXO_LIVE`-gated smoke
+(`test/sandboxes/container_live_test.rb`); the core suite asserts argv construction with no
+daemon. See `examples/container_review.rb` for a runnable end-to-end example.
 
 ## Loop backends — swap the engine, not the agent
 
