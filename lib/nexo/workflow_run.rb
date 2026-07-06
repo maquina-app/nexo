@@ -16,14 +16,21 @@ if defined?(::ActiveRecord::Base)
       # The status vocabulary a run moves through. The sync path is
       # pending → running → done/failed; run_later adds "queued" (enqueued, not yet
       # picked up); reconcile_interrupted! rewrites orphaned "running" runs to
-      # "interrupted". Documentation only — status is a plain string column.
-      STATUSES = %w[pending queued running done failed interrupted].freeze
+      # "interrupted"; suspend! adds "suspended" (paused, awaiting resume — Spec 13,
+      # NOT a failure). There is no distinct "resumed" status: resume re-enters
+      # execute, transitioning running → done (or suspended again). Documentation
+      # only — status is a plain string column.
+      STATUSES = %w[pending queued running done failed interrupted suspended].freeze
 
       # Status scopes for a host UI (Spec 11 R3) — Nexo dictates no controllers or
       # views, only these query helpers.
       scope :queued, -> { where(status: "queued") }
       scope :running, -> { where(status: "running") }
       scope :finished, -> { where(status: %w[done failed]) }
+
+      # Paused runs awaiting external input (Spec 13) — a host UI lists these to
+      # surface a "needs approval" / "resume" affordance.
+      scope :suspended, -> { where(status: "suspended") }
 
       # The primary key is a UUID string assigned through the shared
       # {Nexo.generate_run_id} helper, keeping id shape identical across stores.
@@ -37,6 +44,23 @@ if defined?(::ActiveRecord::Base)
       def running? = status == "running"
 
       def queued? = status == "queued"
+
+      # True while the run is paused awaiting external input (Spec 13).
+      def suspended? = status == "suspended"
+
+      # The reason recorded when the run was suspended (Spec 13), or nil when the
+      # run was never suspended. Reads the reserved "__suspend__" state entry,
+      # tolerating a nil state (a run predating the state column).
+      def suspend_reason
+        state&.dig("__suspend__", "reason")
+      end
+
+      # The stored result of a completed +checkpoint(name)+ (Spec 13), or nil when
+      # that checkpoint has not run yet. Tolerates string/symbol +name+ like the
+      # +artifact+ reader; the reserved "__suspend__" key is not a checkpoint.
+      def checkpoint_result(name)
+        state&.[](name.to_s)
+      end
 
       # Finds a recorded artifact (Spec 7) by name, tolerating string- or
       # symbol-keyed hashes so it works before and after a json round-trip. Returns
@@ -77,6 +101,15 @@ if defined?(::ActiveRecord::Base)
       # Persists the artifact index without bumping +updated_at+, mirroring
       # {#save_events!}.
       def save_artifacts!
+        save!(touch: false)
+      end
+
+      # Persists the run's checkpoint/suspend +state+ (Spec 13) without bumping
+      # +updated_at+ — checkpoints accrue during a run just like events/artifacts,
+      # so each shouldn't count as a full touch. The +state+ json object is
+      # read/written by {Workflow#checkpoint} with string keys, so it round-trips
+      # identically to the Memory store.
+      def save_state!
         save!(touch: false)
       end
 

@@ -364,6 +364,36 @@ Match the agent to the file type touched; skip an agent when no file of its type
   default). Container `cwd` defaults to `/workspace` (a CONTAINER path), NEVER the host `@cwd` — the host
   dir enters only via a `binds:` entry.
 
+- **`Workflow.resume` uses `Object.const_get`, NOT `String#constantize` (Spec 13).** The offline core
+  suite does NOT load `active_support/core_ext/string`, so `String.method_defined?(:constantize)` is
+  **false** offline (verified) — a `constantize`-based resume would blow up in the Memory-store tests.
+  `resume` therefore does `Object.const_get(run.workflow_class)` (handles `Foo::Bar` qualified names),
+  mirroring `Nexo::Session` (Spec 10). `WorkflowJob#perform` keeps `constantize` — it only runs under
+  Rails, where the runtime check `require`s the core_ext. `resume` re-enters `execute` from the top with
+  `resume_input:`; only `checkpoint`-guarded work is skipped (it's re-entry, NOT replay — no continuation
+  capture).
+- **`state` mirrors the Spec 7 `artifacts` seam exactly (Spec 13).** `:state` is a Memory `Run` Struct
+  member (init `{}`, `save_state! = nil`); the AR model adds a `json` `state` column + `save_state! =
+  save!(touch: false)`. `checkpoint`/`suspend!` read/write **string** keys (AR json objects round-trip
+  string-keyed — Group 0 verified in `workflow_run_model_check.rb`), so `store.key?(key)` matches Memory.
+  `"__suspend__"` is a RESERVED state key (suspend metadata) — a checkpoint must never use that name.
+  `checkpoint` persists **immediately** (like artifacts, not buffered like events).
+- **`Suspended` is a non-failure outcome caught BEFORE the generic rescue (Spec 13).** In `Workflow.execute`
+  the `rescue Nexo::Workflow::Suspended` sits **above** `rescue => e`, marks `"suspended"` (never
+  `"failed"`), merges `__suspend__` metadata, `notify_status`, and **returns the run — never re-raises**.
+  The `$!`-aware `ensure`-flush stays verbatim: a suspended run still flushes buffered events and `$!` is
+  nil there (the signal is caught, not propagating). `Workflow.run`'s failure contract (raise → `"failed"`
+  + re-raise) is byte-for-byte unchanged. Adding `"suspended"` to `WorkflowRun::STATUSES` means the
+  `workflow_runtime_check.rb` STATUSES equality assertion must be updated too (it's exact-match).
+- **The `nexo:state` migration does NOT hardcode the Rails version (Spec 13).** Unlike the older
+  `add_artifacts_*` template (`ActiveRecord::Migration[8.0]`), Spec 13's `add_state_to_nexo_workflow_runs`
+  uses `ActiveRecord::Migration[ActiveRecord::Migration.current_version]` (spec R1: "Never hardcode a
+  Rails version"). The `state` column is also added to the fresh-install `create_nexo_workflow_runs.rb`
+  template, so the model checks (which run that create migration) get `state` without running the additive
+  one. `resume_later` carries `[run_id, input]` as ActiveJob args; `WorkflowJob#perform(run_id,
+  resume_input = nil)` dispatches to `Workflow.resume` when the second arg is present (nil sentinel =
+  original enqueue path, backward compatible).
+
 ## Verified APIs (Spec 5)
 
 - **ruby_llm 1.16.0 HTTP adapter is fiber-friendly.** `RubyLLM::Connection` builds Faraday with

@@ -25,5 +25,7 @@ class WorkflowRuntimeRailsTest < Minitest::Test
     assert_match(/NOTIFICATIONS_OK/, out)
     assert_match(/HELPERS_OK/, out)
     assert_match(/ARTIFACTS_OK/, out)
+    assert_match(/SUSPEND_RESUME_OK/, out) # Spec 13
+    assert_match(/RESUME_LATER_OK/, out) # Spec 13
   end
 end

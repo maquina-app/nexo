@@ -53,3 +53,17 @@ arts = Nexo::WorkflowRun.find(run.id).artifacts
 abort "FAIL: artifacts persisted (#{arts.inspect})" unless arts.map { |a| a["name"] } == %w[digest.md report.md]
 abort "FAIL: artifacts string keys (#{arts.first.keys.inspect})" unless arts.first.keys.sort == %w[at content name]
 puts "ARTIFACTS_OK"
+
+# state defaults to {} and round-trips string-keyed through the json column, with
+# save_state! (touch-free) mirroring the events/artifacts path (Spec 13). Group 0
+# VERIFY: confirm string keys survive so checkpoint's store.key?(key) matches Memory.
+abort "FAIL: state default (#{Nexo::WorkflowRun.find(run.id).state.inspect})" unless Nexo::WorkflowRun.find(run.id).state == {}
+run.state = (run.state || {}).merge("fetch" => "doc-1", "__suspend__" => {"reason" => "wait"})
+run.save_state!
+st = Nexo::WorkflowRun.find(run.id).state
+abort "FAIL: state persisted (#{st.inspect})" unless st["fetch"] == "doc-1"
+abort "FAIL: state string keys (#{st.keys.sort.inspect})" unless st.keys.sort == %w[__suspend__ fetch]
+abort "FAIL: state key? (checkpoint match)" unless st.key?("fetch")
+abort "FAIL: suspend_reader" unless Nexo::WorkflowRun.find(run.id).suspend_reason == "wait"
+abort "FAIL: checkpoint_result reader" unless Nexo::WorkflowRun.find(run.id).checkpoint_result("fetch") == "doc-1"
+puts "STATE_OK"
