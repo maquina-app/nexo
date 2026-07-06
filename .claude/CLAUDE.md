@@ -338,6 +338,32 @@ Match the agent to the file type touched; skip an agent when no file of its type
   `TurboBroadcaster.subscribe!` no-ops without `Turbo::StreamsChannel`, so Turbo mirroring is verified
   only at the notification layer.
 
+- **`Sandboxes::Container` is a normal autoloaded class + daemon-free offline suite (Spec 12).**
+  `lib/nexo/sandboxes/container.rb` → `Nexo::Sandboxes::Container` drops beside `virtual.rb`/`local.rb`
+  — no `loader.ignore`, no inflection (it's plain Ruby: `require "open3"` + `"timeout"`, no Rails, no
+  gem dep; the runtime is a HOST binary). The core suite NEVER touches a daemon: argv construction is
+  extracted into pure private methods (`run_argv`, `exec_argv`, `bind_spec`, `guard_path`) that
+  `test/sandboxes/container_argv_test.rb` + `test/agent_container_test.rb` assert offline. Live runs
+  are `NEXO_LIVE`-gated (`test/sandboxes/container_live_test.rb`), skipped without the binary — so they
+  don't run in this repo's CI (no docker/container installed here). Every `Open3` call passes an argv
+  **array**, never string-interpolated, so file contents/commands can't break the argv. Missing binary
+  → `ConfigurationError` (NOT `MissingDependencyError`, which is gems-only); path escape → `SecurityError`;
+  start failure → `Nexo::Error`. `image:` is required (no default image) → the bare `sandbox :docker`
+  shorthand (no opts) resolves the `:docker` branch but raises `ConfigurationError` for the missing
+  image; the usable form is the options Hash `sandbox :docker, image: "..."`.
+- **Container reconnect + Apple parity are VERIFY-before-merge (Spec 12).** No live daemon existed when
+  this shipped, so the reconnect commands (`docker ps -aqf name=<name>` inspect-by-name, `docker start`
+  restart-if-stopped in `reconnect_existing`) and Apple `container` flag/subcommand parity — especially
+  `--network` — are encoded from the reference CLI mapping but NOT confirmed against a running daemon.
+  Confirm both before trusting the reconnect path / the `:apple` runtime in production. `reconnect_existing`
+  fails OPEN (rescues to nil → falls through to a fresh `run`).
+- **Container DSL: the `sandbox` macro now takes keywords (Spec 12).** `sandbox(value = nil, **opts)`
+  stores a bare value when `opts` is empty (byte-for-byte the old `:virtual`/`:local`/instance forms),
+  else a `{type: value, **opts}` Hash. `resolve_sandbox` gained `:docker`/`:apple`/`Hash` branches, all
+  routed through `resolve_sandbox_hash` (single source of the type→runtime map + the `container_cwd`
+  default). Container `cwd` defaults to `/workspace` (a CONTAINER path), NEVER the host `@cwd` — the host
+  dir enters only via a `binds:` entry.
+
 ## Verified APIs (Spec 5)
 
 - **ruby_llm 1.16.0 HTTP adapter is fiber-friendly.** `RubyLLM::Connection` builds Faraday with

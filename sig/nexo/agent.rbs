@@ -3,7 +3,7 @@ module Nexo
     def self.model: (?untyped value) -> untyped
     def self.assume_model_exists: (?untyped value) -> untyped
     def self.provider: (?untyped value) -> untyped
-    def self.sandbox: (?untyped value) -> untyped
+    def self.sandbox: (?untyped value, **untyped opts) -> untyped
     def self.permissions: (?untyped value) -> untyped
     def self.instructions: (?String value) -> String?
 
