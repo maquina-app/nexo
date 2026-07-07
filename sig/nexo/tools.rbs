@@ -19,5 +19,10 @@ module Nexo
       def initialize: (sandbox: Sandbox, permissions: Permissions) -> void
       def execute: (pattern: String) -> Hash[Symbol, untyped]
     end
+
+    class WebSearch < RubyLLM::Tool
+      def initialize: (sandbox: Sandbox, permissions: Permissions, backend: untyped) -> void
+      def execute: (query: String) -> Hash[Symbol, untyped]
+    end
   end
 end
