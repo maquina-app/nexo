@@ -516,6 +516,24 @@ at the `cwd` macro, default `Dir.pwd`). It is resolved **lazily**: a data-only
 workflow that never touches files builds nothing, so the plain `emit`/`result`
 path stays free.
 
+A `Workflow` accepts the **same sandbox forms as an `Agent`** — they share one
+resolver (`Nexo::Sandboxes.resolve`), so the two can't drift. Alongside
+`:virtual`/`:local` and a pre-built `Nexo::Sandbox` instance, a workflow can
+declare a hardened container just like an agent:
+
+```ruby
+class BuildInContainer < Nexo::Workflow
+  sandbox :docker, image: "node:22-slim"   # or :apple, or { type: :docker, ... }
+  def call(_payload) = { ok: true }
+end
+```
+
+The container runs its tools — and the shared sandbox any agent driven via
+`run_agent` inherits — inside the same hardened image (`network: none`, dropped
+capabilities, read-only rootfs by default). As with an agent, `image:` is
+required, and the host `cwd` applies only to `:local`: a container keeps its own
+`/workspace` (see [Container sandbox](#container-sandbox--docker--apple-container)).
+
 `stage(files)` writes provided inputs into that sandbox *before* your `#call`
 work begins. It takes either a `{ "path" => "content" }` hash or an array of
 `{ path:, content: }` hashes, emits a `:staged` event with the count, and returns

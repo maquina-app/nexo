@@ -1,0 +1,5 @@
+module Nexo
+  module Sandboxes
+    def self.resolve: (untyped value, ?cwd: String) -> Sandbox
+  end
+end

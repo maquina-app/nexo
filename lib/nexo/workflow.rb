@@ -57,11 +57,16 @@ module Nexo
     class << self
       # The sandbox this workflow's runs stage inputs into and write artifacts to
       # (Spec 7). Follows the same read-vs-write ivar convention as {Agent}'s
-      # macros: with no argument it reads (default +:virtual+ — safe, in-memory);
-      # with one it sets. Resolution is lazy — a data-only workflow that never
-      # stages or emits artifacts builds nothing (see {#sandbox}).
-      def sandbox(value = nil)
-        value.nil? ? (@sandbox || :virtual) : (@sandbox = value)
+      # macros: with no argument (and no opts) it reads (default +:virtual+ —
+      # safe, in-memory); with a bare value it stores a symbol/instance; with
+      # keywords it stores an options Hash (+{ type: value, **opts }+) — e.g.
+      # +sandbox :docker, image: "node:22-slim"+ (Spec 15). Resolution is lazy —
+      # a data-only workflow that never stages or emits artifacts builds nothing
+      # (see {#sandbox}).
+      def sandbox(value = nil, **opts)
+        return @sandbox || :virtual if value.nil? && opts.empty?
+
+        @sandbox = opts.empty? ? value : {type: value, **opts}
       end
 
       # The working directory used when this workflow's sandbox is +:local+. The
@@ -546,18 +551,11 @@ module Nexo
       {"content" => content.to_s}
     end
 
-    # Mirrors {Agent#resolve_sandbox}: a pre-built {Sandbox} passes through;
-    # +:virtual+ builds an in-memory {Sandboxes::Virtual}; +:local+ builds a
-    # {Sandboxes::Local} rooted at the class-level {.cwd}. An unknown value is a
-    # configuration error.
-    def resolve_sandbox(value)
-      return value if value.is_a?(Sandbox)
-
-      case value
-      when :virtual then Sandboxes::Virtual.new
-      when :local then Sandboxes::Local.new(cwd: self.class.cwd)
-      else raise ConfigurationError, "unknown sandbox: #{value.inspect}"
-      end
-    end
+    # Resolves the class-level {.sandbox} declaration via the shared resolver
+    # (Spec 15), passing the class-level {.cwd} as the host working directory
+    # (used only by +:local+; container tiers keep their own +/workspace+
+    # default). A workflow now resolves the same forms as an {Agent} —
+    # +:virtual+/+:local+/+:docker+/+:apple+/Hash/instance.
+    def resolve_sandbox(value) = Nexo::Sandboxes.resolve(value, cwd: self.class.cwd)
   end
 end
