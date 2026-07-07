@@ -99,8 +99,10 @@ access until you explicitly opt in.
   when you use the `skills` macro
 - [ruby_llm-mcp](https://github.com/patvice/ruby_llm-mcp) — optional, only when you attach
   an MCP server with the `mcp` macro
-- [ruby_llm-agent_sdk](https://github.com/crmne/ruby_llm) — optional, only when you choose
-  the Anthropic-oriented `Loops::AgentSDK` backend
+- `ruby_llm-agent_sdk` — optional (not yet published), only when you choose the
+  Anthropic-oriented `Loops::AgentSDK` backend. Its exact API is verified-on-install
+  (see [Loops](docs/loops.md)); until it ships, `Loops::AgentSDK` raises a clear
+  `Nexo::MissingDependencyError`.
 
 ## Status
 

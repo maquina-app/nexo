@@ -56,7 +56,7 @@ the allow-list:
 ## JS-heavy pages — use an MCP fetch server instead
 
 `Tools::Fetch` reads static HTML; it does **not** render JavaScript. For JS-heavy pages,
-compose an [MCP fetch/browser server](mcp.md) (Spec 6) instead — it runs its own
+compose an [MCP fetch/browser server](mcp.md) instead — it runs its own
 headless renderer and Nexo gates it through the separate MCP axis:
 
 ```ruby
@@ -70,7 +70,7 @@ end
 `webmock` is a **dev/test-only** dependency (the offline suite stubs all HTTP); it is not a
 runtime dependency — `Tools::Fetch` uses only stdlib.
 
-# Web search — the `search` tool
+## Web search — the `search` tool
 
 `Nexo::Tools::WebSearch` gives an agent a vendor-neutral way to **discover** URLs. It authorizes
 a new, default-denied `:search` capability, then delegates the query to a **host-injected

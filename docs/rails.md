@@ -108,15 +108,16 @@ Nexo.configure { |c| c.broadcast_events = true }   # opt in; requires turbo-rail
 without Nexo dictating controllers or views:
 
 ```ruby
-Nexo::WorkflowRun::STATUSES  # => %w[pending queued running done failed interrupted]
+Nexo::WorkflowRun::STATUSES  # => %w[pending queued running done failed interrupted suspended]
 
 Nexo::WorkflowRun.queued     # scope: status "queued"
 Nexo::WorkflowRun.running    # scope: status "running"
 Nexo::WorkflowRun.finished   # scope: status "done" or "failed"
+Nexo::WorkflowRun.suspended  # scope: status "suspended" (paused, awaiting resume)
 
-run.queued?  run.running?  run.done?  run.failed?   # predicates
+run.queued?  run.running?  run.done?  run.failed?  run.suspended?   # predicates
 
-# Artifact access (Spec 7 artifacts) — content only; serving files stays your
+# Artifact access — content only; serving files stays your
 # controller's job (Nexo ships no artifact routes/controllers):
 run.artifact("digest.md")          # => {"name" =>, "content" =>, "at" =>} or nil
 run.artifact_content("digest.md")  # => "…the body…" or nil

@@ -56,7 +56,9 @@ carries the run id plus the (json-safe) resume input; the payload still lives on
 run:
 
 ```ruby
-DocumentApproval.resume_later(run.id, approved: true, queue: :nexo)
+# The resume input is a positional Hash (queue: is the only keyword), so pass it
+# as `{ approved: true }` — bare `approved: true` would bind as an unknown keyword.
+DocumentApproval.resume_later(run.id, { approved: true }, queue: :nexo)
 ```
 
 See [`examples/approval_workflow.rb`](../examples/approval_workflow.rb) for the full
@@ -65,7 +67,7 @@ offline flow (`ruby -Ilib examples/approval_workflow.rb`).
 ## Durable **agent** approval — `:approve` (bridge a mid-run gate to a suspend)
 
 The example above suspends at an **explicit** `suspend!` the workflow author placed.
-Spec 16 adds the durable, cross-process sibling of `:ask` for the case where a
+The `:approve` mode adds the durable, cross-process sibling of `:ask` for the case where a
 `run_agent`-driven agent hits a permission gate **mid-loop** and you want that to
 **pause the run for a human**, not run unchecked and not block a worker. Declare the
 agent under the `:approve` mode:
@@ -93,7 +95,10 @@ run = ApprovedWrite.run                       # agent reaches the write gate, ru
 run.status                                     # => "suspended"
 run.state["__suspend__"]["reason"]             # => "approval: notes.txt"
 run.state["__approval__"]                      # => { "capability" => "write",
-                                               #      "tool" => "notes.txt", "args" => {…} }
+                                               #      "tool" => "notes.txt", "args" => nil }
+# "args" carries the tool call arguments only for an MCP-tool approval; a sandbox
+# capability gate (write/shell/fetch/search) records "args" => nil — the pending
+# call is identified by "capability" + "tool".
 
 # ...a human approves — possibly in another process (resume_later for the AR store):
 resumed = ApprovedWrite.resume(run.id, approved: true)
@@ -129,7 +134,7 @@ resumed.status                                 # => "done" (the gate allowed the
   gate the re-driven agent hits first. A *second* gate after an approved first one simply
   **suspends again** — the next resume decides it. There is no per-tool decision granularity
   in v1.
-- **Cross-process approval needs the ActiveRecord store + ActiveJob** (like all of Spec 13).
+- **Cross-process approval needs the ActiveRecord store + ActiveJob** (like all durable resume).
   In-process `resume` works with the Memory store; a Memory run does not survive the process.
 - **Branch depends on upstream `ruby_llm`.** This works because `ruby_llm`'s tool loop lets a
   tool `execute` exception propagate out of `chat.ask` (verified, 1.16.0). If a future
