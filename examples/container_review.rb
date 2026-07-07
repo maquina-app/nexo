@@ -19,29 +19,35 @@ class ContainerReviewer < Nexo::Agent
   model ENV.fetch("NEXO_MODEL") # provider-neutral; e.g. gemma3:12b via Ollama
   permissions :read_only        # safe default
 
-  # Run inside a disposable container. The host repo enters ONLY as a read-only
-  # bind at /workspace/repo — the model can read it but can't modify your host.
-  sandbox (ENV["NEXO_CONTAINER_RUNTIME"] || "docker").to_sym,
-    image: ENV.fetch("NEXO_CONTAINER_IMAGE", "node:22-slim"),
-    binds: {Dir.pwd => {to: "/workspace/repo", mode: :ro}}
-
   instructions <<~PROMPT
     You run inside a locked-down container. Read files under /workspace/repo and
     report issues. You have no network and cannot modify the host.
   PROMPT
 end
 
+# Builds the container sandbox declaration for a given host repo path. The repo
+# enters ONLY as a read-only bind at /workspace/repo — the model can read it but
+# can't modify your host. (Built per-run, not in the class body, so the repo
+# argument is honored: a class-level `binds: {Dir.pwd => ...}` would freeze the
+# load-time CWD into the mount.)
+def container_sandbox_for(repo)
+  {
+    type: (ENV["NEXO_CONTAINER_RUNTIME"] || "docker").to_sym,
+    image: ENV.fetch("NEXO_CONTAINER_IMAGE", "node:22-slim"),
+    binds: {repo => {to: "/workspace/repo", mode: :ro}}
+  }
+end
+
 if __FILE__ == $PROGRAM_NAME
   abort "set NEXO_LIVE=1 to run this live example" unless ENV["NEXO_LIVE"]
 
-  repo = ARGV[0] || Dir.pwd
-  Dir.chdir(repo) do
-    agent = ContainerReviewer.new
-    begin
-      response = agent.prompt("Review the code under /workspace/repo and summarize any issues.")
-      puts response.content
-    ensure
-      agent.close # force-removes the ephemeral container
-    end
+  repo = File.expand_path(ARGV[0] || Dir.pwd)
+  agent = ContainerReviewer.new(sandbox: container_sandbox_for(repo))
+  begin
+    response = agent.prompt("Review the code under /workspace/repo and summarize any issues.")
+    puts response.content
+  ensure
+    agent.close         # releases MCP clients (none here)
+    agent.sandbox.close # force-removes the ephemeral container — Agent#close does NOT do this
   end
 end
