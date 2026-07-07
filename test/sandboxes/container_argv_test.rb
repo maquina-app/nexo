@@ -22,7 +22,8 @@ class ContainerArgvTest < Minitest::Test
     assert_includes joined, "--tmpfs /workspace:rw"
     assert_includes joined, "--pids-limit 512"
     assert_includes joined, "-w /workspace"
-    assert_equal %w[node:22-slim sleep infinity], argv.last(3)
+    assert_equal %w[tail -f /dev/null], argv.last(3)
+    assert_equal "node:22-slim", argv[-4]
   end
 
   def test_binds_default_to_read_only

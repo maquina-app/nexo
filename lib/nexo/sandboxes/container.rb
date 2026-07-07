@@ -105,7 +105,8 @@ module Nexo
       # Force-removes the container (ephemeral default) and clears the memo.
       # Idempotent: safe with nothing started or called more than once. With
       # +reconnect: true+ the container is left in place for a later sandbox to
-      # reattach by name.
+      # reattach by its exact identity label. Teardown stays id-based
+      # (+<bin> rm -f <cid>+): the memoized id is exact and unambiguous.
       def close
         if @cid && !@reconnect
           system(@bin, "rm", "-f", @cid, out: File::NULL, err: File::NULL)
@@ -147,7 +148,11 @@ module Nexo
       # no daemon. Hardened flags come first; every loosening knob appends only
       # when set.
       def run_argv
+        # The identity label goes immediately after --name and before every
+        # loosening/hardening knob — it is what makes an *exact* reconnect
+        # possible (see #reconnect_argv). The key is exactly +nexo.sandbox.id+.
         argv = [@bin, "run", "-d", "--name", @name,
+          "--label", "nexo.sandbox.id=#{@name}",
           "--network", @network.to_s,
           "--cap-drop", "ALL",
           "--security-opt", "no-new-privileges"]
@@ -159,7 +164,10 @@ module Nexo
         argv += ["--user", @user.to_s] unless @user.nil?
         @env.each { |key, value| argv += ["-e", "#{key}=#{value}"] }
         @binds.each { |host, dst| argv += ["-v", bind_spec(host, dst)] }
-        argv += ["-w", @cwd, @image, "sleep", "infinity"]
+        # +tail -f /dev/null+ is busybox-portable (Alpine, Debian-slim, ruby-slim
+        # all hold open); +sleep infinity+ is NOT busybox-safe and exits at once
+        # on a slim image, failing every later +exec+.
+        argv += ["-w", @cwd, @image, "tail", "-f", "/dev/null"]
         argv
       end
 
@@ -172,12 +180,6 @@ module Nexo
 
       # Lazily starts (or, when reconnecting, reuses) the container and memoizes
       # its id. Raises Nexo::Error on a start failure.
-      #
-      # VERIFY-before-merge (Group 0, needs a live daemon): the inspect-by-name and
-      # start-if-stopped commands are encoded as sketched from the reference CLI
-      # mapping. Confirm +docker ps -aqf name=<name>+ / +docker start <id>+ and the
-      # Apple +container+ equivalents against a running daemon before the reconnect
-      # path is trusted.
       def ensure_started!
         return @cid if @cid
 
@@ -190,21 +192,56 @@ module Nexo
         @cid = out.strip
       end
 
-      # Reconnect path: find a container previously created under +@name+ and, if
-      # present, restart it (a no-op when already running) and reuse its id.
-      # Returns nil when no such container exists, so +ensure_started!+ falls
-      # through to a fresh +run+. Errors here fail open to the create path.
+      # Reconnect path: find the container previously created under +@name+ by its
+      # EXACT identity label (never a name substring) and, if present, restart it
+      # (a no-op when already running) and reuse its id.
+      #
+      # * 0 matches  -> +nil+ (so +ensure_started!+ falls through to a fresh +run+).
+      # * 1 match    -> +start+ it and reuse that id.
+      # * >1 matches -> raise +Nexo::Error+; never guess which one to attach.
+      #
+      # Only genuinely unexpected errors (a daemon/CLI failure) fail open to the
+      # create path; the ambiguity raise and the Apple-posture +ConfigurationError+
+      # (both +Nexo::Error+ subclasses) are re-raised, never swallowed.
+      #
+      # Runtime isolation is inherent: the query shells the runtime-specific +@bin+
+      # (docker vs. Apple +container+), and each runtime keeps its own id namespace,
+      # so a +:docker+ container can never be reattached by an +:apple+ sandbox or
+      # vice versa.
       def reconnect_existing
-        out, _err, status = Open3.capture3(@bin, "ps", "-aqf", "name=#{@name}")
+        # Apple reconnect posture (Spec 20 R4/Q4): Apple's +container+ CLI has no
+        # live-verified exact +label=+ filter, and a name substring match is unsafe,
+        # so reconnect on +:apple+ raises rather than risk attaching the wrong
+        # container. Wire the verified mechanism here once Group 0 confirms one.
+        if @runtime == :apple
+          raise ConfigurationError,
+            "reconnect: true is not supported on the Apple :container runtime — " \
+            "it has no verified exact label filter (Spec 20 Q4); use runtime: :docker " \
+            "for reconnect, or run an ephemeral :apple sandbox (reconnect: false)"
+        end
+
+        out, _err, status = Open3.capture3(*reconnect_argv)
         return nil unless status.success?
 
-        id = out.strip.split("\n").first
-        return nil if id.nil? || id.empty?
+        ids = out.strip.split("\n").reject(&:empty?)
+        return nil if ids.empty?
+        if ids.size > 1
+          raise Nexo::Error, "ambiguous reconnect: #{ids.size} containers labeled #{@name}"
+        end
 
-        system(@bin, "start", id, out: File::NULL, err: File::NULL)
-        id
+        system(@bin, "start", ids.first, out: File::NULL, err: File::NULL)
+        ids.first
+      rescue Nexo::Error
+        raise
       rescue
         nil
+      end
+
+      # The exact reconnect query argv, built purely so the offline suite can assert
+      # it with no daemon. Matches by the exact identity label set in +run_argv+
+      # (+label=nexo.sandbox.id=<name>+), NOT a +name=<name>+ substring filter.
+      def reconnect_argv
+        [@bin, "ps", "-aqf", "label=nexo.sandbox.id=#{@name}"]
       end
 
       # Runs +cmd+ inside the started container, wall-clock bounded. Returns the
