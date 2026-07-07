@@ -357,6 +357,21 @@ Match the agent to the file type touched; skip an agent when no file of its type
   `--network` — are encoded from the reference CLI mapping but NOT confirmed against a running daemon.
   Confirm both before trusting the reconnect path / the `:apple` runtime in production. `reconnect_existing`
   fails OPEN (rescues to nil → falls through to a fresh `run`).
+- **Container reconnect is now label-exact + Apple-reconnect raises (Spec 20, supersedes the Spec 12
+  reconnect note above).** `run_argv` tags every container `--label nexo.sandbox.id=<name>` right after
+  `--name`; reconnect matches by the EXACT `label=` filter via the pure helper `reconnect_argv`
+  (`<bin> ps -aqf label=nexo.sandbox.id=<name>`), NOT the old `name=<name>` substring. Result handling:
+  0 → nil (fresh run), 1 → `start` + reuse, >1 → **raise `Nexo::Error`** (`ambiguous reconnect: <n>…`);
+  rescue is `rescue Nexo::Error; raise; rescue; nil` (fail-open only for daemon/CLI errors — the ambiguity
+  raise is never swallowed). Keep-alive is now `tail -f /dev/null` (busybox-portable), NEVER `sleep infinity`.
+  `reconnect: true` + `runtime: :apple` **raises `ConfigurationError`** at reconnect time (Apple has no
+  live-verified exact `label=` filter — R4/Q4 default posture; `ConfigurationError < Error` so it re-raises
+  through the `rescue Nexo::Error` arm). No cross-runtime reattach: the lookup shells the runtime-specific
+  `@bin`. Still NO live daemon in this env (Linux, no docker; Apple `container` is macOS-only) — the Apple
+  parity table in `docs/sandboxes.md` is recorded **UNVERIFIED**; no Apple divergence was fabricated (spec:
+  "no auto-filling from assumptions"). `close`/`rm -f` stays id-based. Offline argv proof:
+  `test/sandboxes/container_reconnect_argv_test.rb`; live docker smoke (decoy-excluded):
+  `test/sandboxes/container_reconnect_smoke.rb`.
 - **Container DSL: the `sandbox` macro now takes keywords (Spec 12).** `sandbox(value = nil, **opts)`
   stores a bare value when `opts` is empty (byte-for-byte the old `:virtual`/`:local`/instance forms),
   else a `{type: value, **opts}` Hash. `resolve_sandbox` gained `:docker`/`:apple`/`Hash` branches, all

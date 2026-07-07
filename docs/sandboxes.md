@@ -202,10 +202,22 @@ The container starts **lazily** on first tool use and its id is memoized.
   (`<bin> rm -f <id>`) and clears the memo. Idempotent — safe with nothing started or called
   twice. A workflow driving a container-backed agent through `run_agent` tears the container
   down automatically when the run ends (`Agent#close` / `run_agent`'s `ensure`).
-- **Reconnect (`name:` + `reconnect: true`):** on start the sandbox first inspects for an
-  existing container by name and reuses/restarts it instead of creating a new one; `close`
+- **Reconnect (`name:` + `reconnect: true`):** every container is tagged at `run` with an
+  **exact identity label** — `--label nexo.sandbox.id=<name>`. On start the sandbox looks up
+  that container by the **exact label filter** (`docker ps -aqf label=nexo.sandbox.id=<name>`),
+  **not** a name substring, and reuses/restarts it instead of creating a new one; `close`
   leaves it running/stopped so a later sandbox with the same name reattaches. The default
   container name is `nexo-<run-id>`.
+  - **Exact match, never a substring.** A container merely *named* `<name>x` is never
+    reattached — the label filter is exact. This closes the substring-reattach safety hole:
+    a long-lived session can never silently bind to the wrong environment.
+  - **Ambiguity raises, never guesses.** If more than one container carries the same identity
+    label, reconnect raises `Nexo::Error` (`ambiguous reconnect: <n> containers labeled
+    <name>`) rather than pick one. Zero matches falls through to a fresh `run`; a
+    daemon/CLI failure fails open to the create path.
+  - **Reconnect never crosses runtimes.** The lookup shells the runtime-specific binary and
+    each runtime keeps its own id namespace, so a `:docker` container is never reattached by an
+    `:apple` sandbox or vice versa.
 
 ### Honest caveats
 
@@ -219,6 +231,46 @@ The container starts **lazily** on first tool use and its id is memoized.
   `user:` for defense-in-depth.
 - **Apple `container` parity is verified, not assumed** — especially networking. Confirm the
   flag/subcommand against Apple's CLI before trusting the `:apple` runtime in production.
+- **Reconnect is Docker-only today.** `reconnect: true` combined with `runtime: :apple` raises
+  `Nexo::ConfigurationError` at the point reconnect would run. Apple's `container` CLI has no
+  **live-verified** exact `label=` filter, and a name-substring match is unsafe (it can attach
+  the wrong container), so reconnect refuses rather than risk it. Use `runtime: :docker` for
+  reconnect, or run an ephemeral `:apple` sandbox (`reconnect: false`). If a future Group 0 run
+  confirms an exact-identity mechanism on Apple, wire that verified mechanism instead of raising.
+
+#### Apple `container` parity table (Group 0)
+
+This table is filled **only** from live Group 0 runs against a real Apple `container` runtime —
+never from assumption. Apple's runtime is macOS-only and is **not** present in CI (or in the
+environment this spec shipped from), so the divergences below are **UNVERIFIED** and marked as
+such. Until a maintainer runs Group 0 on Apple hardware and records the results here, treat the
+`:apple` runtime as **Docker-flag-shaped but unconfirmed** and reconnect as unsupported (it
+raises). Do not silently trust any Apple hardening flag until its row reads `same`.
+
+| Subcommand / flag | Docker | Apple `container` | Divergence → action |
+|---|---|---|---|
+| `run -d` | ✓ | _unverified_ | verify before trust |
+| `exec -i` | ✓ | _unverified_ | verify before trust |
+| `ps -aqf` | ✓ | _unverified_ | verify before trust |
+| `start <id>` | ✓ | _unverified_ | verify before trust |
+| `rm -f <id>` | ✓ | _unverified_ | verify before trust |
+| `--label` / `label=` filter | ✓ (exact) | _unverified_ | **reconnect raises `ConfigurationError` until confirmed** |
+| `--network` | ✓ | _unverified_ | expected to diverge — verify before trust |
+| `--tmpfs` | ✓ | _unverified_ | verify before trust |
+| `--read-only` | ✓ | _unverified_ | verify before trust |
+| `--cap-drop` / `--cap-add` | ✓ | _unverified_ | verify before trust |
+| `--security-opt no-new-privileges` | ✓ | _unverified_ | verify before trust |
+| `--pids-limit` | ✓ | _unverified_ | verify before trust |
+| `-w` / `-v` / `-e` / `--user` / `--memory` / `--cpus` | ✓ | _unverified_ | verify before trust |
+
+Keep-alive (Docker, Group 0): `tail -f /dev/null` holds Alpine / Debian-slim / ruby-slim open —
+**to be confirmed on the maintainer's live daemon** (busybox-portable by construction; `sleep
+infinity` is not and was replaced for exactly this reason).
+
+> **Reduced-guarantee posture.** Where a hardening flag turns out to have no Apple equivalent,
+> the container stays functional but the guarantee is **reduced** — and that reduction is
+> documented here, never silently dropped. Until the table above is filled from a live run, a
+> maintainer must not assume any given `:apple` hardening flag is honored.
 
 Live container runs are exercised by `NEXO_LIVE`-gated smoke
 (`test/sandboxes/container_live_test.rb`); the core suite asserts argv construction with no
