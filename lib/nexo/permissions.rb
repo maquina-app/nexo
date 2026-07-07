@@ -119,8 +119,14 @@ module Nexo
     # * +:read_only+ — allow only names in +mcp_allow+ (default +[]+ ⇒ deny all).
     # * +:ask+       — defer to +on_ask+ with +(:mcp, {tool:, args:})+; a truthy
     #   return allows, anything else denies.
+    # * +:approve+   — durable sibling of +:ask+ on the MCP axis: names in
+    #   +mcp_allow+ are pre-approved, anything else needs a decision — undecided
+    #   raises Nexo::ApprovalRequired (→ Workflow#run_agent suspends), +approved+
+    #   allows, +approved: false+ Denies.
     #
-    # Returns +true+ when allowed; raises Denied otherwise.
+    # Returns +true+ when allowed; raises Denied otherwise. The +else+ is a
+    # fail-closed backstop: a future mode that forgets to extend this gate denies
+    # by default rather than silently allowing (the bug this replaced).
     def authorize_mcp!(tool_name, args = {})
       name = tool_name.to_s
 
@@ -136,6 +142,20 @@ module Nexo
           raise Denied, "mcp tool #{name} denied by user"
         end
         true
+      when :approve
+        # Pre-approved read tools pass; everything else routes through the same
+        # decision gate as #authorize!'s :approve branch.
+        return true if @mcp_allow.include?(name)
+
+        if @decision.nil?
+          raise Nexo::ApprovalRequired.new(:mcp, name, args)
+        elsif @decision[:approved]
+          true
+        else
+          raise Denied, "mcp tool #{name} not approved"
+        end
+      else
+        raise Denied, "mcp tool #{name} denied (unhandled mode #{@mode})"
       end
     end
   end

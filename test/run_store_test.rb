@@ -45,4 +45,23 @@ class RunStoreTest < Minitest::Test
     assert_equal "done", run.status
     assert_equal({"ok" => true}, run.result)
   end
+
+  # The Memory run exposes the same read helpers as the AR model, so host code
+  # written against a finished run behaves identically in plain Ruby and Rails.
+  def test_memory_run_mirrors_the_ar_read_helpers
+    run = @store.create(workflow_class: "Demo", payload: {})
+
+    run.update!(status: "suspended", state: {"__suspend__" => {"reason" => "wait"}, "fetch" => 7})
+    assert run.suspended?
+    refute run.done?
+    assert_equal "wait", run.suspend_reason
+    assert_equal 7, run.checkpoint_result(:fetch)
+
+    run.update!(status: "done")
+    run.push_artifact({"name" => "report.md", "content" => "hello"})
+    assert run.done?
+    assert_equal({"name" => "report.md", "content" => "hello"}, run.artifact("report.md"))
+    assert_equal "hello", run.artifact_content("report.md")
+    assert_nil run.artifact_content("absent.md")
+  end
 end

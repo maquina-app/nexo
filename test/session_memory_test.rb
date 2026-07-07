@@ -84,4 +84,19 @@ class SessionMemoryTest < Minitest::Test
 
     assert_nil session.close # delegates to Agent#close; idempotent, no MCP/fetch held
   end
+
+  # In the memory path a later resume reuses the FIRST resume's live chat (which
+  # owns any MCP/stdio clients). The session must adopt that owning agent, so
+  # #close tears down the agent that actually holds the resources — not the fresh,
+  # resource-less agent the second resume happened to construct.
+  def test_a_resumed_session_adopts_the_agent_that_owns_the_live_chat
+    first = Nexo::Session.resume(Assistant, "user-42")
+    owner_agent = first.instance_variable_get(:@agent)
+
+    second = Nexo::Session.resume(Assistant, "user-42")
+
+    # Same live chat AND same owning agent, so close/prompt hit the live object.
+    assert_same first.instance_variable_get(:@chat), second.instance_variable_get(:@chat)
+    assert_same owner_agent, second.instance_variable_get(:@agent)
+  end
 end

@@ -2,6 +2,7 @@
 
 require "test_helper"
 require "webmock/minitest"
+require "resolv"
 
 class ToolsFetchTest < Minitest::Test
   def perms(mode: :auto, allow: %i[read glob fetch])
@@ -54,5 +55,31 @@ class ToolsFetchTest < Minitest::Test
     result = tool(allow_hosts: %w[example.com]).execute(url: "file:///etc/passwd")
     assert result[:error]
     assert_includes result[:error], "http"
+  end
+
+  # An allow-listed host that resolves to a private/loopback/metadata address is
+  # still refused, even though the allow-list passed — the address guard uses the
+  # SAME resolution the connection is pinned to (no DNS-rebinding window).
+  def test_allowed_host_resolving_to_private_ip_is_refused
+    t = tool(allow_hosts: %w[internal.example.com])
+    Resolv.stub(:getaddresses, ["10.0.0.5"]) do
+      result = t.execute(url: "https://internal.example.com/x")
+      assert result[:error]
+      assert_includes result[:error], "private/loopback"
+    end
+    assert_not_requested :get, "https://internal.example.com/x"
+  end
+
+  # The cloud metadata address (link-local) and 0.0.0.0 (a stdlib-predicate gap)
+  # are both refused.
+  def test_metadata_and_zero_addresses_are_refused
+    t = tool(allow_hosts: %w[metadata.example.com])
+    ["169.254.169.254", "0.0.0.0"].each do |ip|
+      Resolv.stub(:getaddresses, [ip]) do
+        result = t.execute(url: "https://metadata.example.com/latest/meta-data/")
+        assert result[:error], "expected #{ip} to be refused"
+        assert_includes result[:error], "private/loopback"
+      end
+    end
   end
 end

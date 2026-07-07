@@ -27,6 +27,14 @@ module Nexo
       # Bodies are truncated to this many bytes (byteslice) before returning.
       MAX_BYTES = 200_000
 
+      # IP ranges IPAddr's loopback?/private?/link_local? predicates miss but that
+      # still reach host-local or carrier-internal services. Refused alongside them.
+      UNSAFE_RANGES = [
+        IPAddr.new("0.0.0.0/8"),     # "this host" — 0.0.0.0 reaches localhost on Linux
+        IPAddr.new("100.64.0.0/10"), # CGNAT (RFC 6598)
+        IPAddr.new("::/128")         # unspecified IPv6
+      ].freeze
+
       # +allow_hosts+ scopes which hosts the GET may reach (subdomain-aware);
       # +permissions+ gates the +:fetch+ capability. Both locks must open.
       def initialize(sandbox:, permissions:, allow_hosts: [])
@@ -50,11 +58,17 @@ module Nexo
         unless host_allowed?(uri.host)
           raise Permissions::Denied, "host #{uri.host} not in fetch allow-list"
         end
-        if private_address?(uri.host)
+
+        # Resolve ONCE: reject if any resolved address is unsafe, then connect
+        # pinned to that same vetted IP so DNS can't rebind to a private address
+        # between the check and the connect. Unresolvable hosts fail open to a
+        # hostname connect (which then errors naturally), preserving prior behavior.
+        addresses = resolve(uri.host)
+        if addresses.any? { |ip| unsafe_ip?(ip) }
           raise Permissions::Denied, "private/loopback address refused: #{uri.host}"
         end
 
-        {body: get(uri).byteslice(0, MAX_BYTES)}
+        {body: get(uri, addresses.first).byteslice(0, MAX_BYTES)}
       rescue Permissions::Denied => e
         {error: e.message}
       rescue Nexo::ApprovalRequired
@@ -83,23 +97,35 @@ module Nexo
         end
       end
 
-      # Resolve the host and refuse if any resolved address is loopback, private
-      # (RFC1918), or link-local. This guard ALWAYS applies, even to an
-      # allow-listed host. Resolution failure fails open to the normal connect path
-      # (a bad host then fails naturally as a fetch error).
-      def private_address?(host)
-        Resolv.getaddresses(host).any? do |ip|
-          addr = IPAddr.new(ip)
-          addr.loopback? || addr.private? || addr.link_local?
-        end
+      # Resolves +host+ to IPAddr objects. Resolution failure yields +[]+ so the
+      # caller fails open to a plain hostname connect (an invalid host then errors
+      # naturally as a fetch error) — matching the prior guard's fail-open posture.
+      def resolve(host)
+        Resolv.getaddresses(host).map { |ip| IPAddr.new(ip) }
       rescue
-        false
+        []
       end
 
-      def get(uri)
-        Net::HTTP.start(uri.host, uri.port, use_ssl: uri.scheme == "https",
-          open_timeout: 5, read_timeout: 10) do |http|
-          http.get(uri.request_uri, {"User-Agent" => "Nexo/#{Nexo::VERSION}"}).body.to_s
+      # Whether +addr+ (an IPAddr) is loopback, private (RFC1918 / ULA), link-local
+      # (incl. the 169.254.169.254 metadata address), or in one of the extra
+      # UNSAFE_RANGES the stdlib predicates miss.
+      def unsafe_ip?(addr)
+        addr.loopback? || addr.private? || addr.link_local? ||
+          UNSAFE_RANGES.any? { |range| range.include?(addr) }
+      end
+
+      # GETs +uri+, pinned to the pre-vetted +ip+ when one was resolved (so the
+      # socket connects to the exact address the guard approved — no re-resolution,
+      # no DNS-rebinding window). +ip+ may be nil for an unresolvable host, in which
+      # case Net::HTTP resolves the hostname itself and fails naturally.
+      def get(uri, ip = nil)
+        http = Net::HTTP.new(uri.host, uri.port)
+        http.ipaddr = ip.to_s if ip
+        http.use_ssl = uri.scheme == "https"
+        http.open_timeout = 5
+        http.read_timeout = 10
+        http.start do |conn|
+          conn.get(uri.request_uri, {"User-Agent" => "Nexo/#{Nexo::VERSION}"}).body.to_s
         end
       end
     end

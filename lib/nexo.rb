@@ -133,6 +133,11 @@ loader.ignore("#{__dir__}/nexo/workflow_run.rb")
 # required by engine initializers once ActiveJob / ActiveSupport are present.
 loader.ignore("#{__dir__}/nexo/workflow_job.rb")
 loader.ignore("#{__dir__}/nexo/turbo_broadcaster.rb")
+# The Engine (Rails-only, subclasses ::Rails::Engine) is the same guarded-body
+# pattern: Zeitwerk must NOT register an autoload it can't satisfy without Rails
+# (which would turn a plain-Ruby Nexo::Engine reference — or an eager_load — into
+# a Zeitwerk::NameError). It is required explicitly below when Rails is present.
+loader.ignore("#{__dir__}/nexo/engine.rb")
 loader.setup
 
 # Rails-optional: only pull in the engine when Rails is present. Loading Nexo

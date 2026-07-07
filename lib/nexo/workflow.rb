@@ -2,6 +2,7 @@
 
 require "time"
 require "erb"
+require "json"
 
 module Nexo
   # A finite-job lifecycle primitive. Subclass Workflow, implement
@@ -98,13 +99,20 @@ module Nexo
       #
       # This is not a liveness check: it cannot distinguish an orphaned run from
       # one genuinely running in another process. Run it once at boot, before any
-      # worker starts new runs. Returns the number of runs rewritten.
+      # worker starts new runs. Returns the number of runs rewritten and fires a
+      # +nexo.workflow.status+ notification per swept run so a dashboard learns of it.
       def reconcile_interrupted!
         if defined?(::ActiveRecord::Base) && defined?(Nexo::WorkflowRun)
-          Nexo::WorkflowRun.where(status: "running").update_all(status: "interrupted")
+          ids = Nexo::WorkflowRun.where(status: "running").pluck(:id)
+          Nexo::WorkflowRun.where(id: ids).update_all(status: "interrupted")
+          ids.each { |id| instrument_status(id, "interrupted") }
+          ids.size
         else
           running = Nexo::RunStore::Memory.runs.each_value.select { |run| run.status == "running" }
-          running.each { |run| run.update!(status: "interrupted") }
+          running.each do |run|
+            run.update!(status: "interrupted")
+            notify_status(run)
+          end
           running.size
         end
       end
@@ -129,6 +137,10 @@ module Nexo
       # documented +Workflow.run(doc_id: …, text: …)+ form working now that
       # +buffer_events:+ is a real keyword.
       def run(payload = nil, buffer_events: Nexo.config.buffer_workflow_events, **kwargs)
+        if payload && !kwargs.empty?
+          raise ArgumentError,
+            "pass the payload either as a positional Hash or as keywords, not both (got both)"
+        end
         payload ||= kwargs
         run = Nexo::RunStore.default.create(workflow_class: name, payload: stringify(payload))
         # Pass the caller's ORIGINAL symbolized payload (nested Ruby values intact)
@@ -158,10 +170,14 @@ module Nexo
           raise Nexo::MissingDependencyError,
             "run_later requires ActiveJob (Rails). Use `run` for synchronous execution."
         end
+        if payload && !kwargs.empty?
+          raise ArgumentError,
+            "pass the payload either as a positional Hash or as keywords, not both (got both)"
+        end
         payload ||= kwargs
         run = Nexo::RunStore.default.create(workflow_class: name, payload: stringify(payload))
         run.update!(status: "queued")
-        run.save! if run.respond_to?(:save!)
+        notify_status(run) # let a dashboard learn the run was enqueued
         job = Nexo::WorkflowJob
         job = job.set(queue: queue) if queue
         job.perform_later(run.id)
@@ -183,14 +199,25 @@ module Nexo
       # run doesn't survive the process); Memory resume is valid in-process.
       # Raises Nexo::Error for a run that is not currently +"suspended"+.
       def resume(run_id, input = {})
-        run = Nexo::RunStore.default.find(run_id)
+        store = Nexo::RunStore.default
+        run = store.find(run_id)
         unless run.status == "suspended"
           raise Nexo::Error, "run #{run_id} is not suspended (#{run.status})"
+        end
+        # Atomically claim the run (compare-and-set "suspended" → "running") so a
+        # concurrent resume/resume_later can't both re-enter #call and double-run
+        # the non-checkpointed work. The loser sees the claim fail and stops here.
+        unless store.claim_for_resume!(run)
+          raise Nexo::Error, "run #{run_id} is already being resumed"
         end
         # Object.const_get (not String#constantize) so resume works in plain Ruby
         # without ActiveSupport's core_ext — mirrors Nexo::Session (Spec 10).
         klass = Object.const_get(run.workflow_class)
-        klass.execute(run, payload: symbolize(run.payload), resume_input: input)
+        # Honor the original run's buffering choice (persisted by ::execute) so a
+        # run started with buffer_events: true under a fiber reactor doesn't revert
+        # to per-emit DB writes on resume; falls back to the config default.
+        buffered = (run.state || {}).fetch("__buffer_events__", Nexo.config.buffer_workflow_events)
+        klass.execute(run, payload: symbolize(run.payload), resume_input: input, buffer_events: buffered)
       end
 
       # Enqueues a durable, cross-process resume of a +"suspended"+ run (Spec 13 Q4),
@@ -228,15 +255,18 @@ module Nexo
       # (via #suspend!) leaves the run +"suspended"+ (a non-failure outcome) and
       # returns it — completed #checkpoints persist and are skipped on resume.
       def execute(run, payload:, buffer_events: Nexo.config.buffer_workflow_events, resume_input: {})
+        # Remember a non-default buffering choice on the run so a later resume
+        # (sync or job) honors it instead of silently reverting to the config
+        # default. Only written when buffering is on, so the unbuffered Spec 2 hot
+        # path takes no extra state write (see #resume, which reads it back).
+        persist_buffer_choice(run, buffer_events)
         run.update!(status: "running")
-        run.save! if run.respond_to?(:save!)
         notify_status(run)
 
         instance = new(run, buffer_events: buffer_events)
         instance.instance_variable_set(:@resume_input, resume_input)
         result = instance.call(payload)
-        run.update!(status: "done", result: stringify_keys(result))
-        run.save! if run.respond_to?(:save!)
+        run.update!(status: "done", result: stringify_keys(result), **cleared_state(run))
         notify_status(run)
         run
       rescue Nexo::Workflow::Suspended => s
@@ -249,13 +279,16 @@ module Nexo
           state: (run.state || {}).merge("__suspend__" => {
             "reason" => s.reason, "resume_key" => s.resume_key, "at" => Time.now.utc.iso8601
           }))
-        run.save! if run.respond_to?(:save!)
         notify_status(run)
         run
-      rescue => e
+      rescue StandardError, ScriptError, SecurityError => e
+        # The sandbox seam raises OUTSIDE StandardError: SecurityError on a path
+        # escape (Local/Container#absolute) and NotImplementedError (a
+        # ScriptError) from a shell-less sandbox. Catch those too, so an escaping
+        # #stage/#artifact or a Virtual shell marks the run "failed" instead of
+        # leaving it stranded in "running" in a live, healthy process.
         if run
           run.update!(status: "failed", error: e.message)
-          run.save! if run.respond_to?(:save!)
           notify_status(run)
         end
         raise
@@ -287,13 +320,45 @@ module Nexo
       # Broadcasts a run's status transition over ActiveSupport::Notifications
       # (Spec 11 R2) — a no-op without ActiveSupport, so the plain-Ruby core stays
       # decoupled. Carries only the run id and status; no payload/credentials. Fired
-      # by ::execute on each transition (running → done/failed).
+      # on every transition: pending → queued (::run_later), running → done/failed/
+      # suspended (::execute), and running → interrupted (::reconcile_interrupted!).
       def notify_status(run)
+        instrument_status(run.id, run.status)
+      end
+
+      # The id/status instrumenter both notify_status and the bulk reconcile path
+      # use, so a host dashboard sees queued and interrupted transitions too — not
+      # only the four ::execute fired before.
+      def instrument_status(run_id, status)
         return unless defined?(::ActiveSupport::Notifications)
 
         ::ActiveSupport::Notifications.instrument(
-          "nexo.workflow.status", run_id: run.id, status: run.status
+          "nexo.workflow.status", run_id: run_id, status: status
         )
+      end
+
+      # Persists a +true+ buffering choice under the reserved "__buffer_events__"
+      # state key (idempotent — written once) so ::resume can honor it. The
+      # unbuffered default writes nothing, keeping the Spec 2 hot path untouched.
+      def persist_buffer_choice(run, buffer_events)
+        return unless buffer_events && run.respond_to?(:state)
+        return if (run.state || {}).key?("__buffer_events__")
+
+        run.update!(state: (run.state || {}).merge("__buffer_events__" => true))
+      end
+
+      # The +state:+ update-attrs for a run reaching "done": strips the reserved
+      # suspend/approval/buffering metadata a prior pass may have left, so a
+      # finished run doesn't report a stale "suspended"/"pending approval". Returns
+      # +{}+ (no state write) when there is nothing reserved to clear.
+      def cleared_state(run)
+        return {} unless run.respond_to?(:state)
+
+        reserved = %w[__suspend__ __approval__ __buffer_events__]
+        state = run.state || {}
+        return {} unless reserved.any? { |k| state.key?(k) }
+
+        {state: state.except(*reserved)}
       end
 
       def stringify(hash) = hash.transform_keys(&:to_s)
@@ -344,7 +409,12 @@ module Nexo
       store = @run.state || {}
       return store[key] if store.key?(key)
 
-      value = yield
+      # JSON round-trip the block's value before storing so it reads back the SAME
+      # shape (string keys, no symbols) whether the run stays in the Memory store
+      # or is reloaded from the AR json column on a cross-process resume — and so
+      # the first pass and the resume pass see identical data. Values must be
+      # json-serializable (documented above).
+      value = json_normalize(yield)
       @run.state = store.merge(key => value)
       @run.save_state! if @run.respond_to?(:save_state!)
       value
@@ -417,7 +487,13 @@ module Nexo
     # the count (reusing the existing #emit path) and returns the number of
     # files staged.
     def stage(files)
-      pairs = files.is_a?(Hash) ? files.to_a : files.map { |f| [f[:path], f[:content]] }
+      pairs = if files.is_a?(Hash)
+        files.to_a
+      else
+        # Tolerate symbol- OR string-keyed hashes (e.g. an Array parsed from JSON),
+        # matching how the Hash form already accepts string paths.
+        files.map { |f| [f[:path] || f["path"], f[:content] || f["content"]] }
+      end
       pairs.each { |path, content| sandbox.write(path, content) }
       emit(:staged, count: pairs.size)
       pairs.size
@@ -511,15 +587,23 @@ module Nexo
     private
 
     # The +decision:+ kwargs handed to the agent built in #run_agent (Spec 16).
-    # Empty on the first (non-resume) pass ⇒ no decision ⇒ the +:approve+ gate
-    # suspends. On resume, #resume_input carries +{approved: …}+ (symbol-keyed
-    # in both the in-process and the job path), which becomes the agent's
-    # decision so the gate allows/denies. Never widens authority — it only answers
-    # an already-+:approve+ gate.
+    # A decision is produced ONLY when the resume input actually carries an
+    # +:approved+ key — so a data-only resume (e.g. +resume(id, doc_id: 42)+ for
+    # a +suspend!+ that was waiting on data, not approval) does NOT fabricate an
+    # +{approved: false}+ denial that would silently refuse a later +:approve+
+    # gate. Undecided ⇒ +{}+ ⇒ the gate suspends and asks a human. Never widens
+    # authority — it only answers an already-+:approve+ gate.
     def agent_decision_kwargs
       d = resume_input
-      d.empty? ? {} : {decision: {approved: !!d[:approved]}}
+      d.key?(:approved) ? {decision: {approved: !!d[:approved]}} : {}
     end
+
+    # Coerces a checkpoint value into exactly what it would become after a round
+    # trip through the AR json column (string keys, symbol values → strings), so
+    # the Memory store and the AR store return identical data on resume. A
+    # non-json-serializable value raises here (a clear, early failure) rather than
+    # silently diverging between stores.
+    def json_normalize(value) = JSON.parse(JSON.generate(value))
 
     # Broadcasts a single event over ActiveSupport::Notifications (Spec 11 R2) as it
     # is emitted — a no-op without ActiveSupport, so the plain-Ruby core's #emit is

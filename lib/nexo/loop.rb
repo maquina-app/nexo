@@ -17,7 +17,13 @@ module Nexo
     # Runs +prompt+ through +agent+ and returns the final response. +max_turns+
     # is a hint a backend may enforce as a hard cap (AgentSDK) or expose only as
     # observability (RubyLLM — see the turn-cap caveat in the README).
-    def run(agent:, prompt:, max_turns: 25, &on_event)
+    #
+    # +chat:+ (default +nil+) lets a Nexo::Session inject a hydrated, continuing
+    # chat so the loop runs over the persisted thread. It is part of the base
+    # contract so every backend accepts it: Loops::RubyLLM uses it; a backend
+    # that runs its own in-process loop (Loops::AgentSDK) rejects a non-nil chat
+    # rather than silently dropping the session's memory.
+    def run(agent:, prompt:, max_turns: 25, chat: nil, &on_event)
       raise NotImplementedError
     end
   end

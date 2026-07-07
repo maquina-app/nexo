@@ -59,11 +59,22 @@ module Nexo
 
       private
 
-      # Accepts a Hash or any object responding to +#to_h+; returns a row with
-      # stringified fields and the snippet truncated to MAX_SNIPPET.
+      # Accepts a Hash or any object responding to +#to_h+, with either symbol- or
+      # string-keyed fields (a backend that returns +{"title" => …}+ works the
+      # same as +{title: …}+); returns a row with stringified fields and the
+      # snippet truncated to MAX_SNIPPET.
       def normalize(r)
         h = r.respond_to?(:to_h) ? r.to_h : r
-        {title: h[:title].to_s, url: h[:url].to_s, snippet: h[:snippet].to_s[0, MAX_SNIPPET]}
+        {
+          title: field(h, :title).to_s,
+          url: field(h, :url).to_s,
+          snippet: field(h, :snippet).to_s[0, MAX_SNIPPET]
+        }
+      end
+
+      # Reads +key+ from a row tolerating symbol OR string keys.
+      def field(hash, key)
+        hash[key] || hash[key.to_s]
       end
     end
   end

@@ -89,9 +89,15 @@ module Nexo
 
       # Returns the container paths matching the glob +pattern+ (guarded). Empty
       # output yields +[]+.
+      #
+      # The guarded pattern is passed as a positional parameter (+$1+), NEVER
+      # interpolated into the script text, so shell metacharacters in a
+      # model-supplied pattern (+;+, +$()+, backticks) are inert data — +for f in
+      # $1+ still performs pathname (glob) expansion, but nothing in +$1+ is ever
+      # parsed as a command.
       def glob(pattern)
-        script = %(for f in #{guard_path(pattern)}; do [ -e "$f" ] && echo "$f"; done)
-        out = exec!("sh", "-lc", script)
+        script = 'for f in $1; do [ -e "$f" ] && echo "$f"; done'
+        out = exec!("sh", "-c", script, "sh", guard_path(pattern))
         out[:stdout].split("\n")
       end
 

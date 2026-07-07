@@ -40,14 +40,24 @@ module Nexo
       # The wrapped tool's name — what the chat and the gate key on.
       def name = @tool.name
 
+      # The gate lives on #call: #execute (the UNGATED tool body) must never be
+      # reachable through the wrapper, or a caller invoking #execute directly would
+      # skip authorization entirely. Route it back to the gated #call.
+      def execute(*args, **kwargs)
+        call(kwargs.empty? ? (args.first || {}) : kwargs)
+      end
+
       # Forward description/params_schema/to_h/etc. to the wrapped tool so the chat
-      # serializes it exactly like the raw MCP tool.
+      # serializes it exactly like the raw MCP tool — but never +execute+ (see above).
       def respond_to_missing?(method_name, include_private = false)
+        return true if method_name == :execute
+
         @tool.respond_to?(method_name, include_private) || super
       end
 
       # Delegates any unknown method to the wrapped tool (description,
-      # params_schema, to_h, ...), so the wrapper serializes identically.
+      # params_schema, to_h, ...), so the wrapper serializes identically. +execute+
+      # is handled explicitly above and never falls through here.
       def method_missing(method_name, *args, **kwargs, &block)
         if @tool.respond_to?(method_name)
           @tool.public_send(method_name, *args, **kwargs, &block)

@@ -28,6 +28,9 @@ module Nexo
       # shell environment to +PATH+/+HOME+/+LANG+ plus any explicit +env:+ entries.
       def initialize(cwd: Dir.pwd, env: {})
         @cwd = File.expand_path(cwd)
+        # The physical root (symlinks resolved), used by the escape guards so a
+        # symlink inside cwd can't leak a target outside it.
+        @real_cwd = File.exist?(@cwd) ? File.realpath(@cwd) : @cwd
         # Deliberately narrow env — never hand a model-driven shell the whole ENV.
         @env = ENV.to_h.slice("PATH", "HOME", "LANG").merge(env)
       end
@@ -37,7 +40,14 @@ module Nexo
       end
 
       def glob(pattern)
-        offload { Dir.glob(File.join(@cwd, pattern)) }
+        # Guard the pattern itself so it can't escape via "../.." (metacharacters
+        # like * are preserved by expand_path), then drop any match whose real
+        # path (symlinks resolved) lands outside the sandbox.
+        full = File.expand_path(pattern, @cwd)
+        unless within?(full, @cwd)
+          raise SecurityError, "glob pattern escapes sandbox: #{pattern}"
+        end
+        offload { Dir.glob(full) }.select { |match| real_within?(match) }
       end
 
       def write(path, content)
@@ -108,10 +118,39 @@ module Nexo
 
       def absolute(path)
         full = File.expand_path(path, @cwd)
-        unless full == @cwd || full.start_with?(@cwd + File::SEPARATOR)
+        # Check the PHYSICAL location (symlinks resolved), not the lexical path, so
+        # a symlink inside cwd pointing outside it — including a dangling one a
+        # write would follow — can't escape the sandbox.
+        unless within?(resolved(full), @real_cwd)
           raise SecurityError, "path escapes sandbox: #{path}"
         end
         full
+      end
+
+      # True when +path+ is +base+ itself or lies beneath it (lexical prefix).
+      def within?(path, base)
+        path == base || path.start_with?(base + File::SEPARATOR)
+      end
+
+      # Whether an existing filesystem entry's real (symlink-resolved) path stays
+      # inside the sandbox. A match that vanishes or can't be resolved is excluded.
+      def real_within?(path)
+        within?(File.realpath(path), @real_cwd)
+      rescue
+        false
+      end
+
+      # The physical path a read/write would actually touch: resolve symlinks on
+      # the longest existing prefix and re-append the not-yet-existing tail, and
+      # follow a dangling symlink leaf to its target (a write would). Lets the
+      # escape guard see where the operation really lands, not just its spelling.
+      def resolved(full)
+        return File.realpath(full) if File.exist?(full)
+        return resolved(File.expand_path(File.readlink(full), File.dirname(full))) if File.symlink?(full)
+
+        parent = File.dirname(full)
+        base = File.exist?(parent) ? File.realpath(parent) : resolved(parent)
+        File.join(base, File.basename(full))
       end
     end
   end
