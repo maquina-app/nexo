@@ -1,6 +1,10 @@
 # frozen_string_literal: true
 
 module Nexo
+  # Namespace for the pluggable loop backends that drive one prompt to
+  # completion: Loops::RubyLLM (the default, provider-neutral) and
+  # Loops::AgentSDK (opt-in, Anthropic-oriented). Selected per agent via the
+  # +loop:+ constructor injection; the base contract is Nexo::Loop.
   module Loops
     # The default, provider-neutral loop. It is the Spec 1 +Agent#prompt+ body
     # extracted verbatim: build the agent's chat (with its four sandbox-backed
@@ -15,7 +19,7 @@ module Nexo
     # otherwise so an older/newer +ruby_llm+ degrades to no observability rather
     # than crashing.
     class RubyLLM < Nexo::Loop
-      # +chat:+ lets a {Nexo::Session} inject the hydrated, continuing chat so the
+      # +chat:+ lets a Nexo::Session inject the hydrated, continuing chat so the
       # loop runs over the persisted thread; left nil it builds the agent's own
       # fresh chat exactly as before — the default (no-session) path is unchanged.
       def run(agent:, prompt:, max_turns: 25, chat: nil, &on_event)
@@ -36,7 +40,7 @@ module Nexo
       # aliases of #on_tool_call/#on_tool_result); a chat lacking them degrades to
       # no observability rather than crashing.
       #
-      # A continuing {Nexo::Session} runs the loop repeatedly over the SAME chat, so
+      # A continuing Nexo::Session runs the loop repeatedly over the SAME chat, so
       # the wiring is done once per chat (flagged with an ivar) — otherwise ruby_llm
       # (which *appends* callbacks) would stack a fresh pair every prompt and fire
       # each event N times. The current +on_event+ is stashed on the chat so a later

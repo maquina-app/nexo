@@ -7,7 +7,7 @@ require "timeout"
 module Nexo
   module Sandboxes
     # Host filesystem + shell sandbox, for trusted dev/CI use. The developer opts
-    # into this explicitly (the default is {Virtual}); two guards keep a
+    # into this explicitly (the default is Virtual); two guards keep a
     # model-driven agent contained:
     #
     # * Path-escape guard — every +read+/+write+ path is expanded against +cwd+
@@ -17,12 +17,15 @@ module Nexo
     #
     # Under a fiber reactor (Spec 5) these blocking file/shell syscalls would
     # stall every other concurrent fiber. When +Nexo.config.concurrency == :async+
-    # each operation is offloaded to a worker thread (see {#offload}); otherwise
+    # each operation is offloaded to a worker thread (see #offload); otherwise
     # it runs inline, byte-for-byte the Spec 1 behavior with zero overhead. The
     # offload never changes return values or the security properties below.
     class Local < Sandbox
+      # The expanded workspace root; every path is guarded to stay inside it.
       attr_reader :cwd
 
+      # Roots the sandbox at +cwd+ (expanded, default +Dir.pwd+) and narrows the
+      # shell environment to +PATH+/+HOME+/+LANG+ plus any explicit +env:+ entries.
       def initialize(cwd: Dir.pwd, env: {})
         @cwd = File.expand_path(cwd)
         # Deliberately narrow env — never hand a model-driven shell the whole ENV.
@@ -53,7 +56,7 @@ module Nexo
           "and shell are reachable; file access is guarded to #{@cwd}."
       end
 
-      # Supports all four capabilities — unlike {Virtual}, a real process runs
+      # Supports all four capabilities — unlike Virtual, a real process runs
       # the shell command here.
       def supports?(cap)
         %i[read write shell glob].include?(cap)

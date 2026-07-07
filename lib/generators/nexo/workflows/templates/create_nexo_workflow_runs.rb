@@ -4,6 +4,9 @@
 # SQLite and PostgreSQL without an adapter-aware path. The primary key is the
 # UUID string id assigned by Nexo::WorkflowRun before_create.
 class CreateNexoWorkflowRuns < ActiveRecord::Migration[8.0]
+  # Creates the +nexo_workflow_runs+ table (UUID string primary key, portable
+  # +json+ columns for payload/result/events/artifacts/state) plus indexes on
+  # +workflow_class+ and +status+.
   def change
     create_table :nexo_workflow_runs, id: false do |t|
       t.string :id, null: false, primary_key: true

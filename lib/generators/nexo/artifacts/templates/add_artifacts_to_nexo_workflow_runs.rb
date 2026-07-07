@@ -4,6 +4,7 @@
 # column from create_nexo_workflow_runs directly). Portable json column, default
 # [], matching the events column shape.
 class AddArtifactsToNexoWorkflowRuns < ActiveRecord::Migration[8.0]
+  # Adds the +artifacts+ json column (default +[]+) to +nexo_workflow_runs+.
   def change
     add_column :nexo_workflow_runs, :artifacts, :json, null: false, default: []
   end

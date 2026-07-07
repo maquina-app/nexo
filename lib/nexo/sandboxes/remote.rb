@@ -4,7 +4,7 @@ module Nexo
   module Sandboxes
     # A provider-agnostic remote sandbox: it runs an agent's tools inside some
     # remote container (E2B / Daytona / Modal / Docker / your own) by delegating
-    # the four-method {Sandbox} contract to an injected +client+.
+    # the four-method Sandbox contract to an injected +client+.
     #
     # The client is any object responding to +read+/+write+/+exec+/+close+. That
     # four-method contract is the entire integration surface — +Remote+ contains
@@ -14,7 +14,7 @@ module Nexo
     #
     #   sandbox = Nexo::Sandboxes::Remote.new(client: my_container_client)
     #
-    # The client's +exec+ is expected to return the same shape the {Sandbox}
+    # The client's +exec+ is expected to return the same shape the Sandbox
     # +shell+ contract documents — +{ stdout:, stderr:, status: }+ — so +#shell+
     # passes it straight through and +#glob+ can read +[:stdout]+. Adapting a
     # vendor client to that shape is the shim's job (see the README example).
@@ -39,7 +39,7 @@ module Nexo
 
       # Runs +command+ via the client's +exec+ and returns its result. The client
       # is expected to honor +timeout:+ (seconds) the way the rest of the contract
-      # honors the {Sandbox} shape.
+      # honors the Sandbox shape.
       def shell(command, timeout: 30)
         @client.exec(command, timeout: timeout)
       end

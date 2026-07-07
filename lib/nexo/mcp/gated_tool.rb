@@ -3,7 +3,7 @@
 module Nexo
   module MCP
     # Wraps a +ruby_llm-mcp+ tool so the chat sees an identical tool but every
-    # invocation is authorized through {Nexo::Permissions#authorize_mcp!} first. A
+    # invocation is authorized through Nexo::Permissions#authorize_mcp! first. A
     # denied call returns +{ error: ... }+ (recoverable) and never raises into the
     # loop — matching the sandbox-backed tools' authorize→act→rescue-+Denied+→
     # +{error:}+ shape (see +lib/nexo/tools/write_file.rb+).
@@ -20,6 +20,8 @@ module Nexo
     # +#execute+), and +method_missing+ forwards +description+/+params_schema+/+to_h+/
     # etc. to the wrapped tool.
     class GatedTool
+      # Wraps +tool+ (a +ruby_llm-mcp+ tool) so every call is authorized through
+      # +permissions+ (the MCP axis) before delegating.
       def initialize(tool:, permissions:)
         @tool = tool
         @permissions = permissions
@@ -35,6 +37,7 @@ module Nexo
         {error: e.message}
       end
 
+      # The wrapped tool's name — what the chat and the gate key on.
       def name = @tool.name
 
       # Forward description/params_schema/to_h/etc. to the wrapped tool so the chat
@@ -43,6 +46,8 @@ module Nexo
         @tool.respond_to?(method_name, include_private) || super
       end
 
+      # Delegates any unknown method to the wrapped tool (description,
+      # params_schema, to_h, ...), so the wrapper serializes identically.
       def method_missing(method_name, *args, **kwargs, &block)
         if @tool.respond_to?(method_name)
           @tool.public_send(method_name, *args, **kwargs, &block)

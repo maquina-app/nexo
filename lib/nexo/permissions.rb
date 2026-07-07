@@ -10,27 +10,28 @@ module Nexo
   # * +:read_only+ — allow +:read+/+:glob+, deny +:write+/+:shell+/+:fetch+ (the default).
   # * +:ask+       — defer to +on_ask+; a truthy return allows, anything else denies.
   # * +:approve+   — durable, cross-process sibling of +:ask+ (Spec 16): with no
-  #   +decision+ it raises {Nexo::ApprovalRequired} (→ {Workflow#run_agent}
+  #   +decision+ it raises Nexo::ApprovalRequired (→ Workflow#run_agent
   #   suspends the run); with +{approved: true}+ it allows, with
-  #   +{approved: false}+ it {Denied denies}.
+  #   +{approved: false}+ it Denied denies.
   #
   # Capabilities are +:read+, +:glob+, +:write+, +:shell+, +:fetch+. Anything
   # listed in +allow:+ is permitted regardless of mode.
   class Permissions
+    # The recognized permission modes: +:auto+, +:read_only+, +:ask+, +:approve+.
     MODES = %i[auto read_only ask approve].freeze
 
     # Raised when a capability is not authorized. Tools rescue this and return
     # +{ error: ... }+ so the agent loop continues.
     class Denied < StandardError; end
 
-    # The configured Nexo permission mode (one of {MODES}). Read by the agent to
+    # The configured Nexo permission mode (one of MODES). Read by the agent to
     # map onto an opt-in backend's own permission vocabulary (see
     # +Agent#permission_mode+).
     attr_reader :mode
 
     # The approval decision under +:approve+ (Spec 16): +nil+ (undecided ⇒
     # suspend) or a +{approved: true|false}+ Hash. Writable after construction so
-    # {Workflow#run_agent} can thread a resume decision into an
+    # Workflow#run_agent can thread a resume decision into an
     # already-resolved +:approve+ gate without rebuilding it. Ignored by every
     # other mode.
     attr_accessor :decision
@@ -41,11 +42,11 @@ module Nexo
     # calling +on_ask+ / requiring a decision; truthy (or when unset) falls
     # through to +on_ask+ / the approval gate exactly as before. It only ever
     # *narrows* what is auto-allowed from the "ask/approve for everything"
-    # baseline — it never widens authority. Applies to {#authorize!} only, not
-    # {#authorize_mcp!}. +approve_when:+ is an alias that maps onto the same
+    # baseline — it never widens authority. Applies to #authorize! only, not
+    # #authorize_mcp!. +approve_when:+ is an alias that maps onto the same
     # predicate (there is one predicate, not two — Spec 16 Q4).
     #
-    # +decision:+ (default +nil+) seeds the +:approve+ decision (see {#decision}).
+    # +decision:+ (default +nil+) seeds the +:approve+ decision (see #decision).
     def initialize(mode: :read_only, allow: %i[read glob], mcp_allow: [], on_ask: nil, ask_when: nil,
       approve_when: nil, decision: nil)
       raise ArgumentError, "unknown mode #{mode}" unless MODES.include?(mode)
@@ -67,7 +68,7 @@ module Nexo
     end
 
     # Authorizes +capability+ (with optional +detail+ passed to an +:ask+ hook).
-    # Returns +true+ when allowed; raises {Denied} otherwise.
+    # Returns +true+ when allowed; raises Denied otherwise.
     def authorize!(capability, detail = nil)
       return true if @allow.include?(capability)
 
@@ -108,7 +109,7 @@ module Nexo
       end
     end
 
-    # Authorizes an MCP tool *call* by name. A deliberate sibling of {#authorize!}
+    # Authorizes an MCP tool *call* by name. A deliberate sibling of #authorize!
     # on a separate capability axis: an MCP tool runs inside the MCP server,
     # outside the sandbox, so this gates the authority to *invoke* it — a different
     # guarantee than sandbox capability. Fails closed under +:read_only+ (nothing
@@ -119,7 +120,7 @@ module Nexo
     # * +:ask+       — defer to +on_ask+ with +(:mcp, {tool:, args:})+; a truthy
     #   return allows, anything else denies.
     #
-    # Returns +true+ when allowed; raises {Denied} otherwise.
+    # Returns +true+ when allowed; raises Denied otherwise.
     def authorize_mcp!(tool_name, args = {})
       name = tool_name.to_s
 

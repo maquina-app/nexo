@@ -27,6 +27,8 @@ module Nexo
       # Bodies are truncated to this many bytes (byteslice) before returning.
       MAX_BYTES = 200_000
 
+      # +allow_hosts+ scopes which hosts the GET may reach (subdomain-aware);
+      # +permissions+ gates the +:fetch+ capability. Both locks must open.
       def initialize(sandbox:, permissions:, allow_hosts: [])
         @sandbox = sandbox
         @permissions = permissions

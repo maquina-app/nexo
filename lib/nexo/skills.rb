@@ -6,9 +6,9 @@ module Nexo
   # class macro — no loader wiring.
   #
   # +ruby_llm-skills+ is a SOFT (optional) runtime dependency: it is required
-  # lazily by {load!} the first time a skill is used. With the gem absent,
+  # lazily by load! the first time a skill is used. With the gem absent,
   # +require "nexo"+ still loads cleanly; only touching a skill raises
-  # {MissingDependencyError} with install guidance.
+  # MissingDependencyError with install guidance.
   #
   # A loaded skill contributes its **instructions** (the SKILL.md body) to a chat.
   # It ships no independent tools — its +scripts/+ and +references/+ files are
@@ -20,7 +20,7 @@ module Nexo
   module Skills
     class << self
       # Lazily loads the +ruby_llm-skills+ gem. Idempotent (a second call is a
-      # cheap no-op once the gem is loaded). Raises {MissingDependencyError} —
+      # cheap no-op once the gem is loaded). Raises MissingDependencyError —
       # naming the gem and the exact remedy — when the gem is not installed.
       def load!
         require "ruby_llm/skills"
@@ -30,13 +30,13 @@ module Nexo
       end
 
       # Resolves a skill +name+ (symbol or string) to a loaded skill object read
-      # from the filesystem under {Nexo.config.skills_path}. The filesystem is the
+      # from the filesystem under Nexo.config.skills_path. The filesystem is the
       # only skill source in v1 — zip/DB/remote loading is deferred entirely to
       # +ruby_llm-skills+.
       #
-      # Calls {load!} first (so an absent gem surfaces {MissingDependencyError}),
+      # Calls load! first (so an absent gem surfaces MissingDependencyError),
       # then resolves +<skills_path>/<name>/SKILL.md+. A missing file raises
-      # {Error} whose message names the resolved path.
+      # Error whose message names the resolved path.
       #
       # @return [RubyLLM::Skills::Skill] the loaded skill (exposes +#content+,
       #   +#name+, +#description+).

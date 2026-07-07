@@ -44,7 +44,7 @@ module Nexo
       # The sandbox macro. With no argument it reads the configured value
       # (falling back to the harness-wide default). With a bare value it stores a
       # symbol/instance as before; with keywords it stores an options Hash
-      # (+{ type: value, **opts }+) resolved by {Nexo::Sandboxes.resolve} — e.g.
+      # (+{ type: value, **opts }+) resolved by Nexo::Sandboxes.resolve — e.g.
       # +sandbox :docker, image: "node:22-slim", binds: {...}+.
       def sandbox(value = nil, **opts)
         return @sandbox || Nexo.config.default_sandbox if value.nil? && opts.empty?
@@ -52,10 +52,15 @@ module Nexo
         @sandbox = opts.empty? ? value : {type: value, **opts}
       end
 
+      # The permissions macro. With no argument it reads the configured value
+      # (falling back to the harness-wide default, +:read_only+); with a value it
+      # records the mode symbol or a pre-built Permissions instance.
       def permissions(value = nil)
         value.nil? ? (@permissions || Nexo.config.default_permissions) : (@permissions = value)
       end
 
+      # The instructions macro. With no argument it reads the stored system
+      # prompt (default +nil+); with a value it records it.
       def instructions(value = nil)
         value.nil? ? @instructions : (@instructions = value)
       end
@@ -75,7 +80,7 @@ module Nexo
       # Declares an MCP server for this agent (Spec 6). Accumulating: multiple
       # +mcp+ lines are collected. With no args (+name+ nil and +opts+ empty) it
       # reads the list (default +[]+); otherwise it appends the friendly,
-      # transport-shaped config consumed by {Nexo::MCP.build}.
+      # transport-shaped config consumed by Nexo::MCP.build.
       #
       #   class InboxDigest < Nexo::Agent
       #     model ENV.fetch("NEXO_MODEL")
@@ -88,17 +93,17 @@ module Nexo
         (@mcp ||= []) << opts.merge(name: name)
       end
 
-      # The MCP tool-name allow-list threaded into this agent's {Permissions} (see
-      # +mcp_allow:+ in {#resolve_permissions}). Exact tool-name match only — no
-      # globs. Same read-vs-write convention as {skills}: with args it records the
+      # The MCP tool-name allow-list threaded into this agent's Permissions (see
+      # +mcp_allow:+ in #resolve_permissions). Exact tool-name match only — no
+      # globs. Same read-vs-write convention as skills: with args it records the
       # flattened names as strings; with none it reads the list (default +[]+).
       def mcp_allow(*names)
         names.empty? ? (@mcp_allow || []) : (@mcp_allow = names.flatten.map(&:to_s))
       end
 
-      # The host allow-list scoping this agent's {Nexo::Tools::Fetch} (Spec 9).
+      # The host allow-list scoping this agent's Nexo::Tools::Fetch (Spec 9).
       # Subdomain-aware, exact-host-suffix matching only — no globs. Same
-      # read-vs-write convention as {mcp_allow}: with args it records the flattened
+      # read-vs-write convention as mcp_allow: with args it records the flattened
       # hosts as strings; with none it reads the list (default +[]+).
       #
       # Declaring +fetch_allow+ only SCOPES hosts — it does not grant the +:fetch+
@@ -112,12 +117,12 @@ module Nexo
     end
 
     # The set of tool names handed to an opt-in backend that ships its own tools
-    # (e.g. {Loops::AgentSDK}). The default {Loops::RubyLLM} ignores this — it
+    # (e.g. Loops::AgentSDK). The default Loops::RubyLLM ignores this — it
     # uses the agent's own sandbox-backed tools instead.
     ALLOWED_TOOLS = %w[Read Write Edit Bash Glob Grep].freeze
 
     # Maps Nexo's permission modes onto AgentSDK's own permission vocabulary,
-    # consumed by {Loops::AgentSDK}. +:ask+ maps to +:default+ on purpose: human
+    # consumed by Loops::AgentSDK. +:ask+ maps to +:default+ on purpose: human
     # gating stays in Nexo's own +on_ask+ path and is not delegated to the SDK.
     PERMISSION_MODE_MAP = {
       read_only: :default,
@@ -125,19 +130,22 @@ module Nexo
       ask: :default
     }.freeze
 
+    # The resolved per-instance configuration (arg → class macro → config): the
+    # working directory, model, provider, +assume_model_exists+ flag, the resolved
+    # Sandbox and Permissions, the system instructions, and the injected Loop.
     attr_reader :cwd, :model, :provider, :assume_model_exists, :sandbox, :permissions, :instructions, :loop
 
     # Every argument is optional; each resolves arg -> class macro -> config.
     # Symbol shorthands (:virtual/:local, :read_only/:auto/:ask/:approve) and
     # pre-built Sandbox/Permissions instances are both accepted. +loop:+ injects
-    # the engine that drives a prompt — the provider-neutral {Loops::RubyLLM} by
-    # default, or an opt-in backend like {Loops::AgentSDK}.
+    # the engine that drives a prompt — the provider-neutral Loops::RubyLLM by
+    # default, or an opt-in backend like Loops::AgentSDK.
     #
     # +decision:+ (Spec 16, default +nil+) is a per-run approval answer
-    # (+{approved: true|false}+) threaded into the resolved {Permissions} so an
-    # +:approve+ gate allows/denies instead of raising {Nexo::ApprovalRequired}.
+    # (+{approved: true|false}+) threaded into the resolved Permissions so an
+    # +:approve+ gate allows/denies instead of raising Nexo::ApprovalRequired.
     # It only supplies the *answer* to an already-+:approve+ gate — it never
-    # widens capability. {Workflow#run_agent} passes it on the resume pass.
+    # widens capability. Workflow#run_agent passes it on the resume pass.
     def initialize(cwd: Dir.pwd, model: nil, sandbox: nil, permissions: nil, decision: nil, loop: Loops::RubyLLM.new)
       @cwd = cwd
       @model = model || self.class.model || Nexo.config.default_model
@@ -163,7 +171,7 @@ module Nexo
     # instances bound to this agent's sandbox and permissions, then layers on the
     # instructions of every declared skill.
     #
-    # +base:+ lets a {Nexo::Session} pass a persisted +acts_as_chat+ record
+    # +base:+ lets a Nexo::Session pass a persisted +acts_as_chat+ record
     # (hydrated via ruby_llm's +#to_llm+ delegation) so the very same wiring —
     # instructions, the four sandbox tools, skills, MCP, fetch — is applied onto
     # the continuing thread instead of a fresh chat. When +base+ is nil the path
@@ -205,7 +213,7 @@ module Nexo
     end
 
     # Runs one prompt through the agent by delegating to the injected loop. The
-    # loop body that used to live here is now in {Loops::RubyLLM} (the default),
+    # loop body that used to live here is now in Loops::RubyLLM (the default),
     # so swapping +loop:+ swaps the engine without touching this class. The
     # optional +&on_event+ block receives +(type, payload)+ progress events.
     def prompt(text, max_turns: 25, &on_event)
@@ -213,8 +221,8 @@ module Nexo
     end
 
     # The agent's Nexo permission mode mapped onto an opt-in backend's own
-    # permission vocabulary (see {PERMISSION_MODE_MAP}). Consumed by
-    # {Loops::AgentSDK}; the default {Loops::RubyLLM} does its gating inside the
+    # permission vocabulary (see PERMISSION_MODE_MAP). Consumed by
+    # Loops::AgentSDK; the default Loops::RubyLLM does its gating inside the
     # sandbox-backed tools and ignores this.
     def permission_mode
       PERMISSION_MODE_MAP.fetch(@permissions.mode, :default)
@@ -271,16 +279,16 @@ module Nexo
     end
 
     # Lazily connects the declared MCP servers and attaches their tools, each
-    # wrapped in a {MCP::GatedTool} so every invocation is authorized through this
-    # agent's {Permissions} first. Attached after the four sandbox tools and the
+    # wrapped in a MCP::GatedTool so every invocation is authorized through this
+    # agent's Permissions first. Attached after the four sandbox tools and the
     # skills, so MCP tools fire the chat's +before_tool_call+/+after_tool_result+
-    # callbacks (wired in {Loops::RubyLLM}) and appear in the run's event log with
+    # callbacks (wired in Loops::RubyLLM) and appear in the run's event log with
     # no extra wiring. Returns early when no server is declared.
     #
     # Clients are built once and memoized on the instance (Spec 6 lifecycle
     # default): the +ruby_llm-mcp+ client connects on construction and is reusable
     # across prompts, so subsequent +#chat+ calls reuse the live connections until
-    # {#close}. VERIFY (Group 0): tools accessor is +client.tools+ (an Array).
+    # #close. VERIFY (Group 0): tools accessor is +client.tools+ (an Array).
     def apply_mcp(chat)
       return if self.class.mcp.empty?
 
@@ -291,12 +299,12 @@ module Nexo
       chat.with_tools(*gated) unless gated.empty?
     end
 
-    # Attaches a single {Nexo::Tools::Fetch} scoped to the agent's +fetch_allow+
+    # Attaches a single Nexo::Tools::Fetch scoped to the agent's +fetch_allow+
     # hosts (Spec 9). Returns early when no host is declared, so an agent that never
     # calls +fetch_allow+ gets no fetch tool. Attached right after +apply_mcp+ so
     # the tool participates in the chat's +before_tool_call+/+after_tool_result+
-    # event stream (wired in {Loops::RubyLLM}) with no extra wiring. The +:fetch+
-    # capability itself is gated through {Permissions#authorize!} at call time — the
+    # event stream (wired in Loops::RubyLLM) with no extra wiring. The +:fetch+
+    # capability itself is gated through Permissions#authorize! at call time — the
     # allow-list only scopes hosts, it is not the capability grant.
     def apply_fetch(chat)
       return if self.class.fetch_allow.empty?

@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-# Rails-only persistence model for {Nexo::Workflow} runs. The body subclasses
+# Rails-only persistence model for Nexo::Workflow runs. The body subclasses
 # ::ActiveRecord::Base, so it is loaded only when ActiveRecord is present (the
 # engine requires this file once AR is available). The plain-Ruby path never
 # reaches here — lib/nexo.rb ignores this file in the Zeitwerk loader, so no
@@ -9,7 +9,7 @@ if defined?(::ActiveRecord::Base)
   module Nexo
     # The +nexo_workflow_runs+ record: a run's id, workflow class, status,
     # payload, result, error, and ordered event log. Mirrors the shape of the
-    # in-memory store's Run struct so a single {Workflow} drives either backend.
+    # in-memory store's Run struct so a single Workflow drives either backend.
     class WorkflowRun < ::ActiveRecord::Base
       self.table_name = "nexo_workflow_runs"
 
@@ -33,16 +33,19 @@ if defined?(::ActiveRecord::Base)
       scope :suspended, -> { where(status: "suspended") }
 
       # The primary key is a UUID string assigned through the shared
-      # {Nexo.generate_run_id} helper, keeping id shape identical across stores.
+      # Nexo.generate_run_id helper, keeping id shape identical across stores.
       before_create :assign_run_id
 
       # Status predicates for a host UI (Spec 11 R3).
       def done? = status == "done"
 
+      # True when the run ended in failure.
       def failed? = status == "failed"
 
+      # True while the run is executing.
       def running? = status == "running"
 
+      # True while the run is enqueued but not yet started.
       def queued? = status == "queued"
 
       # True while the run is paused awaiting external input (Spec 13).
@@ -93,13 +96,13 @@ if defined?(::ActiveRecord::Base)
 
       # Appends an artifact to the ordered index (Spec 7). Reassigns the array
       # (rather than mutating in place) so ActiveRecord tracks the json column as
-      # dirty — mirrors {#push_event} exactly.
+      # dirty — mirrors #push_event exactly.
       def push_artifact(a)
         self.artifacts = (artifacts || []) + [a]
       end
 
       # Persists the artifact index without bumping +updated_at+, mirroring
-      # {#save_events!}.
+      # #save_events!.
       def save_artifacts!
         save!(touch: false)
       end
@@ -107,7 +110,7 @@ if defined?(::ActiveRecord::Base)
       # Persists the run's checkpoint/suspend +state+ (Spec 13) without bumping
       # +updated_at+ — checkpoints accrue during a run just like events/artifacts,
       # so each shouldn't count as a full touch. The +state+ json object is
-      # read/written by {Workflow#checkpoint} with string keys, so it round-trips
+      # read/written by Workflow#checkpoint with string keys, so it round-trips
       # identically to the Memory store.
       def save_state!
         save!(touch: false)

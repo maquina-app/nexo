@@ -11,7 +11,7 @@ module Nexo
   # with +(type, payload)+ as the run progresses (e.g. +:tool_call+,
   # +:tool_result+, +:done+) — observability only; it never steers the run.
   #
-  # See {Loops::RubyLLM} (default, provider-neutral) and {Loops::AgentSDK}
+  # See Loops::RubyLLM (default, provider-neutral) and Loops::AgentSDK
   # (opt-in, Anthropic-oriented).
   class Loop
     # Runs +prompt+ through +agent+ and returns the final response. +max_turns+

@@ -39,6 +39,8 @@ module Nexo
       # supported local runtimes in v1.
       RUNTIMES = {docker: "docker", apple: "container"}.freeze
 
+      # The container working directory (default +/workspace+, a container path),
+      # the selected +runtime+ (+:docker+ / +:apple+), and the required +image+.
       attr_reader :cwd, :runtime, :image
 
       # +image:+ is required (no default image). +runtime:+ selects the binary.
@@ -119,7 +121,7 @@ module Nexo
           "network #{@network}. Only #{@cwd} and any :rw binds are writable."
       end
 
-      # +true+ for the four sandbox capabilities. Unlike {Virtual}, +:shell+ is
+      # +true+ for the four sandbox capabilities. Unlike Virtual, +:shell+ is
       # supported here (a real process runs the command).
       def supports?(cap)
         %i[read write shell glob].include?(cap)
@@ -169,7 +171,7 @@ module Nexo
       end
 
       # Lazily starts (or, when reconnecting, reuses) the container and memoizes
-      # its id. Raises {Nexo::Error} on a start failure.
+      # its id. Raises Nexo::Error on a start failure.
       #
       # VERIFY-before-merge (Group 0, needs a live daemon): the inspect-by-name and
       # start-if-stopped commands are encoded as sketched from the reference CLI
@@ -207,7 +209,7 @@ module Nexo
 
       # Runs +cmd+ inside the started container, wall-clock bounded. Returns the
       # +{ stdout:, stderr:, status: }+ shape (integer exit code) proven by
-      # {Local#shell}; +Open3.capture3+ has no +timeout:+ kwarg on the target Ruby.
+      # Local#shell; +Open3.capture3+ has no +timeout:+ kwarg on the target Ruby.
       def exec!(*cmd, timeout: 30)
         ensure_started!
         out, err, status = Timeout.timeout(timeout) do
@@ -216,7 +218,7 @@ module Nexo
         {stdout: out, stderr: err, status: status.exitstatus}
       end
 
-      # As {#exec!}, but feeds +data+ to the command on stdin (used by +write+ so
+      # As #exec!, but feeds +data+ to the command on stdin (used by +write+ so
       # file contents never enter the argv). +-i+ keeps stdin open.
       def exec_stdin!(data, *cmd, timeout: 30)
         ensure_started!
