@@ -1,0 +1,7 @@
+module Nexo
+  module OutputTruncator
+    ANSI: Regexp
+
+    def self.call: (String? text, ?max_lines: Integer, ?max_chars: Integer) -> String?
+  end
+end

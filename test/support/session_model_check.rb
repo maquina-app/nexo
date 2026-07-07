@@ -160,13 +160,17 @@ Nexo::Session.resume(Assistant, "user-99").prompt("Hi.")
 abort "FAIL: second thread not created (#{Chat.count})" unless Chat.count == 2
 puts "DISTINCT_THREAD_OK"
 
-# --- The hydrated chat carries the agent's four sandbox tools (reused seam, R3).
+# --- The hydrated chat carries the agent's sandbox tools (reused seam, R3).
+# The default (:virtual) sandbox has no shell, so the Shell tool is NOT attached
+# (Spec 14 R2 — capability-gated tool attach); the other three always are.
 session = Nexo::Session.resume(Assistant, "user-42")
 hydrated = session.instance_variable_get(:@chat)
 tool_classes = hydrated.to_llm.tools.values.map(&:class)
-[Nexo::Tools::ReadFile, Nexo::Tools::WriteFile, Nexo::Tools::Shell, Nexo::Tools::Glob].each do |klass|
+[Nexo::Tools::ReadFile, Nexo::Tools::WriteFile, Nexo::Tools::Glob].each do |klass|
   abort "FAIL: missing #{klass} on hydrated chat (#{tool_classes.inspect})" unless tool_classes.include?(klass)
 end
+abort "FAIL: virtual sandbox should not attach Shell (#{tool_classes.inspect})" if
+  tool_classes.include?(Nexo::Tools::Shell)
 puts "TOOLS_REATTACHED_OK"
 
 # --- close is safe with no MCP/fetch resources held.

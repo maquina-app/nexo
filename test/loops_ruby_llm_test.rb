@@ -50,9 +50,10 @@ class LoopsRubyLLMTest < Minitest::Test
     Nexo.reset_config!
   end
 
-  # Regression: a default-loop agent still attaches its four sandbox-backed
-  # tools and #prompt returns the response (behavior unchanged from Spec 1).
-  def test_default_loop_agent_attaches_four_tools_and_prompt_returns
+  # Regression: a default-loop agent still attaches its sandbox-backed tools and
+  # #prompt returns the response. The :virtual sandbox has no shell, so Shell is
+  # gated out (Spec 14 R2); the other three attach as before.
+  def test_default_loop_agent_attaches_tools_and_prompt_returns
     RubyLLM::Test.stub_response("review complete")
     agent = VirtualAgent.new
 
@@ -61,8 +62,8 @@ class LoopsRubyLLMTest < Minitest::Test
     tool_classes = agent.chat.tools.values.map(&:class)
     assert_includes tool_classes, Nexo::Tools::ReadFile
     assert_includes tool_classes, Nexo::Tools::WriteFile
-    assert_includes tool_classes, Nexo::Tools::Shell
     assert_includes tool_classes, Nexo::Tools::Glob
+    refute_includes tool_classes, Nexo::Tools::Shell
 
     response = agent.prompt("Review it")
     assert_equal "review complete", response.content

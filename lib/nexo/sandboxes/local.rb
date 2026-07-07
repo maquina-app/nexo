@@ -45,6 +45,28 @@ module Nexo
         end
       end
 
+      # A plain-text description of this host environment for the agent's system
+      # prompt: the host cwd, that the real host filesystem and shell are
+      # reachable, and that access is guarded to +cwd+.
+      def instructions
+        "You run on the host machine, cwd #{@cwd}. The real host filesystem " \
+          "and shell are reachable; file access is guarded to #{@cwd}."
+      end
+
+      # Supports all four capabilities — unlike {Virtual}, a real process runs
+      # the shell command here.
+      def supports?(cap)
+        %i[read write shell glob].include?(cap)
+      end
+
+      # The last-modified time of +path+ (guarded against escaping +cwd+), or
+      # +nil+ when the file is absent — so a new-file write skips the
+      # read-before-write guard.
+      def mtime(path)
+        full = absolute(path)
+        File.exist?(full) ? File.mtime(full) : nil
+      end
+
       def shell(command, timeout: 30)
         offload do
           # ruby_llm's target Ruby has no `timeout:` kwarg on Open3.capture3

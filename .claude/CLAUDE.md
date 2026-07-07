@@ -394,6 +394,20 @@ Match the agent to the file type touched; skip an agent when no file of its type
   resume_input = nil)` dispatches to `Workflow.resume` when the second arg is present (nil sentinel =
   original enqueue path, backward compatible).
 
+- **Gating Shell by `supports?` broke three "attaches four tools" tests (Spec 14).** R2 makes
+  `Agent#chat` attach `Tools::Shell` only when `@sandbox.supports?(:shell)`. The default sandbox is
+  `:virtual` (no shell), so every pre-existing test that built a default/`:virtual` agent and asserted
+  all four tools — `agent_test.rb`, `loops_ruby_llm_test.rb`, and the session subprocess check
+  `test/support/session_model_check.rb` — had to flip to "three tools, Shell gated out". Directly
+  constructed `Tools::Shell` (as in `tools_test.rb`) is unaffected: `Shell#execute` still rescues the
+  Virtual `NotImplementedError` into `{error:}`. The base `Sandbox` now ships `#instructions` (nil),
+  `#supports?(cap)` (`cap != :shell`), and `#mtime` (nil) as defaults; `Container`'s
+  `#instructions`/`#supports?` (already present) only became *live* once the Agent started consuming
+  them. `OutputTruncator`/`ReadTracker` are plain Zeitwerk-autoloaded modules (no `require_relative`,
+  no `loader.ignore`). The R4 clobber guard is real-FS-only (skipped when `sandbox.mtime` is nil, i.e.
+  Virtual, or when no `tracker:` is passed) — the stale *test* forces a distinguishable mtime with
+  `File.utime` since `File.mtime` may not catch a same-second external edit (best-effort, per spec).
+
 ## Verified APIs (Spec 5)
 
 - **ruby_llm 1.16.0 HTTP adapter is fiber-friendly.** `RubyLLM::Connection` builds Faraday with

@@ -9,15 +9,21 @@ module Nexo
       description "Read a file from the workspace."
       param :path, type: :string, required: true, desc: "Path to the file to read"
 
-      def initialize(sandbox:, permissions:)
+      # +tracker:+ is an optional {ReadTracker} shared with {Tools::WriteFile}
+      # for the read-before-write + stale guard. Default +nil+ ⇒ nothing is
+      # recorded, preserving direct-construction behavior.
+      def initialize(sandbox:, permissions:, tracker: nil)
         @sandbox = sandbox
         @permissions = permissions
+        @tracker = tracker
         super()
       end
 
       def execute(path:)
         @permissions.authorize!(:read, path)
-        @sandbox.read(path)
+        content = @sandbox.read(path)
+        @tracker&.record(path, @sandbox.mtime(path))
+        content
       rescue Permissions::Denied, Errno::ENOENT => e
         {error: e.message}
       end

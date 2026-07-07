@@ -5,5 +5,8 @@ module Nexo
     def shell: (String command, ?timeout: Integer) -> Hash[Symbol, untyped]
     def glob: (String pattern) -> Array[String]
     def close: () -> void
+    def instructions: () -> String?
+    def supports?: (Symbol capability) -> bool
+    def mtime: (String path) -> Time?
   end
 end

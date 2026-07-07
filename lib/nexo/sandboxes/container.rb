@@ -125,6 +125,20 @@ module Nexo
         %i[read write shell glob].include?(cap)
       end
 
+      # The last-modified time of +path+ (guarded) inside the container, read by
+      # shelling +stat -c %Y+ (GNU coreutils epoch seconds). Returns a +Time+, or
+      # +nil+ when the file is absent — so a new-file write skips the
+      # read-before-write guard. Used only by the R4 clobber guard.
+      def mtime(path)
+        out = exec!("stat", "-c", "%Y", "--", guard_path(path))
+        return nil unless out[:status].zero?
+
+        epoch = out[:stdout].strip
+        epoch.empty? ? nil : Time.at(Integer(epoch))
+      rescue ArgumentError
+        nil
+      end
+
       private
 
       # The exact +run+ argv, built purely so the offline suite can assert it with

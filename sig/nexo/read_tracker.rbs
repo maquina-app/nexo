@@ -1,0 +1,8 @@
+module Nexo
+  class ReadTracker
+    def initialize: () -> void
+    def record: (String path, Time? mtime) -> void
+    def read?: (String path) -> bool
+    def recorded_mtime: (String path) -> Time?
+  end
+end
