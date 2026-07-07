@@ -114,6 +114,19 @@ module Nexo
       def fetch_allow(*hosts)
         hosts.empty? ? (@fetch_allow || []) : (@fetch_allow = hosts.flatten.map(&:to_s))
       end
+
+      # The host-injected search backend for this agent's Nexo::Tools::WebSearch
+      # (Spec 19). Reader/writer by nil-check, matching the +model+ macro
+      # convention. Any object responding to +search(query, **opts)+ that
+      # returns an Enumerable of +{title:, url:, snippet:}+ rows works — Nexo ships
+      # no backend. Unset reads as +nil+, in which case no search tool is attached.
+      #
+      # Declaring +search_backend+ does not grant the +:search+ capability, which is
+      # default-denied like +:fetch+/+:shell+. An agent that wants web discovery must
+      # also run under +:auto+ or carry an explicit +allow: [..., :search]+.
+      def search_backend(obj = nil)
+        obj.nil? ? @search_backend : (@search_backend = obj)
+      end
     end
 
     # The set of tool names handed to an opt-in backend that ships its own tools
@@ -209,6 +222,7 @@ module Nexo
       apply_skills(c)
       apply_mcp(c)
       apply_fetch(c)
+      apply_search(c)
       c
     end
 
@@ -314,6 +328,21 @@ module Nexo
       )
     end
 
+    # Attaches a single Nexo::Tools::WebSearch bound to the agent's injected
+    # +search_backend+ (Spec 19). Returns early when no backend is declared, so an
+    # agent that never calls +search_backend+ gets no search tool — existing agents
+    # are byte-for-byte unchanged. Attached right after +apply_fetch+ so the tool
+    # rides the same +before_tool_call+/+after_tool_result+ event stream (wired in
+    # Loops::RubyLLM) with no extra wiring. The +:search+ capability itself is gated
+    # through Permissions#authorize! at call time.
+    def apply_search(chat)
+      backend = self.class.search_backend or return
+
+      chat.with_tools(
+        Tools::WebSearch.new(sandbox: @sandbox, permissions: @permissions, backend: backend)
+      )
+    end
+
     # Resolves this agent's sandbox declaration via the shared resolver (Spec 15),
     # passing the agent's instance +@cwd+ as the host working directory (used only
     # by +:local+; container tiers keep their own +/workspace+ default).
@@ -332,7 +361,7 @@ module Nexo
       allow = self.class.mcp_allow
       case value
       when :read_only then Permissions.new(mode: :read_only, mcp_allow: allow)
-      when :auto then Permissions.new(mode: :auto, allow: %i[read glob write shell fetch], mcp_allow: allow)
+      when :auto then Permissions.new(mode: :auto, allow: %i[read glob write shell fetch search], mcp_allow: allow)
       when :ask then Permissions.new(mode: :ask, mcp_allow: allow) # pass a Permissions with on_ask for a real gate
       when :approve then Permissions.new(mode: :approve, mcp_allow: allow, decision: decision)
       else raise ConfigurationError, "unknown permissions: #{value.inspect}"

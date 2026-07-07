@@ -86,7 +86,7 @@ access until you explicitly opt in.
 | [Durable workflows](docs/durable-workflows.md) | checkpoint / suspend / resume |
 | [Skills](docs/skills.md) | SKILL.md packages, gated tools |
 | [MCP](docs/mcp.md) | mcp macro, fail-closed gate, transports |
-| [Web](docs/web.md) | fetch tool, SSRF guard |
+| [Web](docs/web.md) | fetch tool + SSRF guard, search tool + injected backend |
 | [Sessions](docs/sessions.md) | continuing, addressable memory |
 | [Rails](docs/rails.md) | engine, run_later, broadcasting, generators |
 | [Concurrency](docs/concurrency.md) | opt-in async, buffered emit, fiber servers |
