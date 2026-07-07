@@ -55,6 +55,12 @@ module Nexo
         {body: get(uri).byteslice(0, MAX_BYTES)}
       rescue Permissions::Denied => e
         {error: e.message}
+      rescue Nexo::ApprovalRequired
+        # Durable approval (Spec 16): the :approve gate on authorize!(:fetch, url)
+        # must PAUSE the run, not become a tool error. Re-raise past the broad
+        # rescue below so run_agent can catch it and suspend. (Denied above still
+        # becomes {error:} — that is the intended deny contract.)
+        raise
       rescue => e
         {error: "fetch failed: #{e.message}"}
       end

@@ -408,6 +408,23 @@ Match the agent to the file type touched; skip an agent when no file of its type
   Virtual, or when no `tracker:` is passed) — the stale *test* forces a distinguishable mtime with
   `File.utime` since `File.mtime` may not catch a same-second external edit (best-effort, per spec).
 
+- **Durable approval bridges `:approve` → `suspend!` on Branch A (Spec 16, VERIFIED ruby_llm 1.16.0).**
+  Group 0 confirmed a tool `execute` exception PROPAGATES out of `chat.ask`: `Chat#execute_tool`
+  (`chat.rb:389`) → `tool.call` (`tool.rb:105`) → `execute(**args)` has NO rescue in the chain, and
+  `RubyLLM.instrument` (`instrumentation.rb:12,20`) yields without rescuing; `Loops::RubyLLM#run` and
+  `Agent#prompt` don't rescue either. So `Nexo::ApprovalRequired` (top-level, `< StandardError` like
+  `Permissions::Denied` — NOT `< Nexo::Error`) raised by the new `:approve` gate travels out to
+  `Workflow#run_agent`, which rescues it, records `"__approval__"` (reserved `state` key, sibling of
+  `"__suspend__"`), and `suspend!`s. `resume(approved: …)` threads the decision via `Agent.new(decision:)`
+  → `resolve_permissions(decision:)` → `Permissions#decision`. `:approve` reuses the Spec 14 `@ask_when`
+  predicate (aliased `approve_when:`) — one predicate, not two. Undecided ⇒ suspend; `approved: false`
+  ⇒ `Denied` ⇒ tool `{error:}` ⇒ run still `"done"`, effect skipped. **`fetch.rb` was the one tool with
+  a broad `rescue => e` (`fetch.rb:58`) that would swallow the signal** — added `rescue
+  Nexo::ApprovalRequired; raise` before it; the other four tools rescue narrowly. `:read_only`/`:auto`/
+  `:ask`/`authorize_mcp!` are byte-for-byte untouched. Use `with_decision` (non-mutating dup) when
+  threading a decision into a user-supplied, class-level `:approve` `Permissions` so the shared instance
+  isn't clobbered.
+
 ## Verified APIs (Spec 5)
 
 - **ruby_llm 1.16.0 HTTP adapter is fiber-friendly.** `RubyLLM::Connection` builds Faraday with

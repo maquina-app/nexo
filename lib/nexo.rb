@@ -30,6 +30,28 @@ module Nexo
   # no model and no configured default).
   class ConfigurationError < Error; end
 
+  # Control-flow signal raised by the +:approve+ permission gate (Spec 16) when a
+  # capability needs a human decision and none has been threaded in yet. Unlike
+  # {Permissions::Denied} ("no, adapt" — tools rescue it into +{error:}+),
+  # +ApprovalRequired+ means "pause and ask a human": tools must **not** rescue
+  # it, so it propagates out of the +ruby_llm+ tool loop and out of
+  # {Agent#prompt}, where {Workflow#run_agent} catches it and turns it into a
+  # durable {Workflow#suspend!}. It subclasses +StandardError+ directly (not
+  # {Error}), mirroring {Permissions::Denied}'s base — it is a signal, not a
+  # library-misuse error. Carries the pending call's +capability+, +detail+ (the
+  # tool/path), and +args+ so a host can render the approval prompt from
+  # +run.state["__approval__"]+.
+  class ApprovalRequired < StandardError
+    attr_reader :capability, :detail, :args
+
+    def initialize(capability, detail = nil, args = nil)
+      @capability = capability
+      @detail = detail
+      @args = args
+      super("approval required for #{capability} (#{detail})")
+    end
+  end
+
   class << self
     # Yields the singleton {Configuration} for in-place setup and returns it.
     #

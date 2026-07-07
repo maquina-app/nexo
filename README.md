@@ -55,7 +55,7 @@ provider-neutral — there is intentionally no hardcoded model:
 Nexo.configure do |config|
   config.default_model       = ENV["NEXO_MODEL"] # provider-neutral: no default
   config.default_sandbox     = :virtual          # :virtual | :local
-  config.default_permissions = :read_only        # :read_only | :auto | :ask
+  config.default_permissions = :read_only        # :read_only | :auto | :ask | :approve
   config.skills_path         = "app/skills"
   config.concurrency         = :threaded         # :threaded | :async (opt-in fiber offload)
   config.max_in_flight       = 8                 # Nexo.concurrent fan-out bound
@@ -127,6 +127,7 @@ and the agent loop continues — it does not raise. A path that escapes the work
 | `:read_only` (default)   | ✅      | ✅      | ❌ `{error}`        | ❌ `{error}`                      | ❌ `{error}`        |
 | `:auto`                  | ✅      | ✅      | ✅                  | ✅                                | ✅                  |
 | `:ask`                   | per `on_ask` | per `on_ask` | per `on_ask`   | per `on_ask`                      | per `on_ask`        |
+| `:approve`               | per `decision` | per `decision` | per `decision` | per `decision`             | per `decision`      |
 | `Virtual` sandbox        | ✅      | ✅      | ✅ (in-memory)      | ❌ `NotImplementedError`→`{error}` | ✅ (network egress)  |
 | `Local` sandbox          | ✅ (guarded) | ✅ | ✅ (guarded)        | ✅ (narrowed ENV)                 | ✅ (network egress)  |
 | `Container` sandbox      | ✅ (guarded) | ✅ | ✅ (guarded, scratch) | ✅ (in container)               | ❌ (`network: none`) |
@@ -788,6 +789,83 @@ DocumentApproval.resume_later(run.id, approved: true, queue: :nexo)
 See [`examples/approval_workflow.rb`](examples/approval_workflow.rb) for the full
 offline flow (`ruby -Ilib examples/approval_workflow.rb`).
 
+#### Durable **agent** approval — `:approve` (bridge a mid-run gate to a suspend)
+
+The example above suspends at an **explicit** `suspend!` the workflow author placed.
+Spec 16 adds the durable, cross-process sibling of `:ask` for the case where a
+`run_agent`-driven agent hits a permission gate **mid-loop** and you want that to
+**pause the run for a human**, not run unchecked and not block a worker. Declare the
+agent under the `:approve` mode:
+
+```ruby
+class Scribe < Nexo::Agent
+  model   ENV.fetch("NEXO_MODEL")
+  sandbox :local
+  permissions :approve        # every gated capability needs a human decision
+end
+
+class ApprovedWrite < Nexo::Workflow
+  sandbox :local
+  agent   Scribe
+  def call(_p) = { content: run_agent("Write 'hi' to notes.txt").content }
+end
+```
+
+The loop is: **`:approve` gate with no decision → `Nexo::ApprovalRequired` → `run_agent`
+suspends → host renders the pending call → `resume(approved:)` threads the decision back
+through the gate.**
+
+```ruby
+run = ApprovedWrite.run                       # agent reaches the write gate, run suspends
+run.status                                     # => "suspended"
+run.state["__suspend__"]["reason"]             # => "approval: notes.txt"
+run.state["__approval__"]                      # => { "capability" => "write",
+                                               #      "tool" => "notes.txt", "args" => {…} }
+
+# ...a human approves — possibly in another process (resume_later for the AR store):
+resumed = ApprovedWrite.resume(run.id, approved: true)
+resumed.status                                 # => "done" (the gate allowed the write)
+```
+
+- **`Nexo::ApprovalRequired`** is a signal, **distinct from `Permissions::Denied`**:
+  `Denied` means "no, adapt" (tools rescue it into `{error:}`); `ApprovalRequired` means
+  "pause and ask a human", so tools must **not** rescue it — it propagates out of the
+  tool loop and out of `Agent#prompt`, where `run_agent` catches it.
+- **Undecided ⇒ suspend, `approved: false` ⇒ deny.** The default stays safe: an
+  unresolved approval never silently allows, and a denial on resume makes the tool return
+  `{error:}` (the model adapts) — the run still finishes `"done"`, **without** the gated
+  effect, never `"failed"`.
+- **Scope which actions need approval** with the same `ask_when` predicate as `:ask`
+  (aliased `approve_when:` for readability) — unset means every gated action needs a
+  decision; a falsey predicate auto-allows without one:
+
+  ```ruby
+  Nexo::Permissions.new(mode: :approve,
+    approve_when: ->(cap, detail) { cap == :write && detail.to_s.start_with?("/protected") })
+  ```
+- **Synchronous `:ask` is untouched.** `:ask` (in-process `on_ask`) is still the right
+  choice with a human at the keyboard during a synchronous `run`; `:approve` is its
+  durable, cross-process sibling for `run_later`/`resume_later`.
+
+**Caveats (read before relying on it):**
+- **Re-entry, not replay.** On resume the agent re-drives `#call` from the top; a
+  non-idempotent tool call *before* the approval gate re-runs on resume (agent tool calls
+  generally aren't checkpointable). Put approval gates **early**, or after the expensive
+  work is already `checkpoint`ed by the workflow.
+- **One approval per suspend cycle, global decision.** The `{approved:}` answers whichever
+  gate the re-driven agent hits first. A *second* gate after an approved first one simply
+  **suspends again** — the next resume decides it. There is no per-tool decision granularity
+  in v1.
+- **Cross-process approval needs the ActiveRecord store + ActiveJob** (like all of Spec 13).
+  In-process `resume` works with the Memory store; a Memory run does not survive the process.
+- **Branch depends on upstream `ruby_llm`.** This works because `ruby_llm`'s tool loop lets a
+  tool `execute` exception propagate out of `chat.ask` (verified, 1.16.0). If a future
+  `ruby_llm` swallows tool exceptions, tool-triggered approval would be constrained — a
+  genuine upstream dependency, stated plainly.
+
+See [`examples/approval_agent.rb`](examples/approval_agent.rb) for the live flow
+(`NEXO_LIVE=1 NEXO_MODEL=… ruby -Ilib examples/approval_agent.rb`).
+
 The `state` column ships with fresh installs. Apps installed before this feature
 add it with an additive migration:
 
@@ -815,8 +893,9 @@ capture, so this is **not** replay:
   a run that must survive the process (and be resumed by a controller/job elsewhere)
   needs the AR store with a shared database.
 - **Never `suspend!` inside a `checkpoint` block** (undefined — unsupported), and
-  never name a checkpoint `"__suspend__"` — that key is reserved for the suspend
-  metadata Nexo stores in `state`.
+  never name a checkpoint `"__suspend__"` (reserved for the suspend metadata) or
+  `"__approval__"` (reserved for the pending approval call — see the durable-approval
+  section above) — both are keys Nexo stores in `state`.
 
 There is **no distinct `"resumed"` status**: resume re-enters `execute`, so a host
 sees the existing `suspended` → `running` → `done` (or `suspended` again)

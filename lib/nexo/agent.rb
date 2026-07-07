@@ -128,11 +128,17 @@ module Nexo
     attr_reader :cwd, :model, :provider, :assume_model_exists, :sandbox, :permissions, :instructions, :loop
 
     # Every argument is optional; each resolves arg -> class macro -> config.
-    # Symbol shorthands (:virtual/:local, :read_only/:auto/:ask) and pre-built
-    # Sandbox/Permissions instances are both accepted. +loop:+ injects the engine
-    # that drives a prompt — the provider-neutral {Loops::RubyLLM} by default, or
-    # an opt-in backend like {Loops::AgentSDK}.
-    def initialize(cwd: Dir.pwd, model: nil, sandbox: nil, permissions: nil, loop: Loops::RubyLLM.new)
+    # Symbol shorthands (:virtual/:local, :read_only/:auto/:ask/:approve) and
+    # pre-built Sandbox/Permissions instances are both accepted. +loop:+ injects
+    # the engine that drives a prompt — the provider-neutral {Loops::RubyLLM} by
+    # default, or an opt-in backend like {Loops::AgentSDK}.
+    #
+    # +decision:+ (Spec 16, default +nil+) is a per-run approval answer
+    # (+{approved: true|false}+) threaded into the resolved {Permissions} so an
+    # +:approve+ gate allows/denies instead of raising {Nexo::ApprovalRequired}.
+    # It only supplies the *answer* to an already-+:approve+ gate — it never
+    # widens capability. {Workflow#run_agent} passes it on the resume pass.
+    def initialize(cwd: Dir.pwd, model: nil, sandbox: nil, permissions: nil, decision: nil, loop: Loops::RubyLLM.new)
       @cwd = cwd
       @model = model || self.class.model || Nexo.config.default_model
       if @model.nil?
@@ -148,7 +154,7 @@ module Nexo
       end
 
       @sandbox = resolve_sandbox(sandbox || self.class.sandbox)
-      @permissions = resolve_permissions(permissions || self.class.permissions)
+      @permissions = resolve_permissions(permissions || self.class.permissions, decision: decision)
       @instructions = self.class.instructions
       @loop = loop
     end
@@ -305,9 +311,13 @@ module Nexo
     # by +:local+; container tiers keep their own +/workspace+ default).
     def resolve_sandbox(value) = Sandboxes.resolve(value, cwd: @cwd)
 
-    def resolve_permissions(value)
+    def resolve_permissions(value, decision: nil)
       # A user-supplied Permissions sets its own mcp_allow: — leave it untouched.
-      return value if value.is_a?(Permissions)
+      # Thread a per-run approval decision through a non-mutating copy (Spec 16)
+      # so a shared, class-level :approve instance is never clobbered.
+      if value.is_a?(Permissions)
+        return decision ? value.with_decision(decision) : value
+      end
 
       # Thread the class-level mcp_allow into each symbol branch (Spec 6) so the
       # MCP capability axis is populated alongside the sandbox axis.
@@ -316,6 +326,7 @@ module Nexo
       when :read_only then Permissions.new(mode: :read_only, mcp_allow: allow)
       when :auto then Permissions.new(mode: :auto, allow: %i[read glob write shell fetch], mcp_allow: allow)
       when :ask then Permissions.new(mode: :ask, mcp_allow: allow) # pass a Permissions with on_ask for a real gate
+      when :approve then Permissions.new(mode: :approve, mcp_allow: allow, decision: decision)
       else raise ConfigurationError, "unknown permissions: #{value.inspect}"
       end
     end

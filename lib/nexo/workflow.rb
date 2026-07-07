@@ -328,7 +328,8 @@ module Nexo
     # json-serializable — they round-trip the store exactly like +result+/+events+.
     #
     # Do NOT call {#suspend!} inside a checkpoint block (undefined — v1 unsupported),
-    # and do NOT name a checkpoint +"__suspend__"+ (reserved for suspend metadata).
+    # and do NOT name a checkpoint +"__suspend__"+ (reserved for suspend metadata)
+    # or +"__approval__"+ (reserved for the pending approval call — Spec 16).
     # A crash *inside* a checkpoint re-runs that checkpoint on resume (at-least-once
     # for the in-flight step) — guard side effects accordingly.
     def checkpoint(name)
@@ -464,19 +465,54 @@ module Nexo
     # (sandbox), the agent owns the *what* (permissions) and *how* (skills). Driving
     # an agent never widens its authority; its safe default (+:read_only+) is
     # untouched. Raises {ConfigurationError} when no +agent+ is declared.
+    # Durable approval (Spec 16): when the driven agent runs under an +:approve+
+    # permission gate and hits a sensitive capability with no decision yet, the
+    # gate raises {Nexo::ApprovalRequired}, which propagates out of the +ruby_llm+
+    # tool loop (Group 0: the loop does not rescue tool exceptions) and out of
+    # {Agent#prompt}. +run_agent+ rescues it, records the pending call under the
+    # reserved +"__approval__"+ state key, and {#suspend!}s the run — so the worker
+    # returns and a host renders "approval pending" from +run.state+. On
+    # {.resume}/{.resume_later} with +{approved: …}+ the decision is threaded into
+    # the agent (via +decision:+), so the same gate now allows (→ run completes) or
+    # denies (→ the tool returns +{error:}+, the model adapts, run still completes).
     def run_agent(prompt, max_turns: 25)
       klass = self.class.agent or raise Nexo::ConfigurationError,
         "#{self.class} has no `agent` declared; add `agent MyAgent`"
-      agent = klass.new(sandbox: sandbox)
+      agent = klass.new(sandbox: sandbox, **agent_decision_kwargs)
       agent.prompt(prompt, max_turns: max_turns) do |type, payload|
         emit(:"agent_#{type}", serializable(type, payload))
       end
+    rescue Nexo::ApprovalRequired => a
+      # Persist the pending call (immediately, like a checkpoint) so a host can
+      # render the approval prompt, then suspend — the existing Workflow.execute
+      # `rescue Suspended` path marks the run "suspended" and returns it.
+      @run.state = (@run.state || {}).merge(
+        "__approval__" => {
+          "capability" => a.capability.to_s,
+          "tool" => a.detail.to_s,
+          "args" => a.args
+        }
+      )
+      @run.save_state! if @run.respond_to?(:save_state!)
+      suspend!(reason: "approval: #{a.detail}", resume_key: a.detail.to_s)
     ensure
-      # Guarded so it's safe if Spec 6 (Agent#close) isn't present in the agent.
+      # Guarded so it's safe if Spec 6 (Agent#close) isn't present in the agent,
+      # or if agent construction itself raised (agent is nil).
       agent.close if agent.respond_to?(:close)
     end
 
     private
+
+    # The +decision:+ kwargs handed to the agent built in {#run_agent} (Spec 16).
+    # Empty on the first (non-resume) pass ⇒ no decision ⇒ the +:approve+ gate
+    # suspends. On resume, {#resume_input} carries +{approved: …}+ (symbol-keyed
+    # in both the in-process and the job path), which becomes the agent's
+    # decision so the gate allows/denies. Never widens authority — it only answers
+    # an already-+:approve+ gate.
+    def agent_decision_kwargs
+      d = resume_input
+      d.empty? ? {} : {decision: {approved: !!d[:approved]}}
+    end
 
     # Broadcasts a single event over ActiveSupport::Notifications (Spec 11 R2) as it
     # is emitted — a no-op without ActiveSupport, so the plain-Ruby core's {#emit} is
