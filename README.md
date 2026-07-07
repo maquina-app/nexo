@@ -146,6 +146,62 @@ and the agent loop continues — it does not raise. A path that escapes the work
   your own) by injecting a client. Escalating to `:remote` is always an explicit choice in
   your code — the default stays `:virtual`.
 
+### Safety refinements — safer, more legible real-FS sandboxes
+
+Five small refinements tighten the real-filesystem sandboxes (`Local`, `Container`) and make
+the execution environment more legible to the model. Each wires into an existing seam — no new
+sandbox tier, no new capability, no new dependency. Every one *tightens* a default or *narrows*
+scope; none widens authority silently.
+
+- **Self-describing sandbox (`Sandbox#instructions`).** A real-FS sandbox appends one plain-text
+  system message describing where the agent runs, so a weak local tool-caller (e.g. Ollama/Gemma)
+  knows its environment. `Local` → *"You run on the host machine, cwd /path/to/repo. The real host
+  filesystem and shell are reachable; file access is guarded to /path/to/repo."*; `Container` →
+  *"You run inside a docker container (image node:22-slim), cwd /workspace, network none…"*.
+  `Virtual` says nothing (`#instructions` is `nil`). Ordering in the system messages: **agent
+  instructions → sandbox instructions → skill instructions**. Provider-neutral, injected through
+  the existing `with_instructions` path.
+
+- **Capability-gated tool attach (`Sandbox#supports?`).** A `:virtual` agent no longer advertises
+  a `Shell` tool it can never run — `Agent#chat` attaches `Shell` only when
+  `@sandbox.supports?(:shell)`. `Local`/`Container` support all four capabilities; `Virtual`
+  supports everything but `:shell`. `ReadFile`/`WriteFile`/`Glob` are always attached.
+
+- **Shell output truncation (`Nexo::OutputTruncator`).** Unbounded command output (`npm install`,
+  `git log`) is truncated before it reaches the model, so a single command can't blow a small
+  context window. `Tools::Shell` wraps `stdout`/`stderr` through
+  `OutputTruncator.call(text, max_lines: 200, max_chars: 16_000)` — strips ANSI escapes, keeps the
+  **last** `max_lines` lines, appends a `…[truncated N lines]` marker, then caps at `max_chars`.
+  The integer `status` passes through untouched. Pure line/char truncation — **no tokenizer**;
+  configurable via the kwargs only (no global config, no per-agent macro).
+
+- **Read-before-write + stale guard (real-FS only).** Within a session, the agent is blocked from
+  overwriting a file it never read, or one that changed underneath it. `Agent#chat` builds one
+  `Nexo::ReadTracker` per chat and threads it into `ReadFile` (records `(path, mtime)` on a
+  successful read) and `WriteFile` (enforces): overwriting an existing, un-read file returns
+  `{error: "read <path> before overwriting it"}`; a file whose mtime changed since the read returns
+  `{error: "stale: <path> changed since you read it"}`; a new file writes freely. The guard is
+  **real-FS only** — skipped entirely on `Virtual` (nil `mtime`) and when no tracker is passed
+  (direct tool construction). Best-effort: mtime-based, so a sub-second external edit may slip past
+  the stale check (read-before-write is the primary guard). Clobber-safety within a session only —
+  no versioning, locking, or VCS semantics.
+
+- **Scoped `:ask` predicate (`ask_when`).** Under `:ask`, `Permissions.new(ask_when: ->(cap, detail)
+  { … })` scopes *which* actions actually prompt a human. When the predicate returns falsey the
+  action is auto-allowed **without** calling `on_ask`; truthy (or when `ask_when` is unset) falls
+  through to `on_ask` exactly as before. Unset = ask for everything (backward-compatible). It only
+  ever *narrows* what is auto-allowed from the "ask for everything" baseline — it never widens
+  authority, and it applies to `authorize!` only (the separate MCP ask axis is unchanged).
+
+  ```ruby
+  # Only prompt for writes under /protected; auto-allow everything else.
+  perms = Nexo::Permissions.new(
+    mode: :ask,
+    on_ask:   ->(cap, detail) { ask_the_human(cap, detail) },
+    ask_when: ->(cap, detail) { cap == :write && detail.to_s.start_with?("/protected") }
+  )
+  ```
+
 ### Remote sandbox — bring your own container
 
 `Sandboxes::Remote` contains **zero vendor code**. It wraps any object that satisfies a

@@ -4,6 +4,9 @@ module Nexo
       attr_reader cwd: String
 
       def initialize: (?cwd: String, ?env: Hash[String, String]) -> void
+      def instructions: () -> String
+      def supports?: (Symbol cap) -> bool
+      def mtime: (String path) -> Time?
     end
   end
 end

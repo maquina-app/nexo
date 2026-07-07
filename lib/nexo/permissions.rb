@@ -24,13 +24,20 @@ module Nexo
     # +Agent#permission_mode+).
     attr_reader :mode
 
-    def initialize(mode: :read_only, allow: %i[read glob], mcp_allow: [], on_ask: nil)
+    # +ask_when:+ is an optional +->(capability, detail)+ predicate that scopes
+    # *which* actions actually prompt under +:ask+: when it returns falsey the
+    # action is auto-allowed without calling +on_ask+; truthy (or when unset)
+    # falls through to +on_ask+ exactly as before. It only ever *narrows* what is
+    # auto-allowed from the "ask for everything" baseline — it never widens
+    # authority. Applies to {#authorize!} only, not {#authorize_mcp!}.
+    def initialize(mode: :read_only, allow: %i[read glob], mcp_allow: [], on_ask: nil, ask_when: nil)
       raise ArgumentError, "unknown mode #{mode}" unless MODES.include?(mode)
 
       @mode = mode
       @allow = allow
       @mcp_allow = mcp_allow.map(&:to_s)
       @on_ask = on_ask
+      @ask_when = ask_when
     end
 
     # Authorizes +capability+ (with optional +detail+ passed to an +:ask+ hook).
@@ -47,6 +54,10 @@ module Nexo
         end
         true
       when :ask
+        # Scoped-ask: when ask_when says this action doesn't need a prompt,
+        # auto-allow without calling on_ask. Unset ask_when = ask for everything.
+        return true if @ask_when && !@ask_when.call(capability, detail)
+
         unless @on_ask&.call(capability, detail)
           raise Denied, "#{capability} (#{detail}) denied by user"
         end

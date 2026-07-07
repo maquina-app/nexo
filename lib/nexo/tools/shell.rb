@@ -17,7 +17,12 @@ module Nexo
 
       def execute(command:)
         @permissions.authorize!(:shell, command)
-        @sandbox.shell(command)
+        out = @sandbox.shell(command)
+        {
+          stdout: OutputTruncator.call(out[:stdout]),
+          stderr: OutputTruncator.call(out[:stderr]),
+          status: out[:status]
+        }
       rescue Permissions::Denied, NotImplementedError => e
         {error: e.message}
       end

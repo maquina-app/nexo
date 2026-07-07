@@ -172,12 +172,26 @@ module Nexo
     def chat(base: nil)
       c = base || RubyLLM.chat(**chat_model_options)
       c = c.with_instructions(@instructions) if @instructions
-      c.with_tools(
-        Tools::ReadFile.new(sandbox: @sandbox, permissions: @permissions),
-        Tools::WriteFile.new(sandbox: @sandbox, permissions: @permissions),
-        Tools::Shell.new(sandbox: @sandbox, permissions: @permissions),
+      # Self-describing sandbox (R1): inject after the agent's own instructions
+      # and before skills, only when the sandbox describes itself.
+      if @sandbox.instructions
+        c = c.with_instructions(@sandbox.instructions, append: true)
+      end
+
+      # One ReadTracker per chat, shared by ReadFile (records) and WriteFile
+      # (enforces the read-before-write + stale guard) — R4.
+      tracker = ReadTracker.new
+      tools = [
+        Tools::ReadFile.new(sandbox: @sandbox, permissions: @permissions, tracker: tracker),
+        Tools::WriteFile.new(sandbox: @sandbox, permissions: @permissions, tracker: tracker),
         Tools::Glob.new(sandbox: @sandbox, permissions: @permissions)
-      )
+      ]
+      # Attach Shell only when the sandbox can actually run one (R2), so a
+      # :virtual agent stops advertising a tool it can never run.
+      if @sandbox.supports?(:shell)
+        tools << Tools::Shell.new(sandbox: @sandbox, permissions: @permissions)
+      end
+      c.with_tools(*tools)
       apply_skills(c)
       apply_mcp(c)
       apply_fetch(c)

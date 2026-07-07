@@ -54,14 +54,20 @@ class AgentTest < Minitest::Test
     Nexo.reset_config!
   end
 
-  def test_chat_attaches_all_four_sandbox_backed_tools
+  def test_chat_attaches_sandbox_backed_tools_gating_shell_by_capability
     chat = VirtualAgent.new.chat
     tool_classes = chat.tools.values.map(&:class)
 
     assert_includes tool_classes, Nexo::Tools::ReadFile
     assert_includes tool_classes, Nexo::Tools::WriteFile
-    assert_includes tool_classes, Nexo::Tools::Shell
     assert_includes tool_classes, Nexo::Tools::Glob
+    # The :virtual sandbox has no shell, so Shell is not attached (Spec 14 R2).
+    refute_includes tool_classes, Nexo::Tools::Shell
+  end
+
+  def test_local_agent_chat_attaches_shell
+    chat = LocalAgent.new(cwd: Dir.pwd).chat
+    assert_includes chat.tools.values.map(&:class), Nexo::Tools::Shell
   end
 
   def test_macro_instructions_appear_on_the_built_chat

@@ -8,7 +8,8 @@ module Nexo
     type capability = Symbol
     type ask_hook = ^(capability, untyped) -> boolish
 
-    def initialize: (?mode: Symbol, ?allow: Array[Symbol], ?on_ask: ask_hook?) -> void
+    def initialize: (?mode: Symbol, ?allow: Array[Symbol], ?mcp_allow: Array[untyped], ?on_ask: ask_hook?, ?ask_when: ask_hook?) -> void
+    def authorize_mcp!: (untyped tool_name, ?untyped args) -> bool
     def authorize!: (capability capability, ?untyped detail) -> bool
   end
 end
