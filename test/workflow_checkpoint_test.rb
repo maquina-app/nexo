@@ -52,4 +52,26 @@ class WorkflowCheckpointTest < Minitest::Test
     assert_equal 1, run.state["a"]
     assert_equal({"nested" => [1, 2]}, run.state["b"])
   end
+
+  # A symbol-keyed Hash checkpoint value is normalized to string keys (and symbol
+  # values to strings) on the FIRST pass, exactly as it would read back from the
+  # AR json column on a cross-process resume — so both stores and both passes see
+  # identical data. This is what stops `fetched[:id]` working on the first pass
+  # but returning nil after a durable resume.
+  def test_checkpoint_value_is_json_normalized_on_write
+    captured = nil
+    klass = Class.new(Nexo::Workflow) do
+      define_method(:capture) { ->(v) { captured = v } }
+      def call(_p)
+        v = checkpoint(:fetch) { {id: 7, status: :ok, tags: [:a, :b]} }
+        capture.call(v)
+        {}
+      end
+    end
+    run = klass.run
+
+    expected = {"id" => 7, "status" => "ok", "tags" => %w[a b]}
+    assert_equal expected, captured, "first-pass value should already be normalized"
+    assert_equal expected, run.state["fetch"], "stored value matches the AR round-trip shape"
+  end
 end

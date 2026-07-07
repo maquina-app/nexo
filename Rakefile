@@ -26,6 +26,11 @@ Encoding.default_external = Encoding::UTF_8 if Encoding.default_external == Enco
 RDoc::Task.new(:doc) do |rd|
   rd.main = "README.md"
   rd.rdoc_files.include("README.md", "docs/*.md", "lib/**/*.rb")
+  # Generator template files are boilerplate copied verbatim into a host app
+  # (migrations land in the host's db/migrate, the initializer in config/) — they
+  # are not part of the gem's Ruby API, so they belong in neither the generated
+  # API site nor the coverage denominator.
+  rd.rdoc_files.exclude("lib/generators/**/templates/*.rb")
   rd.rdoc_dir = "doc"
 end
 

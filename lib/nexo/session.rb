@@ -94,7 +94,16 @@ module Nexo
         record.save!
         @agent.chat(base: record)
       else
-        MemoryStore.fetch(@agent_name, @instance_id) { @agent.chat }
+        # The in-memory chat holds the tool instances (and any live MCP clients)
+        # of the agent that first built it. Later resumes construct a fresh agent
+        # but reuse that SAME chat, so we also adopt its owning agent — otherwise
+        # #close would tear down the fresh (resource-less) agent while the original
+        # agent's stdio/SSE clients leaked, and the reused chat would keep calling
+        # through the first agent's tools regardless. Adopting the owner keeps
+        # #close and the live connections pointed at the same object.
+        owner = MemoryStore.fetch(@agent_name, @instance_id) { {agent: @agent, chat: @agent.chat} }
+        @agent = owner[:agent]
+        owner[:chat]
       end
     end
 
@@ -117,17 +126,18 @@ module Nexo
       Object.const_get(Nexo.config.session_chat_model)
     end
 
-    # Process-wide, in-memory backend for the plain-Ruby path. Holds one live
-    # +RubyLLM::Chat+ per +[agent_name, instance_id]+ pair so a later
-    # Session.resume in the same process resumes the very same thread. Not
-    # durable — a fresh process starts empty. Mirrors RunStore::Memory's
-    # class-level singleton so independent callers share one store.
+    # Process-wide, in-memory backend for the plain-Ruby path. Holds one
+    # +{agent:, chat:}+ entry per +[agent_name, instance_id]+ pair so a later
+    # Session.resume in the same process resumes the very same thread AND reuses
+    # the agent that owns its live tools/connections. Not durable — a fresh
+    # process starts empty. Mirrors RunStore::Memory's class-level singleton so
+    # independent callers share one store.
     class MemoryStore
       @threads = {}
 
       class << self
-        # Returns the stored chat for the pair, building it once (via the block)
-        # on first resume and reusing it thereafter.
+        # Returns the stored +{agent:, chat:}+ entry for the pair, building it once
+        # (via the block) on first resume and reusing it thereafter.
         def fetch(agent_name, instance_id)
           @threads[[agent_name, instance_id]] ||= yield
         end

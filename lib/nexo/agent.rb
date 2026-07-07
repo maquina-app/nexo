@@ -17,7 +17,30 @@ module Nexo
   # No sandbox, permission, or tool object is instantiated by hand. Defaults are
   # safe: +:virtual+ sandbox + +:read_only+ permissions unless overridden.
   class Agent
+    # The class-level ivars every macro reads/writes. Copied to a subclass in
+    # .inherited so `class Child < ConfiguredAgent; end` keeps the parent's
+    # configuration instead of silently resetting to defaults.
+    CONFIG_IVARS = %i[
+      @model @assume_model_exists @provider @sandbox @permissions @instructions
+      @skills @mcp @mcp_allow @fetch_allow @search_backend
+    ].freeze
+
     class << self
+      # Carries the parent's macro configuration onto a subclass. Arrays/Hashes are
+      # duped so a subclass extending an accumulating macro (e.g. a second +mcp+
+      # line) never mutates the parent's collection; scalars and shared config
+      # instances (a class-level Permissions) are copied by reference.
+      def inherited(subclass)
+        super
+        CONFIG_IVARS.each do |ivar|
+          next unless instance_variable_defined?(ivar)
+
+          value = instance_variable_get(ivar)
+          value = value.dup if value.is_a?(Array) || value.is_a?(Hash)
+          subclass.instance_variable_set(ivar, value)
+        end
+      end
+
       # Each macro is a reader with no argument and a writer with one. Unset
       # +sandbox+/+permissions+ fall back to the harness-wide config defaults.
       def model(value = nil)
@@ -66,15 +89,17 @@ module Nexo
       end
 
       # Declares the skills attached to this agent. With no args it returns the
-      # configured list (default +[]+); with args it records the names. Follows the
-      # same class-ivar convention as the macros above.
+      # configured list (default +[]+); with args it ACCUMULATES the names
+      # (deduped), so multiple +skills+ lines add up instead of the last one
+      # silently replacing the earlier ones — consistent with +mcp+.
       #
       #   class TriageAgent < Nexo::Agent
       #     model ENV.fetch("NEXO_MODEL")
       #     skills :triage          # one macro, no loader setup
+      #     skills :formatting      # adds to :triage, does not replace it
       #   end
       def skills(*names)
-        names.empty? ? (@skills || []) : (@skills = names)
+        names.empty? ? (@skills || []) : (@skills = ((@skills || []) + names).uniq)
       end
 
       # Declares an MCP server for this agent (Spec 6). Accumulating: multiple
@@ -95,16 +120,16 @@ module Nexo
 
       # The MCP tool-name allow-list threaded into this agent's Permissions (see
       # +mcp_allow:+ in #resolve_permissions). Exact tool-name match only — no
-      # globs. Same read-vs-write convention as skills: with args it records the
-      # flattened names as strings; with none it reads the list (default +[]+).
+      # globs. Like +skills+, with args it ACCUMULATES the flattened names as
+      # strings (deduped); with none it reads the list (default +[]+).
       def mcp_allow(*names)
-        names.empty? ? (@mcp_allow || []) : (@mcp_allow = names.flatten.map(&:to_s))
+        names.empty? ? (@mcp_allow || []) : (@mcp_allow = ((@mcp_allow || []) + names.flatten.map(&:to_s)).uniq)
       end
 
       # The host allow-list scoping this agent's Nexo::Tools::Fetch (Spec 9).
-      # Subdomain-aware, exact-host-suffix matching only — no globs. Same
-      # read-vs-write convention as mcp_allow: with args it records the flattened
-      # hosts as strings; with none it reads the list (default +[]+).
+      # Subdomain-aware, exact-host-suffix matching only — no globs. Like
+      # +skills+/+mcp_allow+, with args it ACCUMULATES the flattened hosts as
+      # strings (deduped); with none it reads the list (default +[]+).
       #
       # Declaring +fetch_allow+ only SCOPES hosts — it does not grant the +:fetch+
       # capability, which is default-denied like +:shell+. An agent that wants
@@ -112,7 +137,7 @@ module Nexo
       # +Permissions.new(mode: :read_only, allow: %i[read glob fetch])+. Both locks
       # must open before a fetch happens.
       def fetch_allow(*hosts)
-        hosts.empty? ? (@fetch_allow || []) : (@fetch_allow = hosts.flatten.map(&:to_s))
+        hosts.empty? ? (@fetch_allow || []) : (@fetch_allow = ((@fetch_allow || []) + hosts.flatten.map(&:to_s)).uniq)
       end
 
       # The host-injected search backend for this agent's Nexo::Tools::WebSearch
@@ -198,12 +223,7 @@ module Nexo
     # exactly one copy across resumes (VERIFIED, ruby_llm 1.16.0).
     def chat(base: nil)
       c = base || RubyLLM.chat(**chat_model_options)
-      c = c.with_instructions(@instructions) if @instructions
-      # Self-describing sandbox (R1): inject after the agent's own instructions
-      # and before skills, only when the sandbox describes itself.
-      if @sandbox.instructions
-        c = c.with_instructions(@sandbox.instructions, append: true)
-      end
+      c = apply_instructions(c)
 
       # One ReadTracker per chat, shared by ReadFile (records) and WriteFile
       # (enforces the read-before-write + stale guard) — R4.
@@ -219,7 +239,6 @@ module Nexo
         tools << Tools::Shell.new(sandbox: @sandbox, permissions: @permissions)
       end
       c.with_tools(*tools)
-      apply_skills(c)
       apply_mcp(c)
       apply_fetch(c)
       apply_search(c)
@@ -261,6 +280,10 @@ module Nexo
         elsif client.respond_to?(:close)
           client.close
         end
+      rescue
+        # Best-effort teardown: a failing stop on one client must not strand the
+        # remaining clients or leave @mcp_clients set (breaking idempotency).
+        # Swallow and continue to the next.
       end
       @mcp_clients = nil
     end
@@ -278,18 +301,29 @@ module Nexo
       opts
     end
 
-    # Attaches each declared skill's instructions to +chat+, after the
-    # sandbox-backed tools and on top of the agent's own instructions, in
-    # declaration order (deterministic). A skill contributes instructions only;
-    # it ships no independent tools (its scripts/references are reached through the
-    # already-gated sandbox tools), so attaching a skill never widens what the
-    # agent can do. +append: true+ adds an extra system message rather than
-    # replacing the base instructions.
-    def apply_skills(chat)
-      self.class.skills.each do |name|
-        skill = Skills.find(name)
-        chat.with_instructions(skill.content, append: true)
+    # Applies the full system-prompt stack to +chat+ in deterministic order: the
+    # agent's own instructions, then the self-describing sandbox instructions (R1),
+    # then each declared skill's body. A skill contributes instructions only — it
+    # ships no independent tools (its scripts/references are reached through the
+    # already-gated sandbox tools), so attaching one never widens the agent.
+    #
+    # The FIRST contribution is applied with +append: false+ and the rest with
+    # +append: true+. On a fresh chat that is byte-for-byte the prior behavior; on
+    # a Nexo::Session's persisted, re-hydrated chat the leading +append: false+
+    # collapses all prior +role: :system+ messages to one before the rest
+    # re-append, so N resumes keep exactly ONE copy of the stack — even when the
+    # agent declares no +instructions+ (the case that previously let skills/sandbox
+    # instructions accumulate a fresh copy per resume).
+    def apply_instructions(chat)
+      texts = []
+      texts << @instructions if @instructions
+      texts << @sandbox.instructions if @sandbox.instructions
+      self.class.skills.each { |name| texts << Skills.find(name).content }
+
+      texts.each_with_index do |text, i|
+        chat = chat.with_instructions(text, append: i.positive?)
       end
+      chat
     end
 
     # Lazily connects the declared MCP servers and attaches their tools, each

@@ -13,7 +13,7 @@ module Nexo
     # Ollama/Gemma — because file/shell capability comes entirely from the
     # agent's own sandbox-backed tools, not from anything vendor-specific here.
     #
-    # Turn-count *observability* (not a hard cap — see the turn-cap caveat in the
+    # Tool-call *observability* (not a hard cap — see the turn-cap caveat in the
     # README) is wired through +ruby_llm+'s +before_tool_call+/+after_tool_result+
     # callbacks when the installed version exposes them, and is silently omitted
     # otherwise so an older/newer +ruby_llm+ degrades to no observability rather
@@ -34,11 +34,11 @@ module Nexo
 
       private
 
-      # Turn-count OBSERVABILITY only: ruby_llm runs the whole tool loop inside
-      # #ask, so these callbacks report turns and tool activity but cannot halt the
-      # loop. Guarded by respond_to? — confirmed present on ruby_llm 1.16.0 (legacy
-      # aliases of #on_tool_call/#on_tool_result); a chat lacking them degrades to
-      # no observability rather than crashing.
+      # Tool-call OBSERVABILITY only: ruby_llm runs the whole tool loop inside
+      # #ask, so these callbacks report tool activity but cannot halt the loop.
+      # BOTH callbacks must be present to wire — confirmed on ruby_llm 1.16.0
+      # (legacy aliases of #on_tool_call/#on_tool_result); a chat missing either
+      # degrades to no observability rather than crashing on the one it has.
       #
       # A continuing Nexo::Session runs the loop repeatedly over the SAME chat, so
       # the wiring is done once per chat (flagged with an ivar) — otherwise ruby_llm
@@ -48,18 +48,13 @@ module Nexo
       # (the default per-prompt path) simply wires once — byte-for-byte the prior
       # behavior.
       def wire_observability(chat, &on_event)
-        return unless chat.respond_to?(:before_tool_call)
+        return unless chat.respond_to?(:before_tool_call) && chat.respond_to?(:after_tool_result)
 
         chat.instance_variable_set(:@nexo_on_event, on_event)
         return if chat.instance_variable_get(:@nexo_observed)
 
         chat.instance_variable_set(:@nexo_observed, true)
-        # The counter is the documented observability seam: ruby_llm cannot halt
-        # the loop mid-#ask, so `turns` is tracked for visibility only and is never
-        # used to stop the run (see the README turn-cap caveat).
-        turns = 0
         chat.before_tool_call do |tc|
-          turns += 1
           chat.instance_variable_get(:@nexo_on_event)&.call(:tool_call, tc)
         end
         chat.after_tool_result do |r|

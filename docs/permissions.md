@@ -6,15 +6,22 @@ Two seams compose the execution environment. The **sandbox** is *where* tools ac
 and the agent loop continues — it does not raise. A path that escapes the workspace raises
 `SecurityError`; an agent built with no resolvable model raises `Nexo::ConfigurationError`.
 
-|                          | `:read` | `:glob` | `:write`            | `:shell`                          | `:fetch`            |
-| ------------------------ | ------- | ------- | ------------------- | --------------------------------- | ------------------- |
-| `:read_only` (default)   | ✅      | ✅      | ❌ `{error}`        | ❌ `{error}`                      | ❌ `{error}`        |
-| `:auto`                  | ✅      | ✅      | ✅                  | ✅                                | ✅                  |
-| `:ask`                   | per `on_ask` | per `on_ask` | per `on_ask`   | per `on_ask`                      | per `on_ask`        |
-| `:approve`               | per `decision` | per `decision` | per `decision` | per `decision`             | per `decision`      |
-| `Virtual` sandbox        | ✅      | ✅      | ✅ (in-memory)      | ❌ `NotImplementedError`→`{error}` | ✅ (network egress)  |
-| `Local` sandbox          | ✅ (guarded) | ✅ | ✅ (guarded)        | ✅ (narrowed ENV)                 | ✅ (network egress)  |
-| `Container` sandbox      | ✅ (guarded) | ✅ | ✅ (guarded, scratch) | ✅ (in container)               | ❌ (`network: none`) |
+|                          | `:read` | `:glob` | `:write`            | `:shell`                          | `:fetch`   | `:search`  |
+| ------------------------ | ------- | ------- | ------------------- | --------------------------------- | ---------- | ---------- |
+| `:read_only` (default)   | ✅      | ✅      | ❌ `{error}`        | ❌ `{error}`                      | ❌ `{error}` | ❌ `{error}` |
+| `:auto`                  | ✅      | ✅      | ✅                  | ✅                                | ✅         | ✅         |
+| `:ask`                   | ✅      | ✅      | per `on_ask`        | per `on_ask`                      | per `on_ask` | per `on_ask` |
+| `:approve`               | ✅      | ✅      | per `decision`      | per `decision`                    | per `decision` | per `decision` |
+| `Virtual` sandbox        | ✅      | ✅      | ✅ (in-memory)      | ❌ `NotImplementedError`→`{error}` | ✅ †       | ✅ †       |
+| `Local` sandbox          | ✅ (guarded) | ✅ | ✅ (guarded)        | ✅ (narrowed ENV)                 | ✅ †       | ✅ †       |
+| `Container` sandbox      | ✅ (guarded) | ✅ | ✅ (guarded, scratch) | ✅ (in container)               | ✅ †       | ✅ †       |
+
+`:read`/`:glob` are auto-allowed under **every** mode (they sit in the default
+`allow` list), so `:ask`/`:approve` never prompt for them — only
+`:write`/`:shell`/`:fetch`/`:search` reach the gate. **†** `:fetch` and `:search`
+run in the **host process** (stdlib `net/http` / a host-injected backend), so **no
+sandbox constrains them** — not even a `--network none` container. They are bounded
+only by the capability gate above plus `fetch_allow` / the injected backend.
 
 ## Human-gated writes (`:ask`)
 

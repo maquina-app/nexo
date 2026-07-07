@@ -39,6 +39,7 @@ exact-match allow-list threaded into the agent's permissions:
 |---|---|
 | `:read_only` (default) | allow **only** tool names listed in `mcp_allow`; everything else is denied |
 | `:ask` | call `on_ask.call(:mcp, {tool:, args:})`; a truthy return allows, else deny |
+| `:approve` | names in `mcp_allow` are pre-approved; any other tool needs a human decision — undecided **suspends the run** (`Nexo::ApprovalRequired`), `approved: true` allows, `approved: false` denies (the durable sibling of `:ask`) |
 | `:auto` | allow every MCP tool |
 
 `mcp_allow` defaults to `[]`, so attaching a powerful server under `:read_only` with no

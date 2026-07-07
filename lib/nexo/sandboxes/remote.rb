@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "shellwords"
+
 module Nexo
   module Sandboxes
     # A provider-agnostic remote sandbox: it runs an agent's tools inside some
@@ -44,10 +46,26 @@ module Nexo
         @client.exec(command, timeout: timeout)
       end
 
-      # Lists paths matching +pattern+ by running +ls+ remotely and splitting the
+      # Supports all four capabilities: the injected client runs a real remote
+      # process, so — unlike Virtual — an agent on a Remote sandbox gets the Shell
+      # tool attached (Agent#chat gates Shell on +supports?(:shell)+).
+      def supports?(cap)
+        %i[read write shell glob].include?(cap)
+      end
+
+      # Lists paths matching +pattern+ by expanding it remotely and splitting the
       # client's stdout into an array of lines.
+      #
+      # The pattern is handed to an inner shell as a positional parameter (+$1+),
+      # so +for f in $1+ performs the remote glob expansion, while Shellwords
+      # keeps both the script and the pattern single opaque tokens to the outer
+      # shell — a model-supplied pattern (e.g. +"x; rm -rf ~"+) can't inject
+      # commands (assumes a POSIX +sh+ on the remote, which the shell contract
+      # already implies).
       def glob(pattern)
-        @client.exec("ls #{pattern}")[:stdout].to_s.split("\n")
+        script = 'for f in $1; do [ -e "$f" ] && echo "$f"; done'
+        command = "sh -c #{Shellwords.escape(script)} sh #{Shellwords.escape(pattern)}"
+        @client.exec(command)[:stdout].to_s.split("\n")
       end
 
       # Releases the remote session via the client.

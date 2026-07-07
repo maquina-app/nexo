@@ -48,6 +48,29 @@ class McpGatedToolTest < Minitest::Test
     assert_equal "fake get_thread", gated.description
   end
 
+  # #execute (the UNGATED tool body) must route back through the gate, not forward
+  # to the wrapped tool, so a caller invoking #execute directly can't bypass
+  # authorization.
+  def test_execute_is_gated_not_forwarded
+    tool = FakeMcpTool.new("send_email")
+    perms = Nexo::Permissions.new(mode: :read_only, mcp_allow: %w[search_threads])
+    gated = Nexo::MCP::GatedTool.new(tool: tool, permissions: perms)
+
+    result = gated.execute(to: "x@y.z")
+    assert result[:error] # denied, exactly like #call — not forwarded ungated
+    assert_empty tool.calls
+  end
+
+  def test_execute_on_allowed_tool_delegates_like_call
+    tool = FakeMcpTool.new("search_threads")
+    perms = Nexo::Permissions.new(mode: :read_only, mcp_allow: %w[search_threads])
+    gated = Nexo::MCP::GatedTool.new(tool: tool, permissions: perms)
+
+    result = gated.execute(q: "invoice")
+    assert_equal({ok: true, tool: "search_threads", echo: {q: "invoice"}}, result)
+    assert_equal [{q: "invoice"}], tool.calls
+  end
+
   def test_missing_gem_raises_missing_dependency
     # When ruby_llm-mcp is not installed, .load! must surface a Nexo error, not a
     # bare LoadError. Skipped where the gem IS present (it is a dev dep here). The

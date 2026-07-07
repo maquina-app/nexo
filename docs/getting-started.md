@@ -36,7 +36,7 @@ provider-neutral — there is intentionally no hardcoded model:
 ```ruby
 Nexo.configure do |config|
   config.default_model       = ENV["NEXO_MODEL"] # provider-neutral: no default
-  config.default_sandbox     = :virtual          # :virtual | :local
+  config.default_sandbox     = :virtual          # :virtual | :local | :docker | :apple | a Hash | a Sandbox
   config.default_permissions = :read_only        # :read_only | :auto | :ask | :approve
   config.skills_path         = "app/skills"
   config.concurrency         = :threaded         # :threaded | :async (opt-in fiber offload)
@@ -75,5 +75,29 @@ CodeReviewer.new(cwd: "/path/to/repo").prompt("Review the auth module")
 Defaults are safe: an agent with no `sandbox`/`permissions` declared gets the in-memory
 `:virtual` sandbox and `:read_only` permissions, so an untrusted model has zero host
 access until you explicitly opt in.
+
+## Unregistered models — local tags, self-hosted, brand-new releases
+
+`ruby_llm` normally validates a model id against its bundled `models.json` registry
+and infers the provider from it. A local Ollama tag (`gemma3:12b`), a self-hosted
+build, or a model newer than the installed registry isn't listed there — so declare
+the `provider` explicitly and set `assume_model_exists` to skip the registry lookup:
+
+```ruby
+class LocalReviewer < Nexo::Agent
+  model               "gemma3:12b"
+  provider            :ollama         # required once the registry lookup is skipped
+  assume_model_exists true            # opt out of models.json validation
+
+  instructions "You are a careful code reviewer."
+end
+```
+
+Both are class macros with the same reader/writer convention as `model`. `provider`
+is passed straight through to `RubyLLM.chat`; `assume_model_exists` defaults to
+`false` (registry validation on). Setting `assume_model_exists` **without** a
+`provider` raises `Nexo::ConfigurationError` — `ruby_llm` can't infer a provider once
+the lookup is skipped. See [`examples/code_reviewer.rb`](../examples/code_reviewer.rb)
+for a runnable Ollama example.
 
 ← Back to the [README](../README.md)

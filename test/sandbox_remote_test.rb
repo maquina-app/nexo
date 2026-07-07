@@ -71,12 +71,45 @@ class SandboxRemoteTest < Minitest::Test
     assert_includes client.calls, [:close]
   end
 
-  # glob runs `ls <pattern>` remotely and parses stdout lines into an array.
-  def test_glob_parses_ls_stdout_into_an_array
-    client = FakeClient.new("ls *.rb" => {stdout: "a.rb\nb.rb\nc.rb\n", stderr: "", status: 0})
+  # Remote runs a real remote process, so it supports :shell (unlike Virtual) —
+  # which is what makes Agent#chat attach the Shell tool to a remote-backed agent.
+  def test_supports_all_four_capabilities_including_shell
+    sandbox = Nexo::Sandboxes::Remote.new(client: FakeClient.new)
+
+    %i[read write shell glob].each { |cap| assert sandbox.supports?(cap), "expected :#{cap}" }
+  end
+
+  # glob expands the pattern remotely (as a positional $1, not interpolated) and
+  # parses stdout lines into an array. The exact command is built with the same
+  # Shellwords escaping the implementation uses, so the test tracks the contract
+  # without pinning a brittle literal.
+  def test_glob_parses_stdout_into_an_array
+    script = 'for f in $1; do [ -e "$f" ] && echo "$f"; done'
+    command = "sh -c #{Shellwords.escape(script)} sh #{Shellwords.escape("*.rb")}"
+    client = FakeClient.new(command => {stdout: "a.rb\nb.rb\nc.rb\n", stderr: "", status: 0})
     sandbox = Nexo::Sandboxes::Remote.new(client: client)
 
     assert_equal %w[a.rb b.rb c.rb], sandbox.glob("*.rb")
-    assert_includes client.calls, [:exec, "ls *.rb", nil]
+    assert_includes client.calls, [:exec, command, nil]
+  end
+
+  # A model-supplied pattern with shell metacharacters is passed as inert data,
+  # never parsed as a command: the built command escapes both the loop script and
+  # the pattern so an injected `; rm -rf ~` cannot break out of the $1 argument.
+  def test_glob_pattern_cannot_inject_commands
+    client = FakeClient.new
+    sandbox = Nexo::Sandboxes::Remote.new(client: client)
+
+    sandbox.glob("x; rm -rf ~")
+    command = client.calls.find { |c| c.first == :exec }[1]
+
+    # The dangerous `; rm -rf ~` is Shellwords-escaped into a single opaque token,
+    # so the outer shell never sees a bare command separator.
+    refute_includes command, "; rm -rf ~"
+    assert_includes command, Shellwords.escape("x; rm -rf ~")
+    # The loop script (which reads the pattern through $1, preserving glob
+    # expansion) is itself escaped as one token — its raw form never appears.
+    script = 'for f in $1; do [ -e "$f" ] && echo "$f"; done'
+    assert_includes command, Shellwords.escape(script)
   end
 end

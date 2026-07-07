@@ -42,8 +42,12 @@ This is deliberately the opposite of a Nexo *tool* failure, which returns
 `{ error: … }` and never raises into the agent loop. A tool error is recoverable
 context for the model; a workflow failure is a job that did not complete.
 
-Workflows are **not resumable**: an interrupted run is abandoned and you start a
-new one. There is no checkpoint state and no `resume`.
+By default a failed run is **not** retried — the exception is yours to handle. For
+long-running or human-in-the-loop jobs that must pause and continue later (possibly
+in another process), Nexo adds durable **checkpoints**, `suspend!`, and `resume` on
+top of this same lifecycle — see [Durable workflows](durable-workflows.md). Runs
+orphaned in `"running"` by a crashed worker are swept to `"interrupted"` by
+[`reconcile_interrupted!`](#reconciling-interrupted-runs).
 
 ## The event log — `emit` and `nexo logs`
 

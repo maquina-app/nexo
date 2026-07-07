@@ -118,6 +118,8 @@ if defined?(::ActiveRecord::Base)
 
       private
 
+      # Assigns the UUID primary key before insert (unless one was set explicitly),
+      # via the shared Nexo.generate_run_id so ids have the same shape across stores.
       def assign_run_id
         self.id = Nexo.generate_run_id if id.blank?
       end

@@ -79,4 +79,53 @@ class SandboxTest < Minitest::Test
       assert_raises(SecurityError) { sandbox.write("../escape.txt", "x") }
     end
   end
+
+  def test_local_glob_pattern_cannot_escape_cwd
+    Dir.mktmpdir do |dir|
+      sandbox = Nexo::Sandboxes::Local.new(cwd: dir)
+
+      assert_raises(SecurityError) { sandbox.glob("../../*") }
+    end
+  end
+
+  def test_local_glob_excludes_symlinks_pointing_outside_cwd
+    Dir.mktmpdir do |outside|
+      File.write(File.join(outside, "secret.txt"), "top secret")
+      Dir.mktmpdir do |dir|
+        File.write(File.join(dir, "normal.txt"), "ok")
+        File.symlink(File.join(outside, "secret.txt"), File.join(dir, "leak.txt"))
+        sandbox = Nexo::Sandboxes::Local.new(cwd: dir)
+
+        matches = sandbox.glob("*.txt").map { |p| File.basename(p) }
+        assert_includes matches, "normal.txt"
+        refute_includes matches, "leak.txt" # symlink escaping cwd is filtered out
+      end
+    end
+  end
+
+  def test_local_read_through_symlink_escaping_cwd_raises
+    Dir.mktmpdir do |outside|
+      File.write(File.join(outside, "secret.txt"), "top secret")
+      Dir.mktmpdir do |dir|
+        File.symlink(File.join(outside, "secret.txt"), File.join(dir, "leak.txt"))
+        sandbox = Nexo::Sandboxes::Local.new(cwd: dir)
+
+        # Lexically "leak.txt" is inside cwd, but its real target is not.
+        assert_raises(SecurityError) { sandbox.read("leak.txt") }
+      end
+    end
+  end
+
+  def test_local_write_through_dangling_symlink_escaping_cwd_raises
+    Dir.mktmpdir do |outside|
+      Dir.mktmpdir do |dir|
+        # A dangling symlink whose target lies outside cwd — a naive write would
+        # follow it and escape.
+        File.symlink(File.join(outside, "planted.txt"), File.join(dir, "link.txt"))
+        sandbox = Nexo::Sandboxes::Local.new(cwd: dir)
+
+        assert_raises(SecurityError) { sandbox.write("link.txt", "x") }
+      end
+    end
+  end
 end

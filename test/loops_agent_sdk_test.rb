@@ -68,6 +68,9 @@ class LoopsAgentSDKTest < Minitest::Test
     assert_equal "finished", result.payload
     assert_includes events, [:assistant, FakeMessage.new(:assistant, "working")]
     assert_includes events, [:result, FakeMessage.new(:result, "finished")]
+    # And it emits the base Loop contract's terminal :done event (carrying the
+    # result), so a Workflow#run_agent driving this backend records an agent_done.
+    assert_equal [:done, result], events.last
   end
 
   def test_missing_ruby_llm_agent_sdk_raises_missing_dependency_error
@@ -80,6 +83,20 @@ class LoopsAgentSDKTest < Minitest::Test
 
     assert_match(/ruby_llm-agent_sdk/, error.message)
     assert_match(/Gemfile/, error.message)
+  end
+
+  # The base Loop#run contract carries a chat: keyword (so a Nexo::Session can
+  # inject one). AgentSDK runs its own in-process loop and cannot continue a
+  # persisted chat, so it rejects a non-nil chat with a clear error instead of
+  # crashing with ArgumentError or silently dropping the session's memory.
+  def test_agent_sdk_rejects_a_session_chat
+    loop = Nexo::Loops::AgentSDK.new
+    agent = SDKAgent.new(loop: loop)
+
+    error = assert_raises(Nexo::ConfigurationError) do
+      loop.run(agent: agent, prompt: "hi", chat: Object.new)
+    end
+    assert_match(/Loops::RubyLLM/, error.message)
   end
 
   # The Nexo -> AgentSDK permission-mode mapping (decided in the spec).

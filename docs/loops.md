@@ -43,6 +43,7 @@ absent). It maps Nexo's permission modes onto the SDK's own vocabulary:
 | `:read_only` | `:default`                 |
 | `:auto`      | `:bypass_permissions`      |
 | `:ask`       | `:default` (human gating stays in Nexo's own `on_ask` path, not delegated to the SDK) |
+| `:approve`   | `:default` (durable approval stays in Nexo's own gate; any unmapped mode also falls back to `:default`) |
 
 ## The turn-cap caveat (read before running untrusted/expensive workloads)
 

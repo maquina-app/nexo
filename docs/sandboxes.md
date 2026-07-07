@@ -6,15 +6,22 @@ Two seams compose the execution environment. The **sandbox** is *where* tools ac
 and the agent loop continues — it does not raise. A path that escapes the workspace raises
 `SecurityError`; an agent built with no resolvable model raises `Nexo::ConfigurationError`.
 
-|                          | `:read` | `:glob` | `:write`            | `:shell`                          | `:fetch`            |
-| ------------------------ | ------- | ------- | ------------------- | --------------------------------- | ------------------- |
-| `:read_only` (default)   | ✅      | ✅      | ❌ `{error}`        | ❌ `{error}`                      | ❌ `{error}`        |
-| `:auto`                  | ✅      | ✅      | ✅                  | ✅                                | ✅                  |
-| `:ask`                   | per `on_ask` | per `on_ask` | per `on_ask`   | per `on_ask`                      | per `on_ask`        |
-| `:approve`               | per `decision` | per `decision` | per `decision` | per `decision`             | per `decision`      |
-| `Virtual` sandbox        | ✅      | ✅      | ✅ (in-memory)      | ❌ `NotImplementedError`→`{error}` | ✅ (network egress)  |
-| `Local` sandbox          | ✅ (guarded) | ✅ | ✅ (guarded)        | ✅ (narrowed ENV)                 | ✅ (network egress)  |
-| `Container` sandbox      | ✅ (guarded) | ✅ | ✅ (guarded, scratch) | ✅ (in container)               | ❌ (`network: none`) |
+|                          | `:read` | `:glob` | `:write`            | `:shell`                          | `:fetch`   | `:search`  |
+| ------------------------ | ------- | ------- | ------------------- | --------------------------------- | ---------- | ---------- |
+| `:read_only` (default)   | ✅      | ✅      | ❌ `{error}`        | ❌ `{error}`                      | ❌ `{error}` | ❌ `{error}` |
+| `:auto`                  | ✅      | ✅      | ✅                  | ✅                                | ✅         | ✅         |
+| `:ask`                   | ✅      | ✅      | per `on_ask`        | per `on_ask`                      | per `on_ask` | per `on_ask` |
+| `:approve`               | ✅      | ✅      | per `decision`      | per `decision`                    | per `decision` | per `decision` |
+| `Virtual` sandbox        | ✅      | ✅      | ✅ (in-memory)      | ❌ `NotImplementedError`→`{error}` | ✅ †       | ✅ †       |
+| `Local` sandbox          | ✅ (guarded) | ✅ | ✅ (guarded)        | ✅ (narrowed ENV)                 | ✅ †       | ✅ †       |
+| `Container` sandbox      | ✅ (guarded) | ✅ | ✅ (guarded, scratch) | ✅ (in container)               | ✅ †       | ✅ †       |
+
+`:read`/`:glob` are auto-allowed under **every** mode (they sit in the default
+`allow` list), so `:ask`/`:approve` never prompt for them — only
+`:write`/`:shell`/`:fetch`/`:search` reach the gate. **†** `:fetch` and `:search`
+run in the **host process** (stdlib `net/http` / a host-injected backend), so **no
+sandbox constrains them** — not even a `--network none` container. They are bounded
+only by the capability gate above plus `fetch_allow` / the injected backend.
 
 - **`Virtual`** (default) — in-memory, zero host access. `#shell` raises
   `NotImplementedError` on purpose: in-memory means no command execution. That is the
@@ -98,7 +105,7 @@ sandbox = Nexo::Sandboxes::Remote.new(client: my_container_client)
 # read(path)  -> client.read(path)
 # write(path, content) -> client.write(path, content)
 # shell(cmd, timeout:) -> client.exec(cmd, timeout:)
-# glob(pattern)        -> client.exec("ls #{pattern}")[:stdout].split("\n")
+# glob(pattern)        -> client.exec(<pattern as a positional $1, never interpolated>)
 # close                -> client.close
 ```
 
@@ -155,9 +162,10 @@ the host dir enters only through a `binds:` entry.
 `sandbox :docker` (or `runtime: :docker`) shells out to `docker`; `sandbox :apple`
 (`runtime: :apple`) shells out to Apple's `container` binary. The `run`/`exec` surface is
 largely shared; where the CLIs diverge (networking especially) the class branches on the
-runtime. **Apple `container` parity is verified, not assumed** — confirm against a live daemon
-(the flags are encoded from the reference mapping and the networking flag in particular is a
-verify-before-trust item). An unknown runtime raises `Nexo::ConfigurationError`.
+runtime. **Apple `container` parity is NOT yet verified** — the flags are encoded from the
+reference mapping, not confirmed against a live daemon, so every Apple flag must be verified
+before trust (the networking flag in particular; see the parity table below). An unknown
+runtime raises `Nexo::ConfigurationError`.
 
 ### Hardened by default — every knob an explicit opt-out
 
@@ -229,8 +237,9 @@ The container starts **lazily** on first tool use and its id is memoized.
   `:rw` bind (this is where staged files and artifacts land).
 - **Non-root is recommended, not forced.** The default hardening holds regardless of uid; set
   `user:` for defense-in-depth.
-- **Apple `container` parity is verified, not assumed** — especially networking. Confirm the
-  flag/subcommand against Apple's CLI before trusting the `:apple` runtime in production.
+- **Apple `container` parity is NOT yet verified** — especially networking. Every Apple flag
+  in the parity table below is UNVERIFIED; confirm the flag/subcommand against Apple's CLI
+  before trusting the `:apple` runtime in production.
 - **Reconnect is Docker-only today.** `reconnect: true` combined with `runtime: :apple` raises
   `Nexo::ConfigurationError` at the point reconnect would run. Apple's `container` CLI has no
   **live-verified** exact `label=` filter, and a name-substring match is unsafe (it can attach

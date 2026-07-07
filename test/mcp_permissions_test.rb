@@ -34,4 +34,29 @@ class McpPermissionsTest < Minitest::Test
     assert_equal :mcp, seen.first
     assert_equal({tool: "send_email", args: {to: "x@y.z"}}, seen.last)
   end
+
+  # :approve must NOT fail open on the MCP axis. An undecided gate suspends
+  # (raises ApprovalRequired), an allow-listed tool is pre-approved, an approved
+  # decision allows, and a denial Denies — the strict mode is never weaker than
+  # :read_only.
+  def test_approve_undecided_raises_approval_required
+    p = Nexo::Permissions.new(mode: :approve) # no decision, empty mcp_allow
+    err = assert_raises(Nexo::ApprovalRequired) { p.authorize_mcp!("send_email", {to: "x"}) }
+    assert_equal :mcp, err.capability
+    assert_equal "send_email", err.detail
+    assert_equal({to: "x"}, err.args)
+  end
+
+  def test_approve_preapproves_allowlisted_tool
+    p = Nexo::Permissions.new(mode: :approve, mcp_allow: %w[search_threads])
+    assert p.authorize_mcp!("search_threads")
+  end
+
+  def test_approve_with_decision_allows_and_denies
+    allowed = Nexo::Permissions.new(mode: :approve, decision: {approved: true})
+    assert allowed.authorize_mcp!("send_email")
+
+    denied = Nexo::Permissions.new(mode: :approve, decision: {approved: false})
+    assert_raises(Nexo::Permissions::Denied) { denied.authorize_mcp!("send_email") }
+  end
 end
