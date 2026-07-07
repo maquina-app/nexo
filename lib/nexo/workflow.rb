@@ -4,7 +4,7 @@ require "time"
 require "erb"
 
 module Nexo
-  # A finite-job lifecycle primitive. Subclass {Workflow}, implement
+  # A finite-job lifecycle primitive. Subclass Workflow, implement
   # +#call(payload)+, and run it with +MyWorkflow.run(payload)+ to get back a
   # persisted run record carrying a stable runId, status, payload, result,
   # error, and an ordered, inspectable event log.
@@ -31,22 +31,25 @@ module Nexo
   # leaves the run +"failed"+ with +error+ set *and* re-raises. (This is the
   # opposite of a Nexo *tool* failure, which returns +{ error: … }+ and never
   # raises into the agent loop.) An orphaned +"running"+ run (crashed worker) is
-  # abandoned — sweep it with {.reconcile_interrupted!}.
+  # abandoned — sweep it with ::reconcile_interrupted!.
   #
-  # A run can pause and continue on purpose, though (Spec 13): call {#suspend!}
-  # mid-+#call+ to leave the run +"suspended"+ (not failed), then {.resume} /
-  # {.resume_later} to re-enter +#call+ from the top. {#checkpoint} guards the
+  # A run can pause and continue on purpose, though (Spec 13): call #suspend!
+  # mid-+#call+ to leave the run +"suspended"+ (not failed), then ::resume /
+  # ::resume_later to re-enter +#call+ from the top. #checkpoint guards the
   # expensive/side-effectful steps so resume skips already-paid-for work — see the
   # "Durable workflows" README section for the honest resume semantics.
   class Workflow
-    # Control-flow signal raised by {#suspend!} and caught by {.execute} to pause
+    # Control-flow signal raised by #suspend! and caught by ::execute to pause
     # a run durably — NOT a failure. It transitions the run to +"suspended"+
     # (never +"failed"+) and returns the run to the caller rather than re-raising.
     # Carries the +reason+ (surfaced to a host UI) and an optional +resume_key+
     # (persisted so a host can correlate which resume it is awaiting — Spec 13 Q2).
     class Suspended < StandardError
+      # The pause +reason+ (surfaced to a host UI) and the optional +resume_key+
+      # a host can correlate the awaited resume against.
       attr_reader :reason, :resume_key
 
+      # Builds the suspend signal for +reason+ with an optional +resume_key+.
       def initialize(reason, resume_key = nil)
         @reason = reason
         @resume_key = resume_key
@@ -56,13 +59,13 @@ module Nexo
 
     class << self
       # The sandbox this workflow's runs stage inputs into and write artifacts to
-      # (Spec 7). Follows the same read-vs-write ivar convention as {Agent}'s
+      # (Spec 7). Follows the same read-vs-write ivar convention as Agent's
       # macros: with no argument (and no opts) it reads (default +:virtual+ —
       # safe, in-memory); with a bare value it stores a symbol/instance; with
       # keywords it stores an options Hash (+{ type: value, **opts }+) — e.g.
       # +sandbox :docker, image: "node:22-slim"+ (Spec 15). Resolution is lazy —
       # a data-only workflow that never stages or emits artifacts builds nothing
-      # (see {#sandbox}).
+      # (see #sandbox).
       def sandbox(value = nil, **opts)
         return @sandbox || :virtual if value.nil? && opts.empty?
 
@@ -77,10 +80,10 @@ module Nexo
         value.nil? ? (@cwd || Dir.pwd) : (@cwd = value)
       end
 
-      # The {Agent} subclass this workflow drives (Spec 8). Follows the same
-      # read-vs-write ivar convention as {.sandbox}/{.cwd}: with no argument it
+      # The Agent subclass this workflow drives (Spec 8). Follows the same
+      # read-vs-write ivar convention as ::sandbox/::cwd: with no argument it
       # reads (default +nil+ — a workflow need not drive an agent); with one it
-      # sets. Consumed by {#run_agent}, which binds the agent to the run's shared
+      # sets. Consumed by #run_agent, which binds the agent to the run's shared
       # sandbox. There is no per-call override — this macro is the only source.
       def agent(klass = nil)
         klass.nil? ? @agent : (@agent = klass)
@@ -112,7 +115,7 @@ module Nexo
       # return value as +result+; on any raised error it is "failed" with the
       # message as +error+ and the exception is re-raised. Returns the run.
       #
-      # +buffer_events:+ (Spec 5, default {Nexo.config.buffer_workflow_events})
+      # +buffer_events:+ (Spec 5, default Nexo.config.buffer_workflow_events)
       # controls persistence of the event log. When +false+ each +emit+ persists
       # immediately (Spec 2 behavior). When +true+ events are buffered in memory
       # and flushed to the store exactly once — the flush runs in the +ensure+ so
@@ -140,15 +143,15 @@ module Nexo
       # lives on the run record.
       #
       # Requires ActiveJob (Rails): with no ActiveJob loaded this raises
-      # {Nexo::MissingDependencyError} pointing at {.run} for synchronous execution.
-      # +queue:+ (default {Nexo.config.job_queue}) routes the job to a named queue;
+      # Nexo::MissingDependencyError pointing at ::run for synchronous execution.
+      # +queue:+ (default Nexo.config.job_queue) routes the job to a named queue;
       # +nil+ uses ActiveJob's default queue.
       #
       # It is only meaningful with a shared run store — the AR store plus a real
       # adapter, so a worker in another process finds the run in the database. Under
       # the +:inline+/+:test+ adapter the job runs in-process, so the Memory store is
       # also reachable. Not resumable: a crashed or retried job re-runs +#call+ from
-      # scratch (Nexo adds no +retry_on+); pair with {.reconcile_interrupted!} to
+      # scratch (Nexo adds no +retry_on+); pair with ::reconcile_interrupted! to
       # catch runs orphaned in +"running"+.
       def run_later(payload = nil, queue: Nexo.config.job_queue, **kwargs)
         unless defined?(::ActiveJob)
@@ -167,18 +170,18 @@ module Nexo
 
       # Continues a +"suspended"+ run synchronously (Spec 13): re-instantiates the
       # workflow from +run.workflow_class+ and re-runs +#call+ **from the top** with
-      # the run's original payload, making +input+ available via {#resume_input}.
+      # the run's original payload, making +input+ available via #resume_input.
       #
       # This is re-entry, NOT replay — Ruby has no transparent continuation capture.
-      # Everything *outside* a {#checkpoint} re-runs; only checkpoint-guarded work is
+      # Everything *outside* a #checkpoint re-runs; only checkpoint-guarded work is
       # skipped (its stored result is returned without re-running the block). Guard
       # every side effect and expensive step with a checkpoint; idempotency of the
       # non-checkpointed code is the author's responsibility.
       #
-      # Loads the run through {RunStore.default}, so it works with either store —
+      # Loads the run through RunStore.default, so it works with either store —
       # but durable *cross-process* resume needs the ActiveRecord store (a Memory
       # run doesn't survive the process); Memory resume is valid in-process.
-      # Raises {Nexo::Error} for a run that is not currently +"suspended"+.
+      # Raises Nexo::Error for a run that is not currently +"suspended"+.
       def resume(run_id, input = {})
         run = Nexo::RunStore.default.find(run_id)
         unless run.status == "suspended"
@@ -191,14 +194,14 @@ module Nexo
       end
 
       # Enqueues a durable, cross-process resume of a +"suspended"+ run (Spec 13 Q4),
-      # mirroring {.run_later}: the job carries the run id **plus** the resume +input+
+      # mirroring ::run_later: the job carries the run id **plus** the resume +input+
       # (the payload still lives on the run — only the input travels). +input+ must be
       # ActiveJob/json-serializable. Returns the run (still +"suspended"+ until the
-      # job picks it up and re-enters {.resume}'s guard).
+      # job picks it up and re-enters ::resume's guard).
       #
-      # Requires ActiveJob (Rails): without it this raises {Nexo::MissingDependencyError}
-      # pointing at {.resume} for synchronous execution. +queue:+ (default
-      # {Nexo.config.job_queue}) routes the job exactly like {.run_later}.
+      # Requires ActiveJob (Rails): without it this raises Nexo::MissingDependencyError
+      # pointing at ::resume for synchronous execution. +queue:+ (default
+      # Nexo.config.job_queue) routes the job exactly like ::run_later.
       def resume_later(run_id, input = {}, queue: Nexo.config.job_queue)
         unless defined?(::ActiveJob)
           raise Nexo::MissingDependencyError,
@@ -213,17 +216,17 @@ module Nexo
 
       # Executes an already-created run: "running" → +#call+ → "done"/"failed",
       # flushing buffered events in the ensure (on both success and failure) and
-      # firing a status notification on each transition. Shared by {.run} (sync) and
-      # {WorkflowJob#perform} (async). Re-raises on failure.
+      # firing a status notification on each transition. Shared by ::run (sync) and
+      # WorkflowJob#perform (async). Re-raises on failure.
       #
-      # +payload:+ is symbol-keyed: {.run} passes the caller's original (nested Ruby
+      # +payload:+ is symbol-keyed: ::run passes the caller's original (nested Ruby
       # values intact); the job passes the JSON-normalized +run.payload+ symbolized.
       #
       # +resume_input:+ (Spec 13, default +{}+) is the symbol-keyed input handed to
-      # {.resume}/{.resume_later}; it is exposed to +#call+ via {#resume_input} and
-      # is +{}+ on the first (non-resume) pass. A +#call+ that raises {Suspended}
-      # (via {#suspend!}) leaves the run +"suspended"+ (a non-failure outcome) and
-      # returns it — completed {#checkpoint}s persist and are skipped on resume.
+      # ::resume/::resume_later; it is exposed to +#call+ via #resume_input and
+      # is +{}+ on the first (non-resume) pass. A +#call+ that raises Suspended
+      # (via #suspend!) leaves the run +"suspended"+ (a non-failure outcome) and
+      # returns it — completed #checkpoints persist and are skipped on resume.
       def execute(run, payload:, buffer_events: Nexo.config.buffer_workflow_events, resume_input: {})
         run.update!(status: "running")
         run.save! if run.respond_to?(:save!)
@@ -270,7 +273,7 @@ module Nexo
       end
 
       # Looks up a run by its UUID string id through whichever store
-      # {RunStore.default} selects, yields each event when a block is given, and
+      # RunStore.default selects, yields each event when a block is given, and
       # returns the ordered +events+ array. Works identically in plain Ruby and
       # under Rails.
       def logs(id)
@@ -284,7 +287,7 @@ module Nexo
       # Broadcasts a run's status transition over ActiveSupport::Notifications
       # (Spec 11 R2) — a no-op without ActiveSupport, so the plain-Ruby core stays
       # decoupled. Carries only the run id and status; no payload/credentials. Fired
-      # by {.execute} on each transition (running → done/failed).
+      # by ::execute on each transition (running → done/failed).
       def notify_status(run)
         return unless defined?(::ActiveSupport::Notifications)
 
@@ -303,6 +306,10 @@ module Nexo
       def stringify_keys(result) = result.is_a?(Hash) ? stringify(result) : result
     end
 
+    # Binds the instance to its persisted +run+. +buffer_events:+ accumulates
+    # emitted events in memory and flushes them once at the end of the run rather
+    # than persisting each immediately. Prefer the ::run / ::resume entry points
+    # over constructing directly.
     def initialize(run, buffer_events: false)
       @run = run
       @buffer_events = buffer_events
@@ -324,10 +331,10 @@ module Nexo
     #   published = checkpoint(:publish) { publish!(fetched) }
     #
     # Persists **immediately** (like artifacts, not buffered like events), so a
-    # completed checkpoint survives a subsequent {#suspend!}. Values must be
+    # completed checkpoint survives a subsequent #suspend!. Values must be
     # json-serializable — they round-trip the store exactly like +result+/+events+.
     #
-    # Do NOT call {#suspend!} inside a checkpoint block (undefined — v1 unsupported),
+    # Do NOT call #suspend! inside a checkpoint block (undefined — v1 unsupported),
     # and do NOT name a checkpoint +"__suspend__"+ (reserved for suspend metadata)
     # or +"__approval__"+ (reserved for the pending approval call — Spec 16).
     # A crash *inside* a checkpoint re-runs that checkpoint on resume (at-least-once
@@ -343,18 +350,18 @@ module Nexo
       value
     end
 
-    # Pauses the run durably (Spec 13): raises {Suspended}, which {.execute} catches
+    # Pauses the run durably (Spec 13): raises Suspended, which ::execute catches
     # to mark the run +"suspended"+ (a non-failure outcome) and return it to the
     # caller. Call this **outside** a checkpoint block. +reason+ is surfaced to a
     # host UI; the optional +resume_key+ is persisted so a host can correlate which
-    # resume it is awaiting. Continue the run later with {.resume}/{.resume_later}.
+    # resume it is awaiting. Continue the run later with ::resume/::resume_later.
     def suspend!(reason:, resume_key: nil)
       raise Suspended.new(reason, resume_key)
     end
 
-    # The symbol-keyed input passed to {.resume}/{.resume_later} (Spec 13). It is
+    # The symbol-keyed input passed to ::resume/::resume_later (Spec 13). It is
     # +{}+ on the first (non-resume) pass, so a workflow gates on it to decide
-    # whether to {#suspend!} or proceed:
+    # whether to #suspend! or proceed:
     #
     #   suspend!(reason: "needs approval") unless resume_input[:approved]
     def resume_input = @resume_input || {}
@@ -368,7 +375,7 @@ module Nexo
       ev = {"type" => type.to_s, "data" => data, "at" => Time.now.utc.iso8601}
       if @buffer_events
         # Defer the DB hit — accumulate in memory and persist once in
-        # {#flush_events!} (called from Workflow.run's ensure).
+        # #flush_events! (called from Workflow.run's ensure).
         @event_buffer << ev
       else
         @run.push_event(ev)
@@ -383,7 +390,7 @@ module Nexo
 
     # Replays any buffered events through the run and persists them in a single
     # +save_events!+, then clears the buffer. A no-op when buffering is off or the
-    # buffer is empty. Called from {Workflow.run}'s +ensure+, so buffered events
+    # buffer is empty. Called from Workflow.run's +ensure+, so buffered events
     # are saved on both success and failure. Idempotent (a second call, e.g. if a
     # workflow calls it explicitly, finds an empty buffer and does nothing).
     def flush_events!
@@ -394,8 +401,8 @@ module Nexo
       @event_buffer.clear
     end
 
-    # The run's sandbox (Spec 7), resolved lazily from the class-level {.sandbox}
-    # macro and memoized. Built on first touch — by {#stage}, {#artifact}, or a
+    # The run's sandbox (Spec 7), resolved lazily from the class-level ::sandbox
+    # macro and memoized. Built on first touch — by #stage, #artifact, or a
     # workflow reading/writing files directly — so a data-only workflow that never
     # calls any of them constructs nothing new and keeps the Spec 2 hot path
     # byte-for-byte unchanged.
@@ -407,7 +414,7 @@ module Nexo
     # Accepts either a Hash +{ "path" => "content" }+ or an Array of
     # +{ path:, content: }+ hashes; both normalize to +[path, content]+ pairs.
     # Each pair is written via +sandbox.write+. Emits a +:staged+ event carrying
-    # the count (reusing the existing {#emit} path) and returns the number of
+    # the count (reusing the existing #emit path) and returns the number of
     # files staged.
     def stage(files)
       pairs = files.is_a?(Hash) ? files.to_a : files.map { |f| [f[:path], f[:content]] }
@@ -427,9 +434,9 @@ module Nexo
     #
     # The body is written to the sandbox at +/artifacts/<name>+ (so scripts/agents
     # can read it during the run) and recorded on the run as a string-keyed hash
-    # +{"name" =>, "content" =>, "at" =>}+, matching how {#emit} string-keys events
+    # +{"name" =>, "content" =>, "at" =>}+, matching how #emit string-keys events
     # so Memory and the AR json column round-trip identically. Artifacts persist
-    # immediately (never buffered). Raises {Nexo::Error} when neither +content:+ nor
+    # immediately (never buffered). Raises Nexo::Error when neither +content:+ nor
     # +from:+ produces a body. Returns the artifact hash.
     def artifact(name, content: nil, from: nil, locals: {})
       body = content
@@ -446,15 +453,15 @@ module Nexo
       art
     end
 
-    # Drives the workflow's declared {.agent} (Spec 8), bound to *this* run's
+    # Drives the workflow's declared ::agent (Spec 8), bound to *this* run's
     # sandbox (Spec 7), forwarding every +(type, payload)+ event the agent's loop
     # yields into the run log as an +agent_*+ event, and ensuring the agent is
     # closed afterward (tearing down any memoized MCP servers from Spec 6).
     # Returns the agent's response object (read +response.content+).
     #
     # Composition only — no new loop, no orchestration engine: it wires the
-    # existing {Agent#prompt} + +before_tool_call+/+after_tool_result+ seam
-    # (source: {Loops::RubyLLM}) through the existing {#emit} path, so the events
+    # existing Agent#prompt + +before_tool_call+/+after_tool_result+ seam
+    # (source: Loops::RubyLLM) through the existing #emit path, so the events
     # honor the run's +buffer_events+ setting and persist in both run stores with
     # no extra wiring.
     #
@@ -464,15 +471,15 @@ module Nexo
     # +permissions+/+skills+/+mcp+/+mcp_allow+ — the workflow provides the *where*
     # (sandbox), the agent owns the *what* (permissions) and *how* (skills). Driving
     # an agent never widens its authority; its safe default (+:read_only+) is
-    # untouched. Raises {ConfigurationError} when no +agent+ is declared.
+    # untouched. Raises ConfigurationError when no +agent+ is declared.
     # Durable approval (Spec 16): when the driven agent runs under an +:approve+
     # permission gate and hits a sensitive capability with no decision yet, the
-    # gate raises {Nexo::ApprovalRequired}, which propagates out of the +ruby_llm+
+    # gate raises Nexo::ApprovalRequired, which propagates out of the +ruby_llm+
     # tool loop (Group 0: the loop does not rescue tool exceptions) and out of
-    # {Agent#prompt}. +run_agent+ rescues it, records the pending call under the
-    # reserved +"__approval__"+ state key, and {#suspend!}s the run — so the worker
+    # Agent#prompt. +run_agent+ rescues it, records the pending call under the
+    # reserved +"__approval__"+ state key, and #suspend!s the run — so the worker
     # returns and a host renders "approval pending" from +run.state+. On
-    # {.resume}/{.resume_later} with +{approved: …}+ the decision is threaded into
+    # ::resume/::resume_later with +{approved: …}+ the decision is threaded into
     # the agent (via +decision:+), so the same gate now allows (→ run completes) or
     # denies (→ the tool returns +{error:}+, the model adapts, run still completes).
     def run_agent(prompt, max_turns: 25)
@@ -503,9 +510,9 @@ module Nexo
 
     private
 
-    # The +decision:+ kwargs handed to the agent built in {#run_agent} (Spec 16).
+    # The +decision:+ kwargs handed to the agent built in #run_agent (Spec 16).
     # Empty on the first (non-resume) pass ⇒ no decision ⇒ the +:approve+ gate
-    # suspends. On resume, {#resume_input} carries +{approved: …}+ (symbol-keyed
+    # suspends. On resume, #resume_input carries +{approved: …}+ (symbol-keyed
     # in both the in-process and the job path), which becomes the agent's
     # decision so the gate allows/denies. Never widens authority — it only answers
     # an already-+:approve+ gate.
@@ -515,9 +522,9 @@ module Nexo
     end
 
     # Broadcasts a single event over ActiveSupport::Notifications (Spec 11 R2) as it
-    # is emitted — a no-op without ActiveSupport, so the plain-Ruby core's {#emit} is
+    # is emitted — a no-op without ActiveSupport, so the plain-Ruby core's #emit is
     # exactly Spec 2. Fires live even when persistence is buffered. The payload
-    # carries only the run id and the already-built event hash (what {#emit} was
+    # carries only the run id and the already-built event hash (what #emit was
     # given) — no extra payload/credential dump.
     def notify_event(ev)
       return unless defined?(::ActiveSupport::Notifications)
@@ -527,10 +534,10 @@ module Nexo
       )
     end
 
-    # Reduces a loop event payload to a plain, json-safe Hash *before* {#emit},
+    # Reduces a loop event payload to a plain, json-safe Hash *before* #emit,
     # so it round-trips through both the Memory store and the ActiveRecord json
-    # column — a raw +ruby_llm+ object (a {RubyLLM::ToolCall}, a tool result, a
-    # response {RubyLLM::Message}) is never emitted. The reducer is type-aware
+    # column — a raw +ruby_llm+ object (a RubyLLM::ToolCall, a tool result, a
+    # response RubyLLM::Message) is never emitted. The reducer is type-aware
     # (the event +type+ selects the fields rather than guessing from object shape)
     # and degrades gracefully — a missing field falls back to +to_s+ rather than
     # raising, so observability never breaks the run.
@@ -587,10 +594,10 @@ module Nexo
       {"content" => content.to_s}
     end
 
-    # Resolves the class-level {.sandbox} declaration via the shared resolver
-    # (Spec 15), passing the class-level {.cwd} as the host working directory
+    # Resolves the class-level ::sandbox declaration via the shared resolver
+    # (Spec 15), passing the class-level ::cwd as the host working directory
     # (used only by +:local+; container tiers keep their own +/workspace+
-    # default). A workflow now resolves the same forms as an {Agent} —
+    # default). A workflow now resolves the same forms as an Agent —
     # +:virtual+/+:local+/+:docker+/+:apple+/Hash/instance.
     def resolve_sandbox(value) = Nexo::Sandboxes.resolve(value, cwd: self.class.cwd)
   end

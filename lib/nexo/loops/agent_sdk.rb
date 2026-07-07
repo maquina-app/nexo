@@ -8,13 +8,13 @@ module Nexo
     # explicitly with +loop: Nexo::Loops::AgentSDK.new+ when you are on Anthropic
     # and want the Claude fast path.
     #
-    # The trade vs. {Loops::RubyLLM}: this leans on the SDK's own built-in tools
+    # The trade vs. Loops::RubyLLM: this leans on the SDK's own built-in tools
     # and runs in the host process, so it does NOT execute through Nexo's
     # pluggable sandbox. That is the documented cost of the native +max_turns+
     # hard cap (see the turn-cap caveat in the README).
     #
     # +ruby_llm-agent_sdk+ is a SOFT dependency: it is required lazily inside
-    # +#run+ and, when absent, surfaces as a {Nexo::MissingDependencyError} with
+    # +#run+ and, when absent, surfaces as a Nexo::MissingDependencyError with
     # install guidance — +require "nexo"+ without the gem never raises.
     #
     # VERIFY-on-install: the gem is not installed in this environment, so

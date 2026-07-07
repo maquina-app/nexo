@@ -2,13 +2,14 @@
 
 module Nexo
   # A tiny per-chat memory of which files an agent has read and at what
-  # last-modified time, so {Tools::WriteFile} can refuse to overwrite a file the
+  # last-modified time, so Tools::WriteFile can refuse to overwrite a file the
   # model never read — or one that changed underneath it — within a session.
   #
-  # Built once per chat in {Agent#chat} and threaded into both {Tools::ReadFile}
-  # (which records) and {Tools::WriteFile} (which enforces). Scope is clobber
+  # Built once per chat in Agent#chat and threaded into both Tools::ReadFile
+  # (which records) and Tools::WriteFile (which enforces). Scope is clobber
   # safety *within a session* only: no versioning, no locking, no VCS semantics.
   class ReadTracker
+    # Starts an empty tracker (an internal +path => mtime+ map).
     def initialize
       @mtimes = {}
     end

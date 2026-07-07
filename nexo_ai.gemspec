@@ -16,6 +16,9 @@ Gem::Specification.new do |spec|
   spec.metadata["homepage_uri"] = spec.homepage
   spec.metadata["source_code_uri"] = "https://github.com/maquina-app/nexo"
   spec.metadata["changelog_uri"] = "https://github.com/maquina-app/nexo/blob/main/CHANGELOG.md"
+  # RubyGems-hosted RDoc for the published gem. rubydoc.info builds the API site
+  # from the packaged README, docs/*.md guides, and lib/**/*.rb (see .document).
+  spec.metadata["documentation_uri"] = "https://rubydoc.info/gems/nexo_ai"
 
   # Uncomment the line below to require MFA for gem pushes.
   # This helps protect your gem from supply chain attacks by ensuring

@@ -10,7 +10,7 @@ module Nexo
     #   rails g nexo:workflows
     #
     # copies a timestamped migration that creates the +nexo_workflow_runs+
-    # table, after which +rails db:migrate+ makes {Nexo::Workflow} runs persist
+    # table, after which +rails db:migrate+ makes Nexo::Workflow runs persist
     # to ActiveRecord instead of the in-memory store.
     class WorkflowsGenerator < Rails::Generators::Base
       include Rails::Generators::Migration
@@ -24,6 +24,8 @@ module Nexo
         ::ActiveRecord::Migration.next_migration_number(next_migration_number)
       end
 
+      # Generation step: copy the timestamped +create_nexo_workflow_runs+
+      # migration into +db/migrate+.
       def create_migration_file
         migration_template "create_nexo_workflow_runs.rb", "db/migrate/create_nexo_workflow_runs.rb"
       end

@@ -6,6 +6,11 @@
 # Rails app and loads the WorkflowRun model once ActiveRecord is available.
 if defined?(::Rails::Engine)
   module Nexo
+    # The Rails engine that wires Nexo into a host app: it loads the WorkflowRun
+    # model and WorkflowJob during boot, opt-in-subscribes the Turbo broadcaster,
+    # and (via Rails::Engine) exposes Nexo's generators and rake tasks. Defined
+    # only when +::Rails::Engine+ is present, so the plain-Ruby core stays
+    # Rails-free.
     class Engine < ::Rails::Engine
       isolate_namespace Nexo
 

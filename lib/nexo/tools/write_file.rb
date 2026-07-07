@@ -9,7 +9,7 @@ module Nexo
       param :path, type: :string, required: true, desc: "Path to the file to write"
       param :content, type: :string, required: true, desc: "Content to write"
 
-      # +tracker:+ is an optional {ReadTracker} shared with {Tools::ReadFile}.
+      # +tracker:+ is an optional ReadTracker shared with Tools::ReadFile.
       # Default +nil+ ⇒ the read-before-write + stale guard is off, preserving
       # direct-construction behavior byte-for-byte.
       def initialize(sandbox:, permissions:, tracker: nil)
@@ -19,6 +19,9 @@ module Nexo
         super()
       end
 
+      # Authorizes +:write+, applies the read-before-write + stale guard, then
+      # writes +content+ to +path+ and returns +{ ok: true, path: }+ — or
+      # +{ error: ... }+ on a denial or a guard violation (nothing is written).
       def execute(path:, content:)
         @permissions.authorize!(:write, path)
         if (guard_error = clobber_guard(path))
@@ -35,7 +38,7 @@ module Nexo
 
       # The read-before-write + stale guard, active only on a real-filesystem
       # sandbox (non-nil +mtime+) with a tracker present. Returns an error string
-      # to abort the write, or +nil+ to proceed. On {Sandboxes::Virtual} (nil
+      # to abort the write, or +nil+ to proceed. On Sandboxes::Virtual (nil
       # mtime) or without a tracker the guard is skipped entirely — behavior is
       # byte-for-byte the shipped tool.
       def clobber_guard(path)

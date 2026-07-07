@@ -6,6 +6,7 @@
 # "__suspend__" suspend metadata. The migration version is resolved from the host
 # app's ActiveRecord rather than hardcoded, so it tracks whatever Rails is installed.
 class AddStateToNexoWorkflowRuns < ActiveRecord::Migration[ActiveRecord::Migration.current_version]
+  # Adds the +state+ json object column (default +{}+) to +nexo_workflow_runs+.
   def change
     add_column :nexo_workflow_runs, :state, :json, null: false, default: {}
   end

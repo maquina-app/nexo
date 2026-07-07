@@ -8,7 +8,7 @@ module Nexo
   # Concrete sandboxes implement the four-method contract below. The base class
   # raises +NotImplementedError+ for each so an incomplete subclass fails loudly.
   #
-  # See {Sandboxes::Virtual} (default, zero host access) and {Sandboxes::Local}
+  # See Sandboxes::Virtual (default, zero host access) and Sandboxes::Local
   # (host filesystem + shell, guarded).
   class Sandbox
     # Returns the contents of +path+ as a String.

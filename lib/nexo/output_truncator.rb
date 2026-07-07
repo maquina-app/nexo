@@ -19,6 +19,9 @@ module Nexo
 
     module_function
 
+    # Strips ANSI escapes from +text+, keeps the last +max_lines+ lines (with a
+    # +…[truncated N lines]+ marker when it trims), then caps the result at
+    # +max_chars+. Pure line/char truncation — no tokenizer.
     def call(text, max_lines: 200, max_chars: 16_000)
       return text if text.nil? || text.empty?
 

@@ -425,6 +425,34 @@ Match the agent to the file type touched; skip an agent when no file of its type
   threading a decision into a user-supplied, class-level `:approve` `Permissions` so the shared instance
   isn't clobbered.
 
+- **Docs live in `docs/` + RDoc; the README is a slim index (Spec 17).** The 1394-line README was split
+  into 13 topic guides under `docs/` (getting-started, sandboxes, permissions, tools, loops, workflows,
+  durable-workflows, skills, mcp, web, sessions, rails, concurrency); prose was MOVED verbatim (safety
+  caveats preserved — there's a caveat grep in the spec). `Rakefile` gained `require "rdoc/task"` +
+  `RDoc::Task.new(:doc)` (rd.rdoc_dir `doc`, gitignored). Naming the task `:doc` yields BOTH `rake doc`
+  (build) AND `rake doc:coverage` for free — RDoc's own coverage subtask, which runs
+  `RDoc::RDoc.new.document(["-C", …])`; verified rdoc 8.0.0 that call `exit(1)`s on <100% (SystemExit
+  propagates → the Rake task fails), so it's a real CI gate with NO bespoke parser (rule #1: compose,
+  don't reimplement). Do NOT copy the spec's hand-written `%x{rdoc -C}` parser — the built-in task is the
+  native path. **`default: %i[test standard]` is unchanged** — `doc`/`doc:coverage` are never in the test
+  run. `.document` (tracked: `README.md`, `docs`, `lib`) + `spec.metadata["documentation_uri"]` make
+  rubydoc.info render the guides. CI got a dedicated `docs` job.
+- **RDoc HTML generation needs UTF-8 external encoding (Spec 17).** The README/guides carry UTF-8 glyphs
+  (⚠️, em dashes); RDoc reads them with `Encoding.default_external`, and CI here can start US-ASCII →
+  `error generating index.html: "\xF0" on US-ASCII (Encoding::InvalidByteSequenceError)`. The `Rakefile`
+  pins `Encoding.default_external = Encoding::UTF_8 if … == US_ASCII` at load (same trick as
+  `test_helper`). `--encoding UTF-8` alone does NOT fix HTML generation (it only sets the *parse*
+  encoding) — the default_external pin is required. The coverage report (`-C`, no HTML) tolerates
+  `--encoding UTF-8` but the pin covers it too.
+- **R3 `{…}` cross-ref normalization is comment-only + non-semantic (Spec 17).** Under RDoc, bare
+  `Nexo::Foo`, `Foo#method`, `#method` (current class), and `::classmethod` AUTO-LINK; `{Nexo::Foo}`
+  renders literal braces and bare `.method` does NOT link. So the pass strips braces to the bare form,
+  mapping `{#m}` → `#m` and `{.m}` → `::m` (class-method form, since `.m` won't link). ONLY comment lines
+  are touched — `#{Nexo::VERSION}` / `#{Nexo.generate_run_id}` string interpolations in CODE are left, so
+  the spec's counter `grep -rEc "\{[A-Z]…\}" lib` bottoms out at 2 (those interpolations), NOT 0; the
+  comment cross-ref count IS 0. Every lib `.rb` diff is comment-only (verified: no non-comment line
+  changed), so `rake test` is untouched.
+
 ## Verified APIs (Spec 5)
 
 - **ruby_llm 1.16.0 HTTP adapter is fiber-friendly.** `RubyLLM::Connection` builds Faraday with

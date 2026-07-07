@@ -1,8 +1,8 @@
 # frozen_string_literal: true
 
 module Nexo
-  # Holds the harness-wide defaults. Accessed through {Nexo.config} and
-  # mutated through {Nexo.configure}. Every default is safe-by-default and
+  # Holds the harness-wide defaults. Accessed through Nexo.config and
+  # mutated through Nexo.configure. Every default is safe-by-default and
   # provider-neutral — there is intentionally no hardcoded model.
   class Configuration
     # The default ruby_llm model id. +nil+ means none chosen — provider-neutral.
@@ -18,42 +18,44 @@ module Nexo
     attr_accessor :skills_path
 
     # Concurrency mode (Spec 5): +:threaded+ (default) | +:async+. This is the
-    # single switch that gates the {Sandboxes::Local} offload path — under
+    # single switch that gates the Sandboxes::Local offload path — under
     # +:async+ its blocking file/shell I/O runs on a worker thread so it does not
     # stall a fiber reactor; under +:threaded+ it runs inline (zero overhead,
-    # byte-for-byte the Spec 1 behavior). It does NOT gate {Nexo.concurrent},
+    # byte-for-byte the Spec 1 behavior). It does NOT gate Nexo.concurrent,
     # which always runs its own reactor when called.
     attr_accessor :concurrency
 
-    # Max in-flight tasks for {Nexo.concurrent} fan-out (Spec 5), default +8+.
+    # Max in-flight tasks for Nexo.concurrent fan-out (Spec 5), default +8+.
     # The single most important knob for staying under provider rate limits.
     attr_accessor :max_in_flight
 
-    # Whether {Workflow} buffers events in memory and flushes once at the end of
+    # Whether Workflow buffers events in memory and flushes once at the end of
     # a run instead of persisting per +emit+ (Spec 5), default +false+. Buffering
     # avoids a blocking per-event DB write under a fiber reactor.
     attr_accessor :buffer_workflow_events
 
-    # The host +acts_as_chat+ model that stores {Nexo::Session} threads (Spec 10),
+    # The host +acts_as_chat+ model that stores Nexo::Session threads (Spec 10),
     # given as a **String** class name (default +"Chat"+ — ruby_llm's own default).
     # It is constantized lazily at resume time so plain Ruby / no-ActiveRecord
-    # paths never reference an AR constant, mirroring how {RunStore} only touches
-    # {Nexo::WorkflowRun} when it is defined. The host app owns this model (columns
+    # paths never reference an AR constant, mirroring how RunStore only touches
+    # Nexo::WorkflowRun when it is defined. The host app owns this model (columns
     # + a unique +(agent_name, instance_id)+ index); Nexo ships no migration for it.
     attr_accessor :session_chat_model
 
     # Whether to mirror run event notifications over Turbo Streams (Spec 11 R2),
     # default +false+ (safe-by-default). When true and turbo-rails is present, the
-    # engine subscribes {Nexo::TurboBroadcaster} at boot. The plain
+    # engine subscribes Nexo::TurboBroadcaster at boot. The plain
     # +nexo.workflow.event+/+nexo.workflow.status+ notifications fire regardless —
     # this only gates the opt-in Turbo mirror.
     attr_accessor :broadcast_events
 
-    # The ActiveJob queue {Workflow.run_later} enqueues onto (Spec 11 R1), default
+    # The ActiveJob queue Workflow.run_later enqueues onto (Spec 11 R1), default
     # +nil+ → ActiveJob's default queue. Set to a symbol (e.g. +:nexo+) to route
     # workflow jobs to a dedicated queue.
     attr_accessor :job_queue
 
+    # Seeds the safe, provider-neutral defaults (no model, +:virtual+ sandbox,
+    # +:read_only+ permissions, +:threaded+ concurrency).
     def initialize
       @default_model = nil # provider-neutral: NO hardcoded default
       @default_sandbox = :virtual # safe default

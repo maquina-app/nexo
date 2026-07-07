@@ -20,6 +20,8 @@ module Nexo
     class SkillGenerator < Rails::Generators::NamedBase
       source_root File.expand_path("templates", __dir__)
 
+      # Generation step: scaffold +app/skills/<name>/+ with a kept +references/+
+      # directory and a valid +SKILL.md+ rendered from the template.
       def create_skill_package
         empty_directory File.join(skill_root, "references")
         # An empty references/ would not survive git; .keep keeps it tracked.

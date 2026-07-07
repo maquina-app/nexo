@@ -32,18 +32,22 @@ module Nexo
 
   # Control-flow signal raised by the +:approve+ permission gate (Spec 16) when a
   # capability needs a human decision and none has been threaded in yet. Unlike
-  # {Permissions::Denied} ("no, adapt" — tools rescue it into +{error:}+),
+  # Permissions::Denied ("no, adapt" — tools rescue it into +{error:}+),
   # +ApprovalRequired+ means "pause and ask a human": tools must **not** rescue
   # it, so it propagates out of the +ruby_llm+ tool loop and out of
-  # {Agent#prompt}, where {Workflow#run_agent} catches it and turns it into a
-  # durable {Workflow#suspend!}. It subclasses +StandardError+ directly (not
-  # {Error}), mirroring {Permissions::Denied}'s base — it is a signal, not a
+  # Agent#prompt, where Workflow#run_agent catches it and turns it into a
+  # durable Workflow#suspend!. It subclasses +StandardError+ directly (not
+  # Error), mirroring Permissions::Denied's base — it is a signal, not a
   # library-misuse error. Carries the pending call's +capability+, +detail+ (the
   # tool/path), and +args+ so a host can render the approval prompt from
   # +run.state["__approval__"]+.
   class ApprovalRequired < StandardError
+    # The pending call's capability (e.g. +:write+), its +detail+ (the tool/path),
+    # and the tool +args+ — enough for a host to render the approval prompt.
     attr_reader :capability, :detail, :args
 
+    # Builds the signal for +capability+ acting on +detail+ with +args+; the
+    # message reads "approval required for <capability> (<detail>)".
     def initialize(capability, detail = nil, args = nil)
       @capability = capability
       @detail = detail
@@ -53,7 +57,7 @@ module Nexo
   end
 
   class << self
-    # Yields the singleton {Configuration} for in-place setup and returns it.
+    # Yields the singleton Configuration for in-place setup and returns it.
     #
     #   Nexo.configure { |config| config.default_model = ENV["NEXO_MODEL"] }
     def configure
@@ -61,12 +65,12 @@ module Nexo
       config
     end
 
-    # Returns the memoized singleton {Configuration}.
+    # Returns the memoized singleton Configuration.
     def config
       @config ||= Configuration.new
     end
 
-    # Replaces the singleton with a fresh {Configuration}. Test helper for
+    # Replaces the singleton with a fresh Configuration. Test helper for
     # isolating the global between examples.
     def reset_config!
       @config = Configuration.new
@@ -83,7 +87,7 @@ module Nexo
     # added via +c.add { ... }+ runs concurrently inside one +async+ reactor,
     # capped at +max_in_flight+ in flight, with results returned in submission
     # order and the first task error re-raised. Requires the optional +async+
-    # gem — raises {MissingDependencyError} if it is not installed.
+    # gem — raises MissingDependencyError if it is not installed.
     #
     #   results = Nexo.concurrent(max_in_flight: 8) do |c|
     #     docs.each { |d| c.add { SummarizeDocument.run(text: d.body).result } }

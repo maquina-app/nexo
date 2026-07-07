@@ -46,3 +46,18 @@ jobs:
           bundler-cache: true
       - name: Run StandardRB
         run: bundle exec standardrb
+
+  docs:
+    runs-on: ubuntu-latest
+    name: Docs (RDoc coverage)
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '4.0.0'
+          bundler-cache: true
+      - name: Fail on any undocumented public API
+        run: bundle exec rake doc:coverage

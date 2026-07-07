@@ -14,19 +14,21 @@ module Nexo
   #
   # +async+ is a SOFT (optional) dependency: it is required lazily the moment a
   # fan-out actually runs. With the gem absent, +require "nexo"+ still loads
-  # cleanly; only calling {Nexo.concurrent} raises {MissingDependencyError}.
+  # cleanly; only calling Nexo.concurrent raises MissingDependencyError.
   class Concurrent
     # A submitted unit of work. Wrapping the block in a Struct keeps submission
     # order explicit (the index into +@tasks+ is the index into the results).
     Task = Struct.new(:block)
 
+    # +max_in_flight+ bounds how many submitted blocks run concurrently once the
+    # collector is run inside an +async+ reactor.
     def initialize(max_in_flight:)
       @max_in_flight = max_in_flight
       @tasks = []
     end
 
     # Registers a block to run. Called via the yielded collector inside
-    # {Nexo.concurrent}. Order of +add+ calls is the order of the results array.
+    # Nexo.concurrent. Order of +add+ calls is the order of the results array.
     def add(&block)
       @tasks << Task.new(block)
     end
@@ -61,9 +63,9 @@ module Nexo
     private
 
     # Lazily loads +async+ and its coordination primitives, mirroring the
-    # soft-dependency precedent in {Skills.load!} / {Loops::AgentSDK}: a bare
+    # soft-dependency precedent in Skills.load! / Loops::AgentSDK: a bare
     # +require+ (so tests can stub it on the instance) rescuing stdlib +LoadError+
-    # into a {MissingDependencyError} that names the gem and the exact remedy.
+    # into a MissingDependencyError that names the gem and the exact remedy.
     def require_async!
       require "async"
       require "async/barrier"

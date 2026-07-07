@@ -3,12 +3,12 @@
 module Nexo
   # Composes the +ruby_llm-mcp+ gem so an agent can attach one or more MCP servers
   # with a single +mcp+ class macro — no MCP client wiring by hand. A loaded server
-  # contributes tools that are gated by {Nexo::Permissions#authorize_mcp!} before
-  # the model can invoke them (see {MCP::GatedTool}).
+  # contributes tools that are gated by Nexo::Permissions#authorize_mcp! before
+  # the model can invoke them (see MCP::GatedTool).
   #
-  # +ruby_llm-mcp+ is a SOFT (optional) dependency: it is required lazily by {load!}
+  # +ruby_llm-mcp+ is a SOFT (optional) dependency: it is required lazily by load!
   # the first time an MCP server is built. With the gem absent, +require "nexo"+
-  # still loads cleanly; only building a client raises {MissingDependencyError}
+  # still loads cleanly; only building a client raises MissingDependencyError
   # with install guidance.
   #
   # Provider-neutral by construction: MCP servers are reached through a server (not
@@ -17,9 +17,9 @@ module Nexo
   module MCP
     class << self
       # Lazily loads the +ruby_llm-mcp+ gem. Idempotent (a second call is a cheap
-      # no-op once the gem is loaded). Raises {MissingDependencyError} — naming the
+      # no-op once the gem is loaded). Raises MissingDependencyError — naming the
       # gem and the exact remedy — when the gem is not installed. Mirrors
-      # {Nexo::Skills.load!}.
+      # Nexo::Skills.load!.
       def load!
         require "ruby_llm/mcp"
       rescue LoadError

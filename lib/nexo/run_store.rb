@@ -1,9 +1,9 @@
 # frozen_string_literal: true
 
 module Nexo
-  # Storage seam for {Workflow} runs. Two interchangeable backends expose an
+  # Storage seam for Workflow runs. Two interchangeable backends expose an
   # identical create/find interface and return run objects responding to the
-  # same shape, which is what lets one {Workflow} implementation drive either
+  # same shape, which is what lets one Workflow implementation drive either
   # the in-memory store (plain Ruby) or the ActiveRecord store (Rails).
   #
   # A run object responds to: +id+, +workflow_class+, +status+, +payload+,
@@ -25,8 +25,8 @@ module Nexo
 
     # In-memory backend used by the plain-Ruby path and the offline test suite.
     # Runs are held in a process-wide Hash keyed by their UUID id so that a run
-    # created by {Workflow.run} is still findable through a *later*
-    # {RunStore.default} call (e.g. {Workflow.logs}) — each call builds a fresh
+    # created by Workflow.run is still findable through a *later*
+    # RunStore.default call (e.g. Workflow.logs) — each call builds a fresh
     # Memory instance, but they all share the same underlying store, mirroring
     # how the ActiveRecord backend shares one database. Nothing is persisted to
     # disk; the store lives only for the process.
@@ -66,6 +66,8 @@ module Nexo
         end
       end
 
+      # Builds a fresh +"pending"+ Run (UUID id, empty events/artifacts/state) and
+      # stores it in the process-wide table, returning it.
       def create(workflow_class:, payload:)
         run = Run.new(
           id: Nexo.generate_run_id,
@@ -87,12 +89,14 @@ module Nexo
     end
 
     # ActiveRecord backend used by the Rails path. Delegates to the
-    # {Nexo::WorkflowRun} model, which carries the same run shape.
+    # Nexo::WorkflowRun model, which carries the same run shape.
     class ActiveRecord
+      # Creates and persists a +"pending"+ Nexo::WorkflowRun row, returning it.
       def create(workflow_class:, payload:)
         Nexo::WorkflowRun.create!(workflow_class: workflow_class, payload: payload, status: "pending")
       end
 
+      # Fetches a persisted run by id (raises +ActiveRecord::RecordNotFound+ on a miss).
       def find(id) = Nexo::WorkflowRun.find(id)
     end
   end
