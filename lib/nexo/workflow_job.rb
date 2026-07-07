@@ -15,13 +15,24 @@ if defined?(::ActiveJob)
     #
     # Reconstitutes the workflow class and calls {Workflow.execute}, which the sync
     # {Workflow.run} shares — so an async run reaches the same done/failed lifecycle,
-    # event log, and status notifications. Not resumable: a retried job re-runs
-    # +#call+ from scratch (Nexo adds no retry_on).
+    # event log, and status notifications. A crashed/retried run is not auto-resumed:
+    # a retried job re-runs +#call+ from scratch (Nexo adds no retry_on).
+    #
+    # With a second +resume_input+ argument (Spec 13, from {Workflow.resume_later})
+    # it dispatches the **durable resume** path instead: it re-enters {Workflow.resume}
+    # (which re-finds the run, guards it is still +"suspended"+ so a race that already
+    # resumed fails cleanly, and re-runs +#call+ from the top with the resume input).
+    # With no resume argument it takes the original enqueue path, byte-for-byte
+    # backward compatible.
     class WorkflowJob < ::ActiveJob::Base
-      def perform(run_id)
-        run = Nexo::RunStore.default.find(run_id)
-        klass = run.workflow_class.constantize
-        klass.execute(run, payload: run.payload.transform_keys(&:to_sym))
+      def perform(run_id, resume_input = nil)
+        if resume_input.nil?
+          run = Nexo::RunStore.default.find(run_id)
+          klass = run.workflow_class.constantize
+          klass.execute(run, payload: run.payload.transform_keys(&:to_sym))
+        else
+          Nexo::Workflow.resume(run_id, resume_input.transform_keys(&:to_sym))
+        end
       end
     end
   end

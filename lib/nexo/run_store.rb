@@ -7,9 +7,9 @@ module Nexo
   # the in-memory store (plain Ruby) or the ActiveRecord store (Rails).
   #
   # A run object responds to: +id+, +workflow_class+, +status+, +payload+,
-  # +result+, +error+, +events+, +artifacts+, plus +update!(attrs)+,
-  # +push_event(event)+, +save_events!+, +push_artifact(artifact)+, and
-  # +save_artifacts!+.
+  # +result+, +error+, +events+, +artifacts+, +state+, plus +update!(attrs)+,
+  # +push_event(event)+, +save_events!+, +push_artifact(artifact)+,
+  # +save_artifacts!+, and +save_state!+ (Spec 13).
   module RunStore
     # Selects a backend: the ActiveRecord store when both ::ActiveRecord::Base
     # and Nexo::WorkflowRun are defined (the Rails path), otherwise the in-memory
@@ -37,7 +37,7 @@ module Nexo
       # Built with keyword arguments; a Struct defined without +keyword_init:+
       # accepts them on Ruby 3.2+, so (well within the 3.3 floor) +keyword_init:
       # true+ is unnecessary.
-      Run = Struct.new(:id, :workflow_class, :status, :payload, :result, :error, :events, :artifacts) do
+      Run = Struct.new(:id, :workflow_class, :status, :payload, :result, :error, :events, :artifacts, :state) do
         def update!(attrs) = attrs.each { |k, v| self[k] = v }
 
         def push_event(ev) = events << ev
@@ -47,6 +47,10 @@ module Nexo
         def push_artifact(a) = artifacts << a
 
         def save_artifacts! = nil
+
+        # No-op counterpart to the AR model's save_state! — the Struct member
+        # already holds the checkpoint/suspend state in memory (Spec 13).
+        def save_state! = nil
       end
 
       @runs = {}
@@ -71,7 +75,8 @@ module Nexo
           result: nil,
           error: nil,
           events: [],
-          artifacts: []
+          artifacts: [],
+          state: {}
         )
         self.class.runs[run.id] = run
       end

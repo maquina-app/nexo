@@ -8,12 +8,13 @@ class CreateNexoWorkflowRuns < ActiveRecord::Migration[8.0]
     create_table :nexo_workflow_runs, id: false do |t|
       t.string :id, null: false, primary_key: true
       t.string :workflow_class, null: false
-      t.string :status, null: false, default: "pending" # pending|running|done|failed
+      t.string :status, null: false, default: "pending" # pending|running|done|failed|suspended
       t.json :payload, null: false, default: {}
       t.json :result
       t.text :error
       t.json :events, null: false, default: []
       t.json :artifacts, null: false, default: []
+      t.json :state, null: false, default: {} # checkpoints + suspend metadata (Spec 13)
       t.timestamps
     end
     add_index :nexo_workflow_runs, :workflow_class

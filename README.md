@@ -644,10 +644,111 @@ app configured (Sidekiq, GoodJob, Solid Queue, …), and scheduling (cron / Good
 > store only works under the `:inline`/`:test` adapters, where the job runs
 > in-process on enqueue.
 >
-> **⚠️ Not resumable / no automatic retries.** A crashed or retried job re-runs
-> `#call` **from scratch** — workflows aren't resumable and Nexo adds no `retry_on`
-> (configure retries in your host job if you want them). Pair with
-> `reconcile_interrupted!` (above) to sweep runs orphaned in `"running"`.
+> **⚠️ No automatic crash recovery / no automatic retries.** A crashed or retried
+> job re-runs `#call` **from scratch** — Nexo adds no `retry_on` (configure retries
+> in your host job if you want them). Pair with `reconcile_interrupted!` (above) to
+> sweep runs orphaned in `"running"`. For an *intentional* pause-and-continue (a
+> human approval, an external callback), see **Durable workflows** below —
+> `checkpoint` skips already-paid-for work when a run resumes.
+
+### Durable workflows — suspend · checkpoint · resume
+
+A long-running or human-in-the-loop workflow can **pause durably** and **continue
+later** — possibly in another process — without re-running completed,
+already-paid-for work. Three small primitives compose over the existing run
+persistence (no step-graph engine, no replay log, no scheduler):
+
+- **`checkpoint(name) { … }`** runs its block **once** and stores the
+  json-serializable result under `name` in the run's `state`. On a later run/resume
+  of the *same* run, a present checkpoint returns the stored value **without**
+  re-running the block. This is the tool that makes resume cheap and side-effect-safe.
+- **`suspend!(reason:, resume_key: nil)`** pauses the run: it marks the run
+  `"suspended"` (a **non-failure** outcome, distinct from `"failed"`) and returns it
+  to the caller — `Workflow.run` does **not** raise. Call it *outside* a checkpoint.
+- **`Workflow.resume(run_id, input = {})`** (sync) and
+  **`Workflow.resume_later(run_id, input = {})`** (enqueued) continue a suspended
+  run, feeding `input` in as `#resume_input`.
+
+```ruby
+class DocumentApproval < Nexo::Workflow
+  def call(payload)
+    document = checkpoint(:fetch) { fetch_expensive(payload[:id]) } # paid for once
+
+    # `resume_input` is {} on the first pass, so we pause; on resume the host
+    # feeds { approved: true }, so we fall through and publish.
+    suspend!(reason: "awaiting approval") unless resume_input[:approved]
+
+    checkpoint(:publish) { publish!(document) }
+    { done: true }
+  end
+end
+
+run = DocumentApproval.run(id: 42)   # reaches suspend!, returns
+run.status                            # => "suspended"
+run.suspend_reason                    # => "awaiting approval"  (AR store)
+run.state["fetch"]                    # => the fetched document (checkpoint persisted)
+
+# ...later, once a human approves — possibly in another process:
+resumed = DocumentApproval.resume(run.id, approved: true)
+resumed.status                        # => "done"  (the :fetch block did NOT re-run)
+```
+
+A host UI lists paused runs with the `suspended` scope and inspects them with the
+readers (Nexo ships no controllers/views — the UI is your app's job):
+
+```ruby
+Nexo::WorkflowRun.suspended            # scope: all paused runs
+run.suspended?                          # => true
+run.suspend_reason                      # => "awaiting approval"
+run.checkpoint_result(:fetch)           # => the stored :fetch value, or nil
+```
+
+For a **durable, cross-process** resume from a background job, enqueue it — the job
+carries the run id plus the (json-safe) resume input; the payload still lives on the
+run:
+
+```ruby
+DocumentApproval.resume_later(run.id, approved: true, queue: :nexo)
+```
+
+See [`examples/approval_workflow.rb`](examples/approval_workflow.rb) for the full
+offline flow (`ruby -Ilib examples/approval_workflow.rb`).
+
+The `state` column ships with fresh installs. Apps installed before this feature
+add it with an additive migration:
+
+```sh
+rails g nexo:state
+rails db:migrate
+```
+
+#### Honest resume semantics — read this before relying on resume
+
+Resume **re-enters `#call` from the top** — Ruby has no transparent continuation
+capture, so this is **not** replay:
+
+- **Everything *outside* a `checkpoint` re-runs on resume.** Only checkpoint-guarded
+  work is skipped (its stored result is returned). Wrap every expensive step and
+  every side effect in a `checkpoint`; the idempotency of the non-checkpointed code
+  is **your** responsibility.
+- **A crash *inside* a checkpoint re-runs that checkpoint** on resume (at-least-once
+  for the in-flight step) — so a checkpoint's side effect should tolerate being
+  retried.
+- **Checkpoint values must be json-serializable** — they round-trip the store exactly
+  like `result`/`events`.
+- **Cross-process resume needs the ActiveRecord store.** A run suspended under the
+  in-memory store resumes only *in-process* (which is what the test suite exercises);
+  a run that must survive the process (and be resumed by a controller/job elsewhere)
+  needs the AR store with a shared database.
+- **Never `suspend!` inside a `checkpoint` block** (undefined — unsupported), and
+  never name a checkpoint `"__suspend__"` — that key is reserved for the suspend
+  metadata Nexo stores in `state`.
+
+There is **no distinct `"resumed"` status**: resume re-enters `execute`, so a host
+sees the existing `suspended` → `running` → `done` (or `suspended` again)
+transitions over the usual `nexo.workflow.status` notifications. The boot
+`reconcile_interrupted!` sweep leaves `"suspended"` runs **untouched** — an
+intentional pause is never mistaken for an orphaned `"running"` run.
 
 ### Live progress — notifications and opt-in Turbo
 
