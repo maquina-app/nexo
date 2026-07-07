@@ -44,7 +44,7 @@ module Nexo
       # The sandbox macro. With no argument it reads the configured value
       # (falling back to the harness-wide default). With a bare value it stores a
       # symbol/instance as before; with keywords it stores an options Hash
-      # (+{ type: value, **opts }+) consumed by {#resolve_sandbox_hash} — e.g.
+      # (+{ type: value, **opts }+) resolved by {Nexo::Sandboxes.resolve} — e.g.
       # +sandbox :docker, image: "node:22-slim", binds: {...}+.
       def sandbox(value = nil, **opts)
         return @sandbox || Nexo.config.default_sandbox if value.nil? && opts.empty?
@@ -300,40 +300,10 @@ module Nexo
       )
     end
 
-    def resolve_sandbox(value)
-      return value if value.is_a?(Sandbox)
-
-      case value
-      when :virtual then Sandboxes::Virtual.new
-      when :local then Sandboxes::Local.new(cwd: @cwd)
-      when :docker, :apple then resolve_sandbox_hash(type: value)
-      when Hash then resolve_sandbox_hash(value)
-      else raise ConfigurationError, "unknown sandbox: #{value.inspect}"
-      end
-    end
-
-    # Builds a {Sandboxes::Container} from the options Hash stored by the
-    # +sandbox :docker, **opts+ macro. The +:type+ (+:docker+/+:apple+) selects
-    # the +runtime:+; the container +cwd+ defaults to +/workspace+ (a container
-    # path), NOT the host +@cwd+ — the host directory enters only via a +binds:+
-    # entry. Every other key passes straight through to the constructor, so an
-    # unknown key surfaces as an ordinary +ArgumentError+ from +Container.new+.
-    def resolve_sandbox_hash(opts)
-      opts = opts.dup
-      type = opts.delete(:type)
-      runtime = case type
-      when :docker, :apple then type
-      else raise ConfigurationError, "unknown sandbox: #{type.inspect}"
-      end
-      opts[:cwd] ||= container_cwd
-      Sandboxes::Container.new(runtime: runtime, **opts)
-    end
-
-    # The default cwd for a container sandbox — a container path, never the host
-    # working directory. The host dir reaches the container only through a bind.
-    def container_cwd
-      "/workspace"
-    end
+    # Resolves this agent's sandbox declaration via the shared resolver (Spec 15),
+    # passing the agent's instance +@cwd+ as the host working directory (used only
+    # by +:local+; container tiers keep their own +/workspace+ default).
+    def resolve_sandbox(value) = Sandboxes.resolve(value, cwd: @cwd)
 
     def resolve_permissions(value)
       # A user-supplied Permissions sets its own mcp_allow: — leave it untouched.

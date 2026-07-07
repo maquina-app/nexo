@@ -28,7 +28,7 @@ if defined?(::ActiveJob)
       def perform(run_id, resume_input = nil)
         if resume_input.nil?
           run = Nexo::RunStore.default.find(run_id)
-          klass = run.workflow_class.constantize
+          klass = Object.const_get(run.workflow_class)
           klass.execute(run, payload: run.payload.transform_keys(&:to_sym))
         else
           Nexo::Workflow.resume(run_id, resume_input.transform_keys(&:to_sym))
