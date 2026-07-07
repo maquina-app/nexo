@@ -453,6 +453,24 @@ Match the agent to the file type touched; skip an agent when no file of its type
   comment cross-ref count IS 0. Every lib `.rb` diff is comment-only (verified: no non-comment line
   changed), so `rake test` is untouched.
 
+- **MCP OAuth header key + construction-only refresh (Spec 18, VERIFIED ruby_llm-mcp 1.0.0).**
+  `MCP.build(name:, transport:, token: nil, **config)` gained a `token:` (static String or callable)
+  that resolves and merges `config[:headers]["Authorization"] = "Bearer <value>"` via private
+  `inject_auth`, then hands off through the new `client_factory` seam (defaults to `::RubyLLM::MCP`,
+  swappable in tests via `stub_client_factory(fake) { … }`). Group 0 findings: the HTTP-family
+  transports (`:http`/`:sse`/`:streamable`, native/`streamable_http.rb` + `sse.rb`) read auth headers
+  from **`config[:headers]` (a Hash)** and **SNAPSHOT** them at construction (`@headers = headers || {}`,
+  `build_common_headers` dups it) — there is NO per-request header callback for a plain `headers` Hash.
+  So a callable `token:` resolves **exactly once per client build**; a rotated token needs `Agent#close`
+  + a fresh prompt (Spec 6 memoizes the client on the agent instance) → that's the documented
+  reconnect-on-rotation caveat, NOT a per-request refresh. `token:` is a dedicated keyword so it never
+  enters `**config` (nothing to strip); absent-`token:`/stdio config passes through byte-for-byte (no
+  `headers` key). The Spec 6 gate (`authorize_mcp!`, `mcp_allow`, `GatedTool`) and the Spec 8 event path
+  are **byte-for-byte unchanged** — no-leak is passive (the reducer carries only tool name/args + return
+  value, never connection config), proven by `test/mcp_token_no_leak_test.rb` (bearer absent from
+  `run.events`). Nexo runs no OAuth flow/refresh/store; it does NOT police `ruby_llm-mcp`'s own header
+  logging (documented host-boundary caveat in `docs/mcp.md`).
+
 ## Verified APIs (Spec 5)
 
 - **ruby_llm 1.16.0 HTTP adapter is fiber-friendly.** `RubyLLM::Connection` builds Faraday with
