@@ -1,5 +1,109 @@
 ## [Unreleased]
 
+## [0.7.0] - 2026-07-10
+
+The harness fills out: MCP data sources, a web-content capability, durable
+workflows (suspend/checkpoint/resume) with an approval bridge, continuing agent
+sessions, a container sandbox, Rails runtime primitives, and a documentation
+restructure — followed by a security-and-lifecycle hardening pass over the whole
+Sandbox + Permissions seam.
+
+### Added
+
+- **MCP data sources.** `Agent.mcp` attaches Model Context Protocol servers
+  (stdio/SSE/HTTP) via `ruby_llm-mcp` (soft, optional dependency). Every MCP tool
+  call passes a second gate — `Permissions#authorize_mcp!` — scoped by the
+  `mcp_allow` exact-match allow-list (default `[]`, so `:read_only` fails closed).
+  `MCP::GatedTool` is a plain delegating wrapper; teardown is `Agent#close`.
+- **MCP over HTTP with an OAuth token provider.** `MCP.build(token:)` accepts a
+  static string or a callable and injects `Authorization: Bearer …` into the
+  HTTP-family transports. A rotated token is resolved once per client build, so
+  rotation needs `Agent#close` + a fresh prompt (documented reconnect caveat).
+- **Web-content capability (`:fetch`).** `Nexo::Tools::Fetch` (stdlib `net/http`
+  GET) is a two-lock capability: the `:fetch` permission (default-denied under
+  `:read_only`) plus a host in the subdomain-aware `fetch_allow` list. An SSRF
+  guard resolves the host once, pins the vetted IP, and denies loopback/private/
+  link-local/CGNAT/unspecified ranges. Responses are byte-capped.
+- **Web search capability (`:search`).** `Nexo::Tools::WebSearch` with an
+  injected backend (`search_backend`), gated like `:fetch`.
+- **Input staging + named artifacts.** `Workflow#stage` writes files into the
+  run's sandbox before work begins; `Workflow#artifact` records named outputs
+  (`content:` or a trusted ERB `from:` template) on the run, persisted immediately.
+  Both reuse the sandbox + WorkflowRun seams; a data-only workflow builds nothing.
+- **Workflow → agent glue.** `Workflow#run_agent(prompt, max_turns:)` runs the
+  declared `agent` inside the run's shared sandbox and forwards every loop event
+  through `emit`.
+- **Durable workflows.** `Workflow#suspend!`, `#checkpoint`, and `Workflow.resume`
+  add a `"suspended"` status and a JSON `state` column: a workflow can pause for
+  input, persist completed checkpoints, and resume (sync or via `resume_later`)
+  without re-running checkpointed work. `resume` atomically claims a suspended run
+  (no double execution); checkpoint values are JSON-normalized for Memory/AR parity.
+- **Durable approval bridge.** Under `permissions :approve`, an undecided
+  sensitive tool call raises `ApprovalRequired`, which `run_agent` records under a
+  reserved `__approval__` state key and turns into a `suspend!`; `resume(approved:)`
+  threads the human decision back into the agent's permissions.
+- **Continuing agent sessions.** `Nexo::Session` persists a chat across prompts
+  via ruby_llm's `acts_as_chat` (host-owned schema), with idempotent instruction
+  re-application on every resume and once-only observability wiring.
+- **Container sandbox.** `Sandboxes::Container` runs an agent's tools inside a
+  throwaway, hardened OCI container via the `docker` (default) or Apple `container`
+  CLI — no vendor gem, argv arrays only (no shell-string interpolation). Ephemeral
+  by default; opt-in `reconnect: true` reattaches by an exact identity label.
+- **Rails runtime primitives.** `Nexo::WorkflowJob` (ActiveJob), Turbo mirroring,
+  and `ActiveSupport::Notifications` (`nexo.workflow.status` / `nexo.workflow.event`)
+  — all Rails-optional and guarded, no-ops when their dependency is absent.
+- **Unified sandbox resolver.** `Sandboxes.resolve` is the single place a sandbox
+  declaration (symbol / Hash / pre-built instance) becomes a concrete `Sandbox`.
+- **`provider` / `assume_model_exists` agent macros** for non-registry models
+  (e.g. Ollama), now documented in the getting-started guide.
+- **Documentation restructure.** The README is a slim index; thirteen topic guides
+  live under `docs/`, and `rake doc` / `rake doc:coverage` (a 100%-or-fail gate)
+  render and enforce RDoc coverage.
+
+### Security
+
+- **MCP gate no longer fails open under `:approve`.** `authorize_mcp!` gained an
+  `:approve` branch and a fail-closed `else raise Denied` backstop, so no mode
+  falls through ungated.
+- **Closed shell/command injection in `Container#glob` and `Remote#glob`.** The
+  model-supplied pattern is passed as a positional argument, never interpolated
+  into a command line — a `:read_only` agent can no longer reach command execution
+  through the always-allowed `:glob` capability.
+- **`Local` sandbox hardening.** `glob` guards the pattern against escapes and
+  filters symlinked matches; `read`/`write` resolve symlinks via `realpath` so a
+  symlink inside `cwd` pointing outside it no longer escapes the sandbox.
+- **Fetch SSRF hardened.** Resolve-once IP pinning removes the DNS-rebinding
+  window; the deny set adds `0.0.0.0/8`, CGNAT `100.64.0.0/10`, and the IPv6
+  unspecified address.
+
+### Fixed
+
+- **Sandbox lifecycle — no container leak.** `Agent#close` now closes the sandbox
+  it owns; `Workflow.execute` releases the run's sandbox on every terminal path.
+  A borrowed sandbox (injected via `sandbox:`, e.g. `run_agent`) is left to its
+  owner, so multiple `run_agent` calls no longer tear down a shared container.
+- **Workflow lifecycle correctness.** A non-`StandardError` (path-escape
+  `SecurityError`, shell-less `NotImplementedError`) now marks a run `"failed"`
+  instead of stranding it `"running"`; `resume` claims the run atomically; a
+  non-approval resume is no longer coerced into a silent denial; reserved
+  `__suspend__` / `__approval__` state is cleared on a successful resume; status
+  notifications fire for `queued`/`interrupted`; `resume` honors the original
+  `buffer_events`.
+- **Ambiguous workflow payloads raise.** `run` / `run_later` reject a positional
+  payload combined with leftover keywords instead of silently dropping keys.
+- **Agent config is inherited.** Subclassing a configured agent copies its macros
+  instead of reverting to defaults.
+- **Session/loop fixes.** The base `Loop#run` contract includes `chat:`;
+  `Loops::AgentSDK` rejects a session chat with a clear error and emits the
+  terminal `:done` event; durable-session instruction application collapses to one
+  copy per resume even without an `instructions` macro; the Memory session path
+  adopts the agent owning the live chat so `close`/`prompt` hit live resources.
+- **Miscellaneous.** Memory `RunStore` is mutex-guarded and mirrors the AR read
+  helpers; `engine.rb` is Zeitwerk-ignored; `Agent#close` is exception-safe per
+  client; `skills`/`mcp_allow`/`fetch_allow` accumulate (deduped) like `mcp`;
+  `ReadFile` caps its output; `WebSearch` and `stage` tolerate string- or
+  symbol-keyed input; dead `save!` and `turns`-counter code removed.
+
 ## [0.6.0] - 2026-07-01
 
 ### Added
