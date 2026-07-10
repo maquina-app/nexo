@@ -303,6 +303,10 @@ module Nexo
         rescue
           raise if pending.nil?
         end
+        # Release the run's sandbox (if one was built) on every terminal path —
+        # done, suspended, or failed — so a container/remote sandbox never leaks.
+        # Best-effort inside #release_sandbox!, so it can't mask +pending+.
+        instance&.release_sandbox!
       end
 
       # Looks up a run by its UUID string id through whichever store
@@ -478,6 +482,19 @@ module Nexo
     # byte-for-byte unchanged.
     def sandbox
       @sandbox ||= resolve_sandbox(self.class.sandbox)
+    end
+
+    # Releases the run's sandbox at the end of #execute — but ONLY if one was
+    # actually built. Reads +@sandbox+ directly instead of calling #sandbox so a
+    # data-only workflow (which never resolved a sandbox) doesn't construct one
+    # just to close it. Idempotent and best-effort: a container/remote sandbox is
+    # force-removed/closed here so a #run_agent-driven container doesn't leak —
+    # #run_agent BORROWS this shared sandbox, so Agent#close leaves teardown to the
+    # owner (this workflow). A failing teardown must never raise out of #execute.
+    def release_sandbox!
+      @sandbox&.close
+    rescue
+      nil
     end
 
     # Stages provided files into the run's sandbox before work begins (Spec 7 R2).

@@ -199,6 +199,10 @@ module Nexo
           "assume_model_exists is set but no provider given — add the `provider` macro (e.g. `provider :ollama`)"
       end
 
+      # The agent owns (and so closes) its sandbox only when it resolved one from
+      # its own config. A sandbox injected via +sandbox:+ (e.g. Workflow#run_agent
+      # sharing the run's sandbox) is BORROWED — closing it would strand the owner.
+      @owns_sandbox = sandbox.nil?
       @sandbox = resolve_sandbox(sandbox || self.class.sandbox)
       @permissions = resolve_permissions(permissions || self.class.permissions, decision: decision)
       @instructions = self.class.instructions
@@ -286,6 +290,20 @@ module Nexo
         # Swallow and continue to the next.
       end
       @mcp_clients = nil
+
+      # Release the sandbox too, so a container/remote-backed agent doesn't leak
+      # its container/connection when the caller only remembers +close+. Only close
+      # a sandbox this agent OWNS (resolved from its own config) — a borrowed one
+      # (injected via +sandbox:+, e.g. Workflow#run_agent's shared run sandbox) is
+      # the injector's to close. The base Sandbox#close is a no-op, so this is safe
+      # and idempotent for :virtual/:local. Best-effort: never raise out of close.
+      if @owns_sandbox
+        begin
+          @sandbox&.close
+        rescue
+          # Swallow: close must stay idempotent and non-raising.
+        end
+      end
     end
 
     private

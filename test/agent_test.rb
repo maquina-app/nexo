@@ -172,6 +172,58 @@ class AgentTest < Minitest::Test
     assert_equal "review complete", response.content
   end
 
+  # A sandbox that records its teardown, so we can assert Agent#close releases it
+  # (a container/remote-backed sandbox otherwise leaks when the caller only knows
+  # to call agent.close).
+  class RecordingSandbox < Nexo::Sandbox
+    attr_reader :closed_count
+
+    def initialize
+      @closed_count = 0
+    end
+
+    def close
+      @closed_count += 1
+    end
+  end
+
+  def test_close_releases_an_owned_sandbox
+    sandbox = RecordingSandbox.new
+    klass = Class.new(Nexo::Agent) do
+      model TEST_MODEL
+      sandbox sandbox # class-configured => the agent owns it
+    end
+
+    klass.new.close
+
+    assert_equal 1, sandbox.closed_count
+  end
+
+  def test_close_does_not_release_a_borrowed_sandbox
+    sandbox = RecordingSandbox.new
+    # Injected via sandbox: (as Workflow#run_agent shares the run's sandbox) =>
+    # borrowed, so the agent must leave teardown to the injector.
+    agent = Nexo::Agent.new(model: TEST_MODEL, sandbox: sandbox)
+
+    agent.close
+
+    assert_equal 0, sandbox.closed_count
+  end
+
+  def test_close_is_idempotent_and_survives_a_raising_owned_sandbox
+    raising = Class.new(Nexo::Sandbox) do
+      def close = raise "boom"
+    end.new
+    klass = Class.new(Nexo::Agent) do
+      model TEST_MODEL
+      sandbox raising
+    end
+    agent = klass.new
+
+    agent.close # must not raise out of close
+    agent.close
+  end
+
   private
 
   # Captures the kwargs a block's `Agent#chat` hands to `RubyLLM.chat` while

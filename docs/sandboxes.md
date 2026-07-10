@@ -208,8 +208,10 @@ The container starts **lazily** on first tool use and its id is memoized.
 
 - **Ephemeral (default, `reconnect: false`):** `close` force-removes the container
   (`<bin> rm -f <id>`) and clears the memo. Idempotent — safe with nothing started or called
-  twice. A workflow driving a container-backed agent through `run_agent` tears the container
-  down automatically when the run ends (`Agent#close` / `run_agent`'s `ensure`).
+  twice. A standalone container-backed agent tears its container down on `Agent#close` (the
+  agent owns the sandbox it resolved). A workflow driving one through `run_agent` shares the
+  run's sandbox — `run_agent` borrows it, so teardown happens once at the end of the run in
+  `Workflow.execute`'s `ensure` (on done, suspended, or failed), never per `run_agent` call.
 - **Reconnect (`name:` + `reconnect: true`):** every container is tagged at `run` with an
   **exact identity label** — `--label nexo.sandbox.id=<name>`. On start the sandbox looks up
   that container by the **exact label filter** (`docker ps -aqf label=nexo.sandbox.id=<name>`),

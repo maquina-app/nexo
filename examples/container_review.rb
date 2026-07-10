@@ -47,7 +47,6 @@ if __FILE__ == $PROGRAM_NAME
     response = agent.prompt("Review the code under /workspace/repo and summarize any issues.")
     puts response.content
   ensure
-    agent.close         # releases MCP clients (none here)
-    agent.sandbox.close # force-removes the ephemeral container — Agent#close does NOT do this
+    agent.close # releases MCP clients (none here) AND force-removes the ephemeral container
   end
 end
