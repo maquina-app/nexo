@@ -64,6 +64,52 @@ DocumentApproval.resume_later(run.id, { approved: true }, queue: :nexo)
 See [`examples/approval_workflow.rb`](../examples/approval_workflow.rb) for the full
 offline flow (`ruby -Ilib examples/approval_workflow.rb`).
 
+## Parallel checkpoints — `checkpoint_all`
+
+When several checkpoints are **independent** (no step depends on another's
+result), run them concurrently with `checkpoint_all(name => callable, …)` instead
+of a sequence of `checkpoint` calls. It fans the pending steps out through
+[`Nexo.concurrent`](concurrency.md) — all in flight at once — and persists **each
+step as it completes** (not the batch as a whole), so a resume after a partial
+failure only re-runs the steps that never landed:
+
+```ruby
+class BuildDashboard < Nexo::Workflow
+  def call(payload)
+    data = checkpoint_all(
+      account: -> { fetch_account(payload[:id]) },   # these two run
+      usage:   -> { fetch_usage(payload[:id]) }      # concurrently
+    )
+    { report: render(data[:account], data[:usage]) }
+  end
+end
+```
+
+`checkpoint_all` returns a Hash keyed by the **original** names you passed
+(`data[:account]`), with values read back from `state` — the same shape whether a
+value came from this pass or a prior one. Each newly-completed step also surfaces a
+`"checkpoint"`-typed event on the run's event log and the `nexo.workflow.event`
+notification (data is the step **name** only, never the value — so a dashboard can
+show batch progress without the event log carrying large or sensitive results).
+Steps already present in `state` are skipped silently and emit nothing.
+
+Bound the batch by how many keys you pass — there is no separate rate knob; every
+pending step goes in flight. Because it drives `Nexo.concurrent`, `checkpoint_all`
+needs the `async` gem **only when something is actually pending** — an
+all-persisted pass (every step already done) returns the prior values directly
+without touching concurrency. The same restrictions as `checkpoint` apply: values
+must be json-serializable, a step must **not** be named after a reserved state key
+(`__suspend__`/`__approval__`/`__buffer_events__` — raises `Nexo::Error` before any
+step runs), and do **not** call `suspend!` inside a step (undefined — unsupported).
+
+> **⚠️ Known trade-off: per-step persistence, not an atomic batch.** `checkpoint_all`
+> is **not** transactional. If step B raises after step A persisted, A stays in
+> `state`, B is absent, the run goes `"failed"`, and the exception propagates through
+> the workflow's normal failure path (`Nexo.concurrent`'s "first failure re-raises,
+> the rest stop" — it is not rescued away). A subsequent `execute` of the **same** run
+> re-submits only the still-missing names — A is skipped, B re-runs. Do **not** treat
+> a batch as all-or-nothing.
+
 ## Durable **agent** approval — `:approve` (bridge a mid-run gate to a suspend)
 
 The example above suspends at an **explicit** `suspend!` the workflow author placed.

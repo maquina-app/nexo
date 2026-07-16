@@ -1,5 +1,21 @@
 ## [Unreleased]
 
+### Added
+
+- **Scheduled enqueue/resume.** `Workflow.run_later` and `Workflow.resume_later`
+  accept `wait:` (a duration) or `wait_until:` (an absolute time), forwarded to the
+  installed ActiveJob's own `.set(...)` scheduler — so a suspended run can wake
+  itself on a timer and an initial enqueue can be deferred, without Nexo adding a
+  scheduler. Passing both raises `ArgumentError`; with neither the enqueue is
+  unchanged. Status stays `"queued"`/`"suspended"` (no new status). No retry
+  semantics are added.
+- **Parallel checkpoints.** `Workflow#checkpoint_all(name => callable, …)` runs
+  independent checkpoints concurrently through the existing `Nexo.concurrent`
+  driver, persisting **each step as it completes** so a resume after a partial
+  failure re-runs only the still-missing steps. Each newly-completed step emits a
+  `"checkpoint"`-typed event (name-only) on the existing `nexo.workflow.event`
+  seam. Reuses `state`/`save_state!` — no schema, run-status, or store change.
+
 ## [0.7.0] - 2026-07-10
 
 The harness fills out: MCP data sources, a web-content capability, durable

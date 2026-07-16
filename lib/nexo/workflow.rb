@@ -40,6 +40,13 @@ module Nexo
   # expensive/side-effectful steps so resume skips already-paid-for work — see the
   # "Durable workflows" README section for the honest resume semantics.
   class Workflow
+    # State keys Nexo reserves for lifecycle metadata, never a caller's data:
+    # +"__suspend__"+ (suspend reason/resume_key — Spec 13), +"__approval__"+
+    # (pending approval call — Spec 16), and +"__buffer_events__"+ (the persisted
+    # buffering choice — Spec 5). ::cleared_state strips these when a run reaches
+    # +"done"+; #checkpoint_all refuses a step named after any of them (Spec 21).
+    RESERVED_STATE_KEYS = %w[__suspend__ __approval__ __buffer_events__].freeze
+
     # Control-flow signal raised by #suspend! and caught by ::execute to pause
     # a run durably — NOT a failure. It transitions the run to +"suspended"+
     # (never +"failed"+) and returns the run to the caller rather than re-raising.
@@ -165,10 +172,29 @@ module Nexo
       # also reachable. Not resumable: a crashed or retried job re-runs +#call+ from
       # scratch (Nexo adds no +retry_on+); pair with ::reconcile_interrupted! to
       # catch runs orphaned in +"running"+.
-      def run_later(payload = nil, queue: Nexo.config.job_queue, **kwargs)
+      #
+      # +wait:+ / +wait_until:+ (Spec 21) defer the enqueue via the installed
+      # ActiveJob's own +.set(...)+ scheduler — +wait:+ takes a duration
+      # (+wait: 1.hour+), +wait_until:+ an absolute time (+wait_until: tomorrow_9am+).
+      # Nexo adds no scheduler of its own; it just forwards these to +.set+. The run
+      # is still +"queued"+ (no +"scheduled"+ status is invented). Passing **both** in
+      # one call raises ArgumentError (the installed ActiveJob would silently keep one)
+      # — checked before any run is created. With neither given the enqueue is
+      # byte-for-byte the pre-Spec-21 immediate one (no +:at+ on the job).
+      #
+      # +wait:+/+wait_until:+/+queue:+ share the bare-keyword/positional ambiguity
+      # that +queue:+ already carried: a bare-keyword call like +run_later(wait: 60)+
+      # consumes +wait+ as the scheduling option (the payload stays +{}+). A payload
+      # that legitimately needs a key literally named +"wait"+ must be passed as an
+      # explicit positional Hash — +run_later({wait: "value"})+.
+      def run_later(payload = nil, queue: Nexo.config.job_queue, wait: nil, wait_until: nil, **kwargs)
         unless defined?(::ActiveJob)
           raise Nexo::MissingDependencyError,
             "run_later requires ActiveJob (Rails). Use `run` for synchronous execution."
+        end
+        if wait && wait_until
+          raise ArgumentError,
+            "pass either `wait:` or `wait_until:`, not both (got both)"
         end
         if payload && !kwargs.empty?
           raise ArgumentError,
@@ -178,9 +204,7 @@ module Nexo
         run = Nexo::RunStore.default.create(workflow_class: name, payload: stringify(payload))
         run.update!(status: "queued")
         notify_status(run) # let a dashboard learn the run was enqueued
-        job = Nexo::WorkflowJob
-        job = job.set(queue: queue) if queue
-        job.perform_later(run.id)
+        enqueue_job(Nexo::WorkflowJob, queue: queue, wait: wait, wait_until: wait_until).perform_later(run.id)
         run
       end
 
@@ -229,15 +253,27 @@ module Nexo
       # Requires ActiveJob (Rails): without it this raises Nexo::MissingDependencyError
       # pointing at ::resume for synchronous execution. +queue:+ (default
       # Nexo.config.job_queue) routes the job exactly like ::run_later.
-      def resume_later(run_id, input = {}, queue: Nexo.config.job_queue)
+      #
+      # +wait:+ / +wait_until:+ (Spec 21) defer the resume via the installed
+      # ActiveJob's own +.set(...)+ — +wait:+ a duration (+resume_later(id, input,
+      # wait: 1.hour)+ so a suspended run wakes itself on a timer), +wait_until:+ an
+      # absolute time. Nexo adds no scheduler and no retry; a crashed scheduled-resume
+      # job remains the host's +reconcile_interrupted!+ / +retry_on+ story. Passing
+      # **both** raises ArgumentError (the installed ActiveJob would silently keep one),
+      # checked before the job is enqueued. With neither given the enqueue is
+      # byte-for-byte the pre-Spec-21 immediate one. The return value is unchanged: the
+      # run stays +"suspended"+ until the job fires and re-enters ::resume's atomic claim.
+      def resume_later(run_id, input = {}, queue: Nexo.config.job_queue, wait: nil, wait_until: nil)
         unless defined?(::ActiveJob)
           raise Nexo::MissingDependencyError,
             "resume_later requires ActiveJob (Rails). Use `resume` for synchronous execution."
         end
+        if wait && wait_until
+          raise ArgumentError,
+            "pass either `wait:` or `wait_until:`, not both (got both)"
+        end
         run = Nexo::RunStore.default.find(run_id)
-        job = Nexo::WorkflowJob
-        job = job.set(queue: queue) if queue
-        job.perform_later(run.id, input)
+        enqueue_job(Nexo::WorkflowJob, queue: queue, wait: wait, wait_until: wait_until).perform_later(run.id, input)
         run
       end
 
@@ -341,6 +377,22 @@ module Nexo
         )
       end
 
+      # Builds the ActiveJob dispatch for ::run_later/::resume_later, forwarding
+      # only the non-nil scheduling options to the installed ActiveJob's own
+      # +.set(...)+ (Spec 21). The options Hash is accumulated conditionally so that
+      # with no +queue+/+wait+/+wait_until+ there is no +.set+ call at all — keeping
+      # the no-scheduling-option enqueue byte-for-byte identical to the pre-Spec-21
+      # path (the job carries no +:at+). +wait:+ and +wait_until:+ are never both
+      # present here (the callers raise ArgumentError first), so ActiveJob never has
+      # to silently pick between them.
+      def enqueue_job(job, queue: nil, wait: nil, wait_until: nil)
+        options = {}
+        options[:queue] = queue if queue
+        options[:wait] = wait if wait
+        options[:wait_until] = wait_until if wait_until
+        options.empty? ? job : job.set(**options)
+      end
+
       # Persists a +true+ buffering choice under the reserved "__buffer_events__"
       # state key (idempotent — written once) so ::resume can honor it. The
       # unbuffered default writes nothing, keeping the Spec 2 hot path untouched.
@@ -358,11 +410,10 @@ module Nexo
       def cleared_state(run)
         return {} unless run.respond_to?(:state)
 
-        reserved = %w[__suspend__ __approval__ __buffer_events__]
         state = run.state || {}
-        return {} unless reserved.any? { |k| state.key?(k) }
+        return {} unless RESERVED_STATE_KEYS.any? { |k| state.key?(k) }
 
-        {state: state.except(*reserved)}
+        {state: state.except(*RESERVED_STATE_KEYS)}
       end
 
       def stringify(hash) = hash.transform_keys(&:to_s)
@@ -383,6 +434,11 @@ module Nexo
       @run = run
       @buffer_events = buffer_events
       @event_buffer = []
+      # Serializes the read-current → merge → assign → save_state! sequence across
+      # the concurrent fibers #checkpoint_all runs each step on (Spec 21). A plain
+      # Mutex is fiber-safe under the async reactor (Group 0 verified it serializes
+      # without stalling); #checkpoint (singular, no concurrency) does not use it.
+      @checkpoint_mutex = Mutex.new
     end
 
     # Subclasses implement the work here. The +payload+ is symbol-keyed; the
@@ -422,6 +478,62 @@ module Nexo
       @run.state = store.merge(key => value)
       @run.save_state! if @run.respond_to?(:save_state!)
       value
+    end
+
+    # Runs several independent checkpoints **concurrently** on the first pass and,
+    # crucially, persists **each step as it completes** — so a resume after a
+    # partial failure only re-runs the steps that never landed (Spec 21):
+    #
+    #   fetched = checkpoint_all(
+    #     account: -> { fetch_account(payload[:id]) },
+    #     usage:   -> { fetch_usage(payload[:id]) }
+    #   )
+    #   fetched[:account] # => the account value (this pass or a prior one)
+    #
+    # +steps+ is a Hash of +name => callable+ (each value a Proc/lambda); names may
+    # be symbols or strings and are stringified for storage exactly like #checkpoint
+    # (+name.to_s+). The returned Hash is keyed by the **original** (un-stringified)
+    # names with values read back from +@run.state+, so a caller gets the same shape
+    # whether a value came from this call or a prior pass.
+    #
+    # The pending steps (those not already in +@run.state+) run through the existing
+    # Nexo.concurrent driver, all in flight at once — callers bound the batch by how
+    # many keys they pass; there is no separate rate knob. Each step persists on its
+    # own through the same read-current → merge → assign → +save_state!+ sequence as
+    # #checkpoint, serialized across the concurrent fibers by an internal Mutex, and
+    # emits a +:checkpoint+ event naming the step (Spec 21 R3). Concurrency (and the
+    # +async+ gem) is touched **only** when something is pending — an all-persisted
+    # pass returns the prior-pass values directly without requiring +async+.
+    #
+    # Known trade-off: this is per-step persistence, **not** an atomic batch. If
+    # step B raises after step A persisted, A stays in +run.state+, B is absent, the
+    # run goes +"failed"+, and the exception propagates through the workflow's normal
+    # failure path (Nexo.concurrent's "first failure re-raises, the rest stop" — not
+    # rescued away). A subsequent ::execute of the SAME run re-submits only the
+    # still-missing names — A is skipped, B re-runs. Do NOT treat a batch as
+    # all-or-nothing.
+    #
+    # Same restrictions as #checkpoint: values must be json-serializable (they
+    # round-trip the store), a step must NOT be named after a RESERVED_STATE_KEYS
+    # entry (raises Nexo::Error before any step runs), and do NOT call #suspend!
+    # inside a step (undefined — v1 unsupported, documented not enforced).
+    def checkpoint_all(steps)
+      if (reserved = steps.keys.find { |name| RESERVED_STATE_KEYS.include?(name.to_s) })
+        raise Nexo::Error,
+          "checkpoint name #{reserved.to_s.inspect} is reserved (#{RESERVED_STATE_KEYS.join(", ")})"
+      end
+
+      state = @run.state || {}
+      pending = steps.reject { |name, _| state.key?(name.to_s) }
+
+      unless pending.empty?
+        Nexo.concurrent(max_in_flight: pending.size) do |c|
+          pending.each { |name, callable| c.add { persist_checkpoint(name, callable.call) } }
+        end
+      end
+
+      current = @run.state || {}
+      steps.keys.to_h { |name| [name, current[name.to_s]] }
     end
 
     # Pauses the run durably (Spec 13): raises Suspended, which ::execute catches
@@ -613,6 +725,28 @@ module Nexo
     def agent_decision_kwargs
       d = resume_input
       d.key?(:approved) ? {decision: {approved: !!d[:approved]}} : {}
+    end
+
+    # Persists ONE completed #checkpoint_all step (Spec 21) — json_normalizes the
+    # raw value, then, inside +@checkpoint_mutex.synchronize+, re-reads the current
+    # +@run.state+, merges the single key, reassigns, and +save_state!+s it: the
+    # identical read-current → merge → assign → save sequence as #checkpoint, but
+    # serialized across the concurrent fibers so two steps landing at once can't
+    # clobber each other's merge. The +:checkpoint+ event is emitted **inside** the
+    # same synchronized block, alongside the state write, so the event-log append
+    # (which mutates the shared buffer / run) serializes with it too. Only reached
+    # for genuinely pending steps, so a skipped (already-persisted) step emits
+    # nothing. Returns the normalized value.
+    def persist_checkpoint(name, raw_value)
+      key = name.to_s
+      value = json_normalize(raw_value)
+      @checkpoint_mutex.synchronize do
+        store = @run.state || {}
+        @run.state = store.merge(key => value)
+        @run.save_state! if @run.respond_to?(:save_state!)
+        emit(:checkpoint, name: key)
+      end
+      value
     end
 
     # Coerces a checkpoint value into exactly what it would become after a round
