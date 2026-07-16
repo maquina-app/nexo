@@ -1,0 +1,14 @@
+# Partial RBS for the Spec 21 surface only (RBS reopening) — the scheduled
+# enqueue/resume keywords on the class methods and the new instance
+# #checkpoint_all. The rest of Workflow stays unsigned, matching today's
+# partial RBS coverage.
+module Nexo
+  class Workflow
+    RESERVED_STATE_KEYS: Array[String]
+
+    def self.run_later: (?untyped payload, ?queue: untyped, ?wait: untyped, ?wait_until: untyped, **untyped) -> untyped
+    def self.resume_later: (untyped run_id, ?untyped input, ?queue: untyped, ?wait: untyped, ?wait_until: untyped) -> untyped
+
+    def checkpoint_all: (Hash[untyped, untyped] steps) -> Hash[untyped, untyped]
+  end
+end

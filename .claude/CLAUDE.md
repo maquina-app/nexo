@@ -533,6 +533,29 @@ the Gemfile, NOT a gemspec `add_dependency` — `require "nexo"` with it absent 
   NOT `defined?(RubyLLM::MCP)` — the constant is absent until first lazy `require` even when the
   gem is installed.
 
+- **Spec 21 scheduling tests load ActiveJob IN-PROCESS (not a subprocess).** Unlike the Spec 11/13
+  Rails-runtime tests (which shell out via `Bundler.with_unbundled_env` because they need
+  ActiveRecord, whose load flips `RunStore.default` to the AR backend), `test/workflow_scheduled_
+  resume_test.rb` and `test/workflow_scheduled_checkpoint_integration_test.rb` just
+  `require "active_job"` + `require "nexo/workflow_job"` at the top and use the `:test` adapter
+  in-process. This is safe because `active_job` pulls in **neither `active_record` nor
+  `Rails::Engine`** — so `RunStore.default` stays the Memory store (the AR gate needs `ActiveRecord::
+  Base` AND `Nexo::WorkflowRun`, both still absent) and `no_rails_test.rb`'s `refute defined?(::Rails::
+  Engine)` still holds. The one consequence: `workflow_runtime_test.rb`'s
+  `test_run_later_without_active_job_raises_missing_dependency` now **skips** in the combined suite
+  (its `skip if defined?(::ActiveJob)` guard trips) — its ActiveJob-present coverage lives in the
+  `workflow_runtime_check.rb` subprocess. Since `rake test` loads every `test/*.rb` into one process,
+  requiring `active_job` in any file makes it process-wide; that's intended here.
+- **`checkpoint_all` is deliberately UN-rate-bounded (Spec 21 R2.4).** It calls
+  `Nexo.concurrent(max_in_flight: pending.size)` — every pending step in flight at once, NOT capped
+  at `config.max_in_flight`. This looks like it defeats `Nexo.concurrent`'s rate-bound raison d'être,
+  and a simplifier pass will flag it; it is a spec mandate ("no new rate-limiting knob; callers bound
+  the batch by how many keys they pass"). Do not "fix" it to inherit the config cap. Each step
+  persists as it completes via `#persist_checkpoint` (Mutex-guarded read→merge→assign→`save_state!`,
+  with the `emit(:checkpoint, name:)` inside the same `synchronize` so event appends serialize) — so
+  a partial-batch failure leaves completed steps persisted and a retry re-runs only the missing ones
+  (NOT atomic — documented "Known trade-off").
+
 ## Repo
 
 `origin` → `git@github.com:maquina-app/nexo.git` (note: repo is `nexo`, gem is `nexo_ai`).

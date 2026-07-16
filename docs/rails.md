@@ -35,6 +35,39 @@ GenerateReport.run_later(account_id: 42, queue: :nexo)  # per-call
 Nexo.configure { |c| c.job_queue = :nexo }              # or a global default
 ```
 
+### Scheduling a future run or resume
+
+`run_later` and `resume_later` accept `wait:` (a duration) or `wait_until:` (an
+absolute time), forwarded straight to **the installed ActiveJob's own**
+`.set(...)` scheduler — Nexo adds no scheduler of its own. Use them to defer an
+initial enqueue ("send this digest at 9am") or to let a suspended run wake itself
+on a timer, symmetrically:
+
+```ruby
+# Defer the initial enqueue until tomorrow morning.
+DailyDigest.run_later({account_id: 42}, wait_until: Date.tomorrow.noon)
+
+# Let a suspended run wake itself up in an hour (no separate scheduled job).
+MyWorkflow.resume_later(run.id, {reminder: true}, wait: 1.hour)
+```
+
+The run's status is unchanged — a scheduled `run_later` is still `"queued"` (no
+`"scheduled"` status is invented), and a scheduled `resume_later` leaves the run
+`"suspended"` until the job fires. Passing **both** `wait:` and `wait_until:` in
+one call raises `ArgumentError` (checked before any run is created or job
+enqueued) — the installed ActiveJob would otherwise silently keep just one. With
+neither given, the enqueue is byte-for-byte the immediate one above.
+
+> **⚠️ `wait:`/`wait_until:`/`queue:` are scheduling options, not payload.** Like
+> `queue:` already was, a bare-keyword call consumes them as options: `run_later(wait:
+> 60)` schedules the job **60 seconds out** and leaves the payload `{}` — it does
+> **not** store `"wait" => 60` as data. A payload that legitimately needs a key named
+> `"wait"` must be passed as an explicit positional Hash: `run_later({wait: "value"})`.
+
+This is still "no scheduler, no cron" — `wait:`/`wait_until:` schedule a **single**
+future run/resume via ActiveJob; recurring schedules stay the host's (see the "no
+queue and no scheduler" note below).
+
 Nexo ships **no queue and no scheduler** — ActiveJob uses whatever adapter your
 app configured (Sidekiq, GoodJob, Solid Queue, …), and scheduling (cron / GoodJob
 / `whenever`) stays the host's. Without ActiveJob, `run_later` raises

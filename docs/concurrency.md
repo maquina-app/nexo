@@ -41,6 +41,12 @@ most important knob for staying under provider rate limits.
 Using `Nexo.concurrent` with `async` not installed raises
 `Nexo::MissingDependencyError` with install guidance.
 
+Inside a durable workflow, `Workflow#checkpoint_all` is the workflow-durability
+flavored sibling of `Nexo.concurrent`: it drives this same bounded fan-out but
+persists each step to the run's `state` as it lands, so a resume only re-runs what
+never completed. See [Parallel checkpoints](durable-workflows.md#parallel-checkpoints--checkpoint_all)
+in the durable-workflows guide.
+
 ## `Sandboxes::Local` offload
 
 Under a reactor, blocking file/subprocess I/O would stall every other fiber. Flip
