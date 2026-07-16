@@ -1,5 +1,12 @@
 ## [Unreleased]
 
+## [0.8.0] - 2026-07-16
+
+Durability enhancements for workflows: a suspended run can now wake itself on a
+timer, and independent checkpoints run concurrently, each persisting as it
+completes. Both build on the existing ActiveJob and `Nexo.concurrent` seams — no
+schema, run-status, or store change.
+
 ### Added
 
 - **Scheduled enqueue/resume.** `Workflow.run_later` and `Workflow.resume_later`
