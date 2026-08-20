@@ -115,7 +115,7 @@ the count staged.
 
 `artifact(name, content:)` records a **named deliverable** on the run — a digest,
 a report, an improved file, a generated script. The body is written to the
-sandbox at `/artifacts/<name>` (so later steps can read it) and recorded on the
+sandbox at `artifacts/<name>` (so later steps can read it) and recorded on the
 run. `run.artifacts` reads it back as an **ordered array** of string-keyed hashes
 (`{"name" =>, "content" =>, "at" =>}`) in both stores:
 
@@ -150,6 +150,52 @@ artifact("digest.md", from: "app/templates/digest.md.erb",
 
 See [`examples/artifact_from_template.rb`](../examples/artifact_from_template.rb) for
 the full offline flow (`ruby -Ilib examples/artifact_from_template.rb`).
+### Agent output — `produces`
+
+`from:` renders ERB and is **only** for templates you wrote. An agent's output is model
+output, so it is copied **verbatim** instead. An agent declares what it produces, and may
+produce as many artifacts as it likes:
+
+```ruby
+class Publisher < Nexo::Agent
+  skills :dashboard_designer
+  produces "dashboard.html", "digest.json", "out/*.csv"
+end
+```
+
+`run_agent` copies those out of the sandbox and records them on the run the moment the
+agent finishes — **including when it suspended for approval or raised**, which are exactly
+the paths where results would otherwise be lost. Under the hood that is
+`artifact(name, path:)`, the verbatim third mode, which you can also call directly.
+
+Why this matters: a workflow builds **one** sandbox that every `run_agent` borrows, so a
+hand-off between stages is just "agent B reads a path agent A wrote". On `:local` that is a
+real directory and survives anything. On `:docker`/`:apple` it does not — `Container#close`
+is `rm -f`, and a run's sandbox is released on **every** terminal path, `suspended`
+included. So pausing for a human approval destroyed everything produced before the pause,
+while the identical code on `:local` kept it. Declared artifacts survive the teardown.
+
+Declared, never inferred: sweeping the sandbox would also collect staged skill scripts,
+templates and scratch files, and naming outputs is the only honest way for an agent to say
+it produced nothing. A declared artifact that was never written is skipped, not fatal.
+
+Bytes that are not valid UTF-8 are Base64-wrapped so they survive a JSON column. Read a
+body back with `Nexo::Workflow.artifact_body(art)` rather than `art["content"]`, which is
+Base64 text for binary.
+
+### Handing output to the next stage — `restore_artifacts`
+
+```ruby
+run_agent("extract")          # Extractor produces gmail.json
+restore_artifacts             # put recorded artifacts back in the sandbox
+run_agent("synthesize")       # Synthesizer reads gmail.json
+```
+
+`Skills.materialize` gets a skill's files *into* a sandbox; this is the other direction and
+then back in again, so a pipeline behaves the same whether the tier is persistent or
+ephemeral — including across a suspend and resume, where the sandbox that held the files no
+longer exists. Pass `only:` to restore a subset.
+
 
 The `artifacts` column ships with fresh installs. Apps installed before this
 release add it with:

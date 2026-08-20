@@ -22,7 +22,7 @@ module Nexo
     # configuration instead of silently resetting to defaults.
     CONFIG_IVARS = %i[
       @model @assume_model_exists @provider @sandbox @permissions @instructions
-      @skills @mcp @mcp_allow @fetch_allow @search_backend @requires
+      @skills @mcp @mcp_allow @fetch_allow @search_backend @requires @produces
     ].freeze
 
     class << self
@@ -129,6 +129,30 @@ module Nexo
         return @requires if commands.nil? && locale.nil?
 
         @requires = {commands: commands || {}, locale: locale}
+      end
+
+      # The artifacts this agent produces — sandbox paths, or globs, that a
+      # workflow copies out of the sandbox and records on the run as soon as the
+      # agent finishes:
+      #
+      #   class Publisher < Nexo::Agent
+      #     produces "dashboard.html", "digest.json", "out/*.csv"
+      #   end
+      #
+      # Accumulating and deduped, like +skills+: an agent may produce many
+      # artifacts, and several +produces+ lines add up rather than replacing.
+      #
+      # This is the agent's OUTPUT, not a template. Workflow#artifact's +from:+
+      # mode renders ERB and is only ever for files you wrote; what an agent
+      # produces is model output and is copied verbatim (Workflow#artifact +path:+).
+      #
+      # Declared rather than inferred because a sweep of the sandbox would also
+      # collect staged skill scripts, templates and scratch files — and because
+      # naming outputs is the only honest way for an agent to say it produced
+      # nothing. A declared artifact that is absent when the agent finishes is
+      # skipped, not fatal.
+      def produces(*names)
+        names.empty? ? (@produces || []) : (@produces = ((@produces || []) + names).uniq)
       end
 
       # Declares an MCP server for this agent (Spec 6). Accumulating: multiple
