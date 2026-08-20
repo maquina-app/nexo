@@ -1,5 +1,9 @@
 ## [Unreleased]
 
+## [0.11.0] - 2026-08-20
+
+An agent's tool schema now tells the truth about what it may do.
+
 ### Changed
 
 - **An agent no longer advertises a tool its permission mode can never authorize.**
