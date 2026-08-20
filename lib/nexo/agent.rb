@@ -332,7 +332,12 @@ module Nexo
       @environment_verified = true
       return if req.nil?
 
-      missing = unmet_requirements(req, @sandbox.environment)
+      # Probe for the names THIS agent declared, not the sandbox's default
+      # shortlist. Anything outside that shortlist — a custom binary, or an
+      # absolute interpreter path, which is exactly what you pin when the
+      # sandbox shell's PATH is narrowed — would otherwise never be looked for
+      # and would always report as missing.
+      missing = unmet_requirements(req, @sandbox.environment(commands: req[:commands].keys))
       return if missing.empty?
 
       raise Nexo::EnvironmentError,

@@ -18,8 +18,11 @@ class AgentRequiresTest < Minitest::Test
 
     def supports?(_cap) = true
 
-    def shell(_command, timeout: 30)
+    attr_reader :last_command
+
+    def shell(command, timeout: 30)
       @probes += 1
+      @last_command = command
       {stdout: @stdout, stderr: "", status: 0}
     end
   end
@@ -41,6 +44,21 @@ class AgentRequiresTest < Minitest::Test
 
   class DeclaresNothing < Nexo::Agent
     model TEST_MODEL
+  end
+
+  # The case the default probe shortlist (ruby/python3/node/sh) cannot serve: a
+  # command it has never heard of, and an absolute interpreter path — which is
+  # exactly what you pin when the sandbox shell runs with a narrowed PATH.
+  ABS_RUBY = "/opt/rubies/4.0.0/bin/ruby"
+
+  class NeedsAbsoluteRuby < Nexo::Agent
+    model TEST_MODEL
+    requires commands: {ABS_RUBY => ">= 3.0"}
+  end
+
+  class NeedsCustomBinary < Nexo::Agent
+    model TEST_MODEL
+    requires commands: {"pandoc" => "*"}
   end
 
   def verify(klass, stdout)
@@ -127,5 +145,32 @@ class AgentRequiresTest < Minitest::Test
 
   def test_requires_defaults_to_nil
     assert_nil DeclaresNothing.requires
+  end
+
+  # Regression (0.9.0): #verify_environment! probed Sandbox#environment with its
+  # DEFAULT command shortlist, so any declared name outside ruby/python3/node/sh
+  # was never looked for and always reported as missing — including the absolute
+  # interpreter path that is the whole reason to pin one.
+  def test_a_declared_absolute_path_is_the_thing_probed_for
+    sandbox = ScriptedSandbox.new("locale=C.UTF-8\ncmd=#{ABS_RUBY}\t#{ABS_RUBY}\truby 4.0.0\n")
+    NeedsAbsoluteRuby.new(sandbox: sandbox).verify_environment!
+
+    assert_includes sandbox.last_command, ABS_RUBY,
+      "the probe must look for the declared name, not the default shortlist"
+  end
+
+  def test_a_declared_command_outside_the_default_shortlist_is_probed_for
+    sandbox = ScriptedSandbox.new("locale=C.UTF-8\ncmd=pandoc\t/usr/bin/pandoc\tpandoc 3.1\n")
+    NeedsCustomBinary.new(sandbox: sandbox).verify_environment!
+
+    assert_includes sandbox.last_command, "pandoc"
+  end
+
+  def test_an_absolute_path_that_is_genuinely_absent_still_raises
+    error = assert_raises(Nexo::EnvironmentError) do
+      NeedsAbsoluteRuby.new(sandbox: ScriptedSandbox.new(BARE)).verify_environment!
+    end
+
+    assert_includes error.message, "no #{ABS_RUBY} on PATH"
   end
 end

@@ -167,6 +167,11 @@ Provision the sandbox, or drop the `requires` declaration.
 - `locale:` takes `:utf8` (any UTF-8 locale, the case that actually comes up) or an exact
   `String`.
 - Declaring nothing is the default and costs **no probe at all**.
+- A declared name is probed **as written**, so an absolute path is a legitimate
+  requirement — `requires commands: {"/opt/rubies/4.0.0/bin/ruby" => ">= 3.0"}` is what you
+  want when the sandbox shell's `PATH` is narrow enough that a version-managed interpreter
+  does not resolve there. The check then runs against the exact binary the agent will
+  invoke, not against whichever one happens to be first on `PATH`.
 
 The declaration lives here, in Nexo's vocabulary, rather than in the skill file: whoever
 wires an agent to a sandbox is the only person who can *fix* a gap, so the declaration and

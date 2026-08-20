@@ -1,5 +1,19 @@
 ## [Unreleased]
 
+## [0.9.1] - 2026-08-20
+
+A fix for `requires`, which in 0.9.0 could only see the sandbox probe's default
+shortlist.
+
+### Fixed
+
+- `requires` now probes for the command names the agent actually declared. In 0.9.0
+  `Agent#verify_environment!` called `Sandbox#environment` with its default shortlist
+  (`ruby`, `python3`, `node`, `sh`), so any other declared name — a custom binary, or the
+  absolute interpreter path you pin precisely because the sandbox shell's `PATH` is narrow
+  — was never looked for and always reported as `no <name> on PATH`. Declarations drawn
+  from the shortlist were unaffected.
+
 ## [0.9.0] - 2026-08-20
 
 Skills and sandboxes learn to talk about the environment, and an agent's output finally
