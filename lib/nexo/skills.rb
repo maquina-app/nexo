@@ -11,9 +11,15 @@ module Nexo
   # MissingDependencyError with install guidance.
   #
   # A loaded skill contributes its **instructions** (the SKILL.md body) to a chat.
-  # It ships no independent tools — its +scripts/+ and +references/+ files are
-  # reached by the model through Nexo's own sandbox-backed, permission-gated tools,
-  # so attaching a skill never widens the agent's effective capabilities. See the
+  # It ships no independent tools, so attaching a skill never widens the agent's
+  # effective capabilities.
+  #
+  # Its +scripts/+, +assets/+ and +references/+ files are NOT reachable on their
+  # own: a skill lives under +skills_path+, every sandbox confines file access to
+  # its own working directory, and nothing bridges the two. To let an agent read or
+  # run a skill's bundled files, copy them into the sandbox first — through the
+  # sandbox's own +#write+, so it works on every tier. They are then reached through
+  # Nexo's permission-gated tools like any other workspace file. See the
   # spec's "Verified APIs" / safety resolution for why the gem's progressive
   # disclosure +SkillTool+ (which does ungated +File.read+) is deliberately not
   # attached.

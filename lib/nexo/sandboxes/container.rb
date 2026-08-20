@@ -39,6 +39,23 @@ module Nexo
       # supported local runtimes in v1.
       RUNTIMES = {docker: "docker", apple: "container"}.freeze
 
+      # What each runtime's CLI can actually express. Verified live against
+      # +container+ 1.2.2 on macOS and Docker 29.4: Apple's CLI rejects
+      # +--security-opt+ and +--pids-limit+ with "Unknown option", which aborts
+      # +container run+ before the sandbox ever starts.
+      #
+      # +writable_tmpfs+ is not about the flag being accepted — Apple accepts
+      # +--tmpfs+ — but about what it does: combined with +--read-only+ the mount is
+      # NOT writable there, so a read-only rootfs leaves no usable scratch.
+      #
+      # Anything a runtime cannot honor is reported through #hardening_gaps rather
+      # than dropped quietly: running with weaker isolation, or with a workspace you
+      # cannot write to, must be visible.
+      CAPABILITIES = {
+        docker: {security_opt: true, pids_limit: true, writable_tmpfs: true},
+        apple: {security_opt: false, pids_limit: false, writable_tmpfs: false}
+      }.freeze
+
       # The container working directory (default +/workspace+, a container path),
       # the selected +runtime+ (+:docker+ / +:apple+), and the required +image+.
       attr_reader :cwd, :runtime, :image
@@ -81,10 +98,20 @@ module Nexo
         out[:stdout]
       end
 
-      # Writes +content+ to +path+ (guarded) inside the container. Content travels
-      # on stdin, never interpolated into the argv, so arbitrary bytes are safe.
+      # Writes +content+ to +path+ (guarded) inside the container, creating parent
+      # directories first. Content travels on stdin, never interpolated into the argv,
+      # so arbitrary bytes are safe.
+      #
+      # Matches Local#write on both counts, which it previously did not: without the
+      # +mkdir+ a nested path failed with "Directory nonexistent", and because the
+      # exit status was discarded the caller was told the write had succeeded. Raises
+      # +IOError+ on failure, mirroring how #read raises +Errno::ENOENT+.
       def write(path, content)
-        exec_stdin!(content, "sh", "-c", 'cat > "$0"', guard_path(path))
+        full = guard_path(path)
+        out = exec_stdin!(content, "sh", "-c", 'mkdir -p "$(dirname "$0")" && cat > "$0"', full)
+        raise IOError, "container write failed: #{path}: #{out[:stderr].strip}" unless out[:status].zero?
+
+        full
       end
 
       # Returns the container paths matching the glob +pattern+ (guarded). Empty
@@ -118,6 +145,20 @@ module Nexo
           system(@bin, "rm", "-f", @cid, out: File::NULL, err: File::NULL)
         end
         @cid = nil
+      end
+
+      # Hardening the caller asked for that this runtime cannot express, as short
+      # human-readable strings. Empty on +:docker+. Callers that require a guarantee
+      # should check this rather than assume every runtime honors every knob.
+      def hardening_gaps
+        gaps = []
+        gaps << "--security-opt no-new-privileges is not supported by #{@runtime}" unless capable?(:security_opt)
+        gaps << "--pids-limit is not supported by #{@runtime}" if @pids_limit && !capable?(:pids_limit)
+        if @readonly_rootfs && !capable?(:writable_tmpfs)
+          gaps << "#{@runtime} --tmpfs is not writable under --read-only; " \
+                  "set readonly_rootfs: false or add a :rw bind for a writable workspace"
+        end
+        gaps
       end
 
       # A short, human-readable description of the execution environment for the
@@ -160,11 +201,11 @@ module Nexo
         argv = [@bin, "run", "-d", "--name", @name,
           "--label", "nexo.sandbox.id=#{@name}",
           "--network", @network.to_s,
-          "--cap-drop", "ALL",
-          "--security-opt", "no-new-privileges"]
+          "--cap-drop", "ALL"]
+        argv += ["--security-opt", "no-new-privileges"] if capable?(:security_opt)
         @cap_add.each { |cap| argv += ["--cap-add", cap.to_s] }
         argv += ["--read-only", "--tmpfs", "#{@cwd}:rw"] if @readonly_rootfs
-        argv += ["--pids-limit", @pids_limit.to_s] unless @pids_limit.nil?
+        argv += ["--pids-limit", @pids_limit.to_s] if @pids_limit && capable?(:pids_limit)
         argv += ["--memory", @memory.to_s] unless @memory.nil?
         argv += ["--cpus", @cpus.to_s] unless @cpus.nil?
         argv += ["--user", @user.to_s] unless @user.nil?
@@ -175,6 +216,11 @@ module Nexo
         # on a slim image, failing every later +exec+.
         argv += ["-w", @cwd, @image, "tail", "-f", "/dev/null"]
         argv
+      end
+
+      # Whether this runtime's CLI can express +knob+.
+      def capable?(knob)
+        CAPABILITIES.fetch(@runtime, CAPABILITIES[:docker]).fetch(knob, true)
       end
 
       # Builds one +-v host:ctr:mode+ spec. Binds default to +:ro+; a Hash form

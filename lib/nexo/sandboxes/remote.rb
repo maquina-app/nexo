@@ -25,8 +25,29 @@ module Nexo
     # default sandbox stays +:virtual+.
     class Remote < Sandbox
       # Stores any object responding to +read+/+write+/+exec+/+close+.
-      def initialize(client:)
+      #
+      # +instructions:+ describes the remote environment for the agent's system
+      # prompt — working directory, available tooling, what is writable. Local and
+      # Container derive that themselves; a remote sandbox cannot, because only the
+      # shim knows where it points. Supplying it is strongly recommended: the tier
+      # most likely to surprise a weak tool-caller is the one it knows least about.
+      def initialize(client:, instructions: nil)
         @client = client
+        @instructions = instructions
+      end
+
+      # A short, plain-text description of the execution environment. Falls back to an
+      # honest generic statement rather than +nil+, so an agent is never left assuming
+      # it runs on the host.
+      #
+      # NOTE: unlike Local and Container, +Remote+ performs NO path confinement — every
+      # path is passed to the client untouched. Confining the agent to a working
+      # directory is the client's responsibility, not Nexo's.
+      def instructions
+        @instructions ||
+          "You run inside a remote sandbox managed by an external provider. The " \
+          "working directory, available tooling, and writable paths are defined by " \
+          "that provider."
       end
 
       # Reads +path+ via the client.

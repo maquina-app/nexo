@@ -138,6 +138,30 @@ Nexo ships **only** `Remote` plus this documented pattern — purpose-built
 `Sandboxes::E2B` / `Sandboxes::Daytona` classes are a possible future addition, deliberately
 left out of v1 because their vendor client APIs aren't pinned yet.
 
+### Path confinement is the client's job
+
+`Local` and `Container` confine every `read`/`write`/`glob` to their working directory and
+raise `SecurityError` on escape. **`Remote` does not.** It passes each path to the injected
+client untouched, because only the provider knows what its own boundary is.
+
+That is deliberate — Nexo re-implementing a confinement it cannot enforce would be
+theatre — but it moves a guarantee you may be relying on. A shim is responsible for:
+
+- rejecting paths that escape the session's working directory;
+- deciding what `write` does with a missing parent directory (`Local` creates it,
+  `Container` creates it — a shim should too, or say that it does not);
+- raising on failure rather than returning a non-zero status the caller may ignore.
+
+Give the shim an `instructions:` describing the environment, too — `Remote` cannot derive
+one, and an agent told nothing about where it runs will assume it is on the host:
+
+```ruby
+Nexo::Sandboxes::Remote.new(
+  client: my_client,
+  instructions: "You run in an E2B sandbox, cwd /home/user. Ruby 3.4 is available."
+)
+```
+
 ## Container sandbox — Docker / Apple Container
 
 `Sandboxes::Container` runs an agent's tools inside a **throwaway OCI container** via the
@@ -161,11 +185,49 @@ the host dir enters only through a `binds:` entry.
 
 `sandbox :docker` (or `runtime: :docker`) shells out to `docker`; `sandbox :apple`
 (`runtime: :apple`) shells out to Apple's `container` binary. The `run`/`exec` surface is
-largely shared; where the CLIs diverge (networking especially) the class branches on the
-runtime. **Apple `container` parity is NOT yet verified** — the flags are encoded from the
-reference mapping, not confirmed against a live daemon, so every Apple flag must be verified
-before trust (the networking flag in particular; see the parity table below). An unknown
+largely shared; where the CLIs diverge the class branches on the runtime. An unknown
 runtime raises `Nexo::ConfigurationError`.
+
+**Apple `container` parity is now verified** against `container` 1.2.2 on macOS. Three
+flags docker accepts are rejected outright, so they are omitted for `:apple`:
+
+| Knob | `:docker` | `:apple` |
+|---|---|---|
+| `--security-opt no-new-privileges` | applied | **rejected** (`Unknown option`) — omitted |
+| `--pids-limit` | applied (`512`) | **rejected** (`Unknown option`) — omitted |
+| `--read-only` + `--tmpfs <cwd>:rw` | scratch is writable | flags accepted, but **the scratch is NOT writable** |
+
+Everything else — `--network` (including `none`), `--cap-drop ALL`, `--memory`,
+`--cpus`, `--user`, `-v` binds, `-e` env, `-w`, `exec -i` — is honored identically.
+
+> **`readonly_rootfs: true` is the default, and on `:apple` it leaves you with no
+> writable workspace.** Apple accepts `--tmpfs /workspace:rw` but under `--read-only`
+> the mount is still read-only, so every `write` fails. Pass `readonly_rootfs: false`,
+> or mount a `:rw` bind, when using the `:apple` runtime.
+
+Because omitting a hardening flag means *weaker isolation than you asked for*, the
+difference is reported rather than hidden:
+
+```ruby
+sandbox = Nexo::Sandboxes::Container.new(image: "…", runtime: :apple, network: :none)
+sandbox.hardening_gaps
+# => ["--security-opt no-new-privileges is not supported by apple",
+#     "--pids-limit is not supported by apple",
+#     "apple has no 'none' network; using 'default' instead"]
+```
+
+`hardening_gaps` is empty on `:docker`. If your threat model requires one of those knobs,
+check it and refuse rather than assuming every runtime honors every flag.
+
+Two practical notes for Apple `container`:
+
+- It resolves its **init image through the keychain** and fails in a non-interactive
+  shell (`errSecAuthFailed`, status `-25293`). Pinning an already-pulled tag avoids the
+  lookup: `container run --init-image ghcr.io/apple/containerization/vminit:<tag> …`.
+- Containers are **VM-backed**, so infrastructure failures surface differently — e.g.
+  `no available interface strategy for network default, plugin=container-network-vmnet`
+  when the network service needs restarting (`container system stop && container system
+  start`).
 
 ### Hardened by default — every knob an explicit opt-out
 
@@ -239,9 +301,9 @@ The container starts **lazily** on first tool use and its id is memoized.
   `:rw` bind (this is where staged files and artifacts land).
 - **Non-root is recommended, not forced.** The default hardening holds regardless of uid; set
   `user:` for defense-in-depth.
-- **Apple `container` parity is NOT yet verified** — especially networking. Every Apple flag
-  in the parity table below is UNVERIFIED; confirm the flag/subcommand against Apple's CLI
-  before trusting the `:apple` runtime in production.
+- **Apple `container` needs `readonly_rootfs: false`.** The default read-only rootfs makes the
+  `--tmpfs` scratch unwritable on Apple, so an agent cannot write to its own workspace. The
+  parity table below records what was verified.
 - **Reconnect is Docker-only today.** `reconnect: true` combined with `runtime: :apple` raises
   `Nexo::ConfigurationError` at the point reconnect would run. Apple's `container` CLI has no
   **live-verified** exact `label=` filter, and a name-substring match is unsafe (it can attach
@@ -251,40 +313,35 @@ The container starts **lazily** on first tool use and its id is memoized.
 
 #### Apple `container` parity table (Group 0)
 
-This table is filled **only** from live Group 0 runs against a real Apple `container` runtime —
-never from assumption. Apple's runtime is macOS-only and is **not** present in CI (or in the
-environment this spec shipped from), so the divergences below are **UNVERIFIED** and marked as
-such. Until a maintainer runs Group 0 on Apple hardware and records the results here, treat the
-`:apple` runtime as **Docker-flag-shaped but unconfirmed** and reconnect as unsupported (it
-raises). Do not silently trust any Apple hardening flag until its row reads `same`.
+Filled from live Group 0 runs against **Apple `container` 1.2.2 on macOS (arm64)** and
+**Docker 29.4.0**, image `ubuntu:24.04`. Rows marked _unverified_ have not been run.
 
 | Subcommand / flag | Docker | Apple `container` | Divergence → action |
 |---|---|---|---|
-| `run -d` | ✓ | _unverified_ | verify before trust |
-| `exec -i` | ✓ | _unverified_ | verify before trust |
-| `ps -aqf` | ✓ | _unverified_ | verify before trust |
-| `start <id>` | ✓ | _unverified_ | verify before trust |
-| `rm -f <id>` | ✓ | _unverified_ | verify before trust |
-| `--label` / `label=` filter | ✓ (exact) | _unverified_ | **reconnect raises `ConfigurationError` until confirmed** |
-| `--network` | ✓ | _unverified_ | expected to diverge — verify before trust |
-| `--tmpfs` | ✓ | _unverified_ | verify before trust |
-| `--read-only` | ✓ | _unverified_ | verify before trust |
-| `--cap-drop` / `--cap-add` | ✓ | _unverified_ | verify before trust |
-| `--security-opt no-new-privileges` | ✓ | _unverified_ | verify before trust |
-| `--pids-limit` | ✓ | _unverified_ | verify before trust |
-| `-w` / `-v` / `-e` / `--user` / `--memory` / `--cpus` | ✓ | _unverified_ | verify before trust |
+| `run -d` | ✓ | ✓ | same |
+| `exec -i` (stdin reaches the process) | ✓ | ✓ | same — this is what `#write` uses |
+| `stop` / `start <id>` | ✓ | ✓ | same |
+| `rm -f <id>` | ✓ | ✓ | same |
+| `ps -aqf label=` | ✓ (exact) | ✗ `Plugin 'container-ps' not found` | Apple has `list`, not `ps` → **reconnect raises `ConfigurationError`** |
+| `--network` (incl. `none`) | ✓ | ✓ | same — `--network none` runs |
+| `--cap-drop ALL` | ✓ | ✓ | same |
+| `--read-only` | ✓ | ✓ | rootfs is read-only on both |
+| `--tmpfs <cwd>:rw` | ✓ writable | ✗ **not writable under `--read-only`** | → omit `--read-only` (`readonly_rootfs: false`) or use a `:rw` bind |
+| `--security-opt no-new-privileges` | ✓ | ✗ `Unknown option` | → omitted for `:apple`, reported in `#hardening_gaps` |
+| `--pids-limit` | ✓ | ✗ `Unknown option` | → omitted for `:apple`, reported in `#hardening_gaps` |
+| `-v host:ctr:ro` | ✓ | ✓ | same |
+| `-e KEY=val` | ✓ | ✓ | same |
+| `-w <dir>` | ✓ | ✓ | same |
+| `--user` | ✓ | ✓ | same |
+| `--memory` / `--cpus` | ✓ | ✓ | same |
 
-Keep-alive (Docker, Group 0): `tail -f /dev/null` holds Alpine / Debian-slim / ruby-slim open —
-**to be confirmed on the maintainer's live daemon** (busybox-portable by construction; `sleep
-infinity` is not and was replaced for exactly this reason).
+Two operational notes for Apple, both hit during verification:
 
-> **Reduced-guarantee posture.** Where a hardening flag turns out to have no Apple equivalent,
-> the container stays functional but the guarantee is **reduced** — and that reduction is
-> documented here, never silently dropped. Until the table above is filled from a live run, a
-> maintainer must not assume any given `:apple` hardening flag is honored.
-
-Live container runs are exercised by `NEXO_LIVE`-gated smoke
-(`test/sandboxes/container_live_test.rb`); the core suite asserts argv construction with no
-daemon. See `examples/container_review.rb` for a runnable end-to-end example.
+- It resolves its **init image via the keychain** and fails in a non-interactive shell
+  (`errSecAuthFailed`, `-25293`). Pin an already-pulled tag to skip the lookup:
+  `--init-image ghcr.io/apple/containerization/vminit:<tag>`.
+- Containers are **VM-backed**, so infrastructure failures look unfamiliar — e.g.
+  `no available interface strategy for network default, plugin=container-network-vmnet`,
+  cleared by `container system stop && container system start`.
 
 ← Back to the [README](../README.md)

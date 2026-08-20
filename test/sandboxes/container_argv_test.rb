@@ -38,6 +38,76 @@ class ContainerArgvTest < Minitest::Test
     assert_includes argv, "-v /host/proj:/workspace/proj:rw"
   end
 
+  # --- runtime capability differences -------------------------------------------
+  #
+  # Apple's `container` CLI rejects --security-opt and --pids-limit outright, and its
+  # --network takes the name of an existing network (there is no `none`). Passing
+  # docker's spelling made `container run` exit before the sandbox ever started, so
+  # `runtime: :apple` could not start a container at all.
+
+  def test_apple_runtime_omits_flags_its_cli_rejects
+    argv = build(runtime: :apple).send(:run_argv).join(" ")
+
+    assert_equal "container", build(runtime: :apple).send(:run_argv).first
+    refute_includes argv, "--security-opt"
+    refute_includes argv, "--pids-limit"
+  end
+
+  # Verified live: Apple's CLI DOES accept `--network none` and the container runs.
+  def test_apple_runtime_keeps_the_none_network
+    argv = build(runtime: :apple, network: :none).send(:run_argv).join(" ")
+
+    assert_includes argv, "--network none"
+  end
+
+  def test_apple_runtime_keeps_every_flag_its_cli_does_support
+    argv = build(runtime: :apple, memory: "512m", cpus: 2,
+      binds: {"/host/proj" => "/workspace/proj"}).send(:run_argv).join(" ")
+
+    assert_includes argv, "--cap-drop ALL"
+    assert_includes argv, "--read-only"
+    assert_includes argv, "--tmpfs /workspace:rw"
+    assert_includes argv, "--memory 512m"
+    assert_includes argv, "--cpus 2"
+    assert_includes argv, "-v /host/proj:/workspace/proj:ro"
+  end
+
+  def test_docker_runtime_is_unchanged
+    argv = build(runtime: :docker, network: :none).send(:run_argv).join(" ")
+
+    assert_includes argv, "--security-opt no-new-privileges"
+    assert_includes argv, "--pids-limit 512"
+    assert_includes argv, "--network none"
+  end
+
+  # Hardening that a runtime cannot express is REPORTED, never dropped silently —
+  # running with weaker isolation than the caller asked for must be visible.
+  def test_hardening_gaps_are_reported_for_apple
+    gaps = build(runtime: :apple, network: :none).hardening_gaps.join(" ")
+
+    assert_includes gaps, "--security-opt"
+    assert_includes gaps, "--pids-limit"
+  end
+
+  # Apple accepts --tmpfs but the mount is NOT writable under --read-only, so a
+  # read-only rootfs leaves the agent with no writable workspace at all. Verified live.
+  def test_apple_reports_that_a_read_only_rootfs_has_no_writable_scratch
+    gaps = build(runtime: :apple, readonly_rootfs: true).hardening_gaps.join(" ")
+
+    assert_includes gaps, "--tmpfs is not writable"
+    assert_includes gaps, "readonly_rootfs: false"
+  end
+
+  def test_apple_reports_no_scratch_gap_when_the_rootfs_is_writable
+    gaps = build(runtime: :apple, readonly_rootfs: false).hardening_gaps.join(" ")
+
+    refute_includes gaps, "--tmpfs"
+  end
+
+  def test_hardening_gaps_are_empty_for_docker
+    assert_empty build(runtime: :docker, network: :none).hardening_gaps
+  end
+
   def test_network_and_runtime_are_overridable
     argv = build(runtime: :apple, network: :bridge).send(:run_argv)
 
