@@ -1,5 +1,22 @@
 ## [Unreleased]
 
+## [0.10.0] - 2026-08-20
+
+Durable workflows without a database.
+
+### Added
+
+- `Nexo.config.run_store` — set a store instance and it wins over the automatic
+  choice (ActiveRecord under Rails, in-memory otherwise).
+- `Nexo::RunStore::Disk` — a file-backed store, one JSON document per run under a
+  directory, written atomically (temp file + rename). This is what makes `checkpoint`,
+  `suspend!`/`resume` and a run's recorded artifacts available to a host with no
+  database: all of them read state back from the store, and the in-memory one dies
+  with the process. `Disk::Run` subclasses `Memory::Run`, so the run shape and every
+  read helper are shared and host code behaves identically on either store. `#all`
+  lists the directory newest-first. `claim_for_resume!` re-reads from disk so a stale
+  copy cannot win a claim; it is atomic within a process, not across machines.
+
 ## [0.9.0] - 2026-08-20
 
 Skills and sandboxes learn to talk about the environment, and an agent's output finally
