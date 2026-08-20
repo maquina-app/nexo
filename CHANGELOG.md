@@ -1,5 +1,35 @@
 ## [Unreleased]
 
+### Changed
+
+- **An agent no longer advertises a tool its permission mode can never authorize.**
+  Tool attach was gated on the sandbox (`Sandbox#supports?`) but not on the gate, so a
+  `:read_only` agent — the default — put `WriteFile` and `Shell` in its schema on every
+  turn even though `#authorize!` was guaranteed to deny them. The same held for `Fetch`
+  and `WebSearch`, which were gated on `fetch_allow` / `search_backend` being declared
+  but not on the capability being permitted. Models do try these tools, and each attempt
+  costs a full round trip.
+
+  `Agent#chat`, `#apply_fetch` and `#apply_search` now also consult
+  `Permissions#never_allows?`. Only `:read_only` is decidable ahead of time; `:auto`,
+  `:ask` and `:approve` decide per call and still attach — `:approve` in particular must
+  reach the gate so it can raise `ApprovalRequired` and suspend the run.
+
+  This is a cost and description-accuracy measure, **not** a security change:
+  `#authorize!` remains the boundary and still denies at call time.
+
+  **Upgrading:** an agent that is supposed to write, shell out, fetch or search needs the
+  capability in `allow:` (or a non-`:read_only` mode). If it does not have it today the
+  tool was already failing on every call — the tool now disappears from the schema instead
+  of erroring. Note that `fetch_allow` scopes hosts and `search_backend` names a backend;
+  neither is a capability grant.
+
+### Added
+
+- `Nexo::Permissions#never_allows?(capability)` — true when a capability can never be
+  authorized for this gate, for any call. Derived from the new `Permissions::PRIVILEGED`
+  constant, which `#authorize!` also reads, so the predicate cannot drift from the gate.
+
 ## [0.10.0] - 2026-08-20
 
 Durable workflows without a database.

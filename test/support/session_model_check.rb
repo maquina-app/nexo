@@ -112,6 +112,9 @@ class Assistant < Nexo::Agent
   provider :openai
   assume_model_exists true # bypass registry validation on the persisted chat (R7)
   instructions "You are a helpful assistant with memory."
+  # :write is granted so WriteFile is attached and the re-attach assertion below
+  # has three tools to find; the :read_only default would statically deny it.
+  permissions Nexo::Permissions.new(mode: :read_only, allow: %i[read glob write])
 end
 
 harness = RubyLLM::Test.send(:harness)
@@ -162,7 +165,8 @@ puts "DISTINCT_THREAD_OK"
 
 # --- The hydrated chat carries the agent's sandbox tools (reused seam, R3).
 # The default (:virtual) sandbox has no shell, so the Shell tool is NOT attached
-# (Spec 14 R2 — capability-gated tool attach); the other three always are.
+# (Spec 14 R2 — capability-gated tool attach); the other three attach because the
+# agent's gate permits read/glob/write.
 session = Nexo::Session.resume(Assistant, "user-42")
 hydrated = session.instance_variable_get(:@chat)
 tool_classes = hydrated.to_llm.tools.values.map(&:class)

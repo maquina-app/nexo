@@ -12,6 +12,10 @@ class LoopsRubyLLMTest < Minitest::Test
   class VirtualAgent < Nexo::Agent
     model TEST_MODEL
     sandbox :virtual
+    # :write is granted so WriteFile is actually attached. Under the default
+    # :read_only gate it is statically denied and therefore correctly left out
+    # of the schema — this test is about the LOOP's wiring, not about gating.
+    permissions Nexo::Permissions.new(mode: :read_only, allow: %i[read glob write])
   end
 
   # A minimal chat double that records the observability callbacks and lets a
@@ -52,7 +56,8 @@ class LoopsRubyLLMTest < Minitest::Test
 
   # Regression: a default-loop agent still attaches its sandbox-backed tools and
   # #prompt returns the response. The :virtual sandbox has no shell, so Shell is
-  # gated out (Spec 14 R2); the other three attach as before.
+  # gated out (Spec 14 R2); the other three attach because the fixture grants
+  # :write on top of the read/glob default.
   def test_default_loop_agent_attaches_tools_and_prompt_returns
     RubyLLM::Test.stub_response("review complete")
     agent = VirtualAgent.new

@@ -13,6 +13,9 @@ class AgentSandboxWiringTest < Minitest::Test
     klass = Class.new(Nexo::Agent) do
       model "gpt-4o-mini"
       sandbox :virtual
+      # :shell is granted so the permission axis cannot be what removes the
+      # tool — this asserts the SANDBOX axis alone.
+      permissions Nexo::Permissions.new(mode: :read_only, allow: %i[read glob shell])
     end
     tool_names = klass.new.chat.tools.keys.map(&:to_s)
     refute_includes tool_names.join(" ").downcase, "shell"
@@ -22,6 +25,9 @@ class AgentSandboxWiringTest < Minitest::Test
     klass = Class.new(Nexo::Agent) do
       model "gpt-4o-mini"
       sandbox :local
+      # A :local sandbox supports :shell, but the gate has to permit it too —
+      # under the :read_only default the tool is statically denied and left off.
+      permissions Nexo::Permissions.new(mode: :read_only, allow: %i[read glob shell])
     end
     tool_names = klass.new(cwd: Dir.pwd).chat.tools.keys.map(&:to_s)
     assert_includes tool_names.join(" ").downcase, "shell"

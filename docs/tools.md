@@ -1,12 +1,22 @@
 # Tools
 Nexo attaches four sandbox-backed tools — `ReadFile`, `WriteFile`, `Shell`, and `Glob` — each gated by the [sandbox](sandboxes.md) and [permission](permissions.md) seams.
 
-Which tools attach depends on what the sandbox supports:
+Which tools attach depends on what the sandbox supports *and* on what the permission mode could
+ever allow:
 
-- **Capability-gated tool attach (`Sandbox#supports?`).** A `:virtual` agent no longer advertises
-  a `Shell` tool it can never run — `Agent#chat` attaches `Shell` only when
-  `@sandbox.supports?(:shell)`. `Local`/`Container` support all four capabilities; `Virtual`
-  supports everything but `:shell`. `ReadFile`/`WriteFile`/`Glob` are always attached.
+- **Gated tool attach, on two axes.** An agent does not advertise a tool it could never
+  successfully call, because a guaranteed failure in the schema costs a round trip every time a
+  model tries it. `Agent#chat` attaches a tool only when **both** hold:
+
+  1. *The sandbox supports the capability* (`Sandbox#supports?`). `Local`/`Container` support all
+     four; `Virtual` supports everything but `:shell`, so a `:virtual` agent has no `Shell`.
+  2. *The permission gate does not deny it statically* (`Permissions#never_allows?`). Under
+     `:read_only`, `:write` and `:shell` can never be authorized unless listed in `allow:`, so
+     neither `WriteFile` nor `Shell` is attached. `:auto`, `:ask` and `:approve` decide per call
+     and always attach — `:approve` in particular *must* reach the gate so it can suspend the run.
+
+  `ReadFile` and `Glob` are always attached. This is a cost and description-accuracy measure, not
+  a security boundary: `Permissions#authorize!` remains the gate and still denies at call time.
 
 `Shell` truncates unbounded command output before it reaches the model:
 

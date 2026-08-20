@@ -40,9 +40,27 @@ class AgentSearchTest < Minitest::Test
       model TEST_MODEL
       sandbox :virtual
       search_backend Backend.new
+      # Declaring a backend is not the capability grant — :search must also be
+      # permitted, or the tool is left out of the schema rather than attached to
+      # fail at call time.
+      permissions Nexo::Permissions.new(mode: :read_only, allow: %i[read glob search])
     }
     tool_classes = klass.new.chat.tools.values.map(&:class)
     assert_includes tool_classes, Nexo::Tools::WebSearch
+  end
+
+  # A backend declared without the :search grant can never be used, so the tool
+  # is not advertised.
+  def test_search_backend_without_search_permission_does_not_attach
+    skip "agent wiring test uses the stubbed provider" if ENV["NEXO_LIVE"] == "1"
+    RubyLLM::Test.reset
+    klass = Class.new(Nexo::Agent) {
+      model TEST_MODEL
+      sandbox :virtual
+      search_backend Backend.new
+    }
+    tool_classes = klass.new.chat.tools.values.map(&:class)
+    refute_includes tool_classes, Nexo::Tools::WebSearch
   end
 
   def test_no_search_backend_does_not_attach_web_search_tool

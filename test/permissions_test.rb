@@ -56,4 +56,62 @@ class PermissionsTest < Minitest::Test
   def test_unknown_mode_raises_argument_error
     assert_raises(ArgumentError) { Nexo::Permissions.new(mode: :bogus) }
   end
+
+  # --- #never_allows? (attach-time gating) ---------------------------------
+  #
+  # The predicate exists so Agent#chat can leave a guaranteed-to-fail tool out of
+  # the schema. Its contract is that it agrees with #authorize! — these tests pin
+  # the agreement rather than the implementation, so the two cannot drift.
+
+  def test_never_allows_privileged_capabilities_under_read_only
+    perms = Nexo::Permissions.new(mode: :read_only)
+
+    Nexo::Permissions::PRIVILEGED.each do |cap|
+      assert perms.never_allows?(cap), "#{cap} should be statically denied"
+      assert_raises(Nexo::Permissions::Denied) { perms.authorize!(cap) }
+    end
+  end
+
+  def test_never_allows_is_false_for_read_and_glob
+    perms = Nexo::Permissions.new(mode: :read_only)
+
+    refute perms.never_allows?(:read)
+    refute perms.never_allows?(:glob)
+  end
+
+  def test_allow_list_beats_read_only
+    perms = Nexo::Permissions.new(mode: :read_only, allow: %i[read glob shell])
+
+    refute perms.never_allows?(:shell)
+    assert perms.authorize!(:shell, "ls")
+    assert perms.never_allows?(:write)
+  end
+
+  # Every non-read_only mode decides per call, so nothing is knowable ahead of
+  # time. :approve in particular must reach the gate to raise ApprovalRequired.
+  def test_never_allows_is_false_for_per_call_modes
+    %i[auto ask approve].each do |mode|
+      perms = Nexo::Permissions.new(mode: mode)
+
+      Nexo::Permissions::PRIVILEGED.each do |cap|
+        refute perms.never_allows?(cap), "#{mode} decides #{cap} per call"
+      end
+    end
+  end
+
+  # The predicate reports the gate's behavior, so anything it calls statically
+  # denied must in fact raise for every mode/capability pair.
+  def test_never_allows_never_contradicts_authorize
+    Nexo::Permissions::MODES.each do |mode|
+      perms = Nexo::Permissions.new(mode: mode, on_ask: ->(*) { true }, decision: {approved: true})
+
+      (Nexo::Permissions::PRIVILEGED + %i[read glob]).each do |cap|
+        next unless perms.never_allows?(cap)
+
+        assert_raises(Nexo::Permissions::Denied, "#{mode}/#{cap} claimed never-allowed") do
+          perms.authorize!(cap, "detail")
+        end
+      end
+    end
+  end
 end
