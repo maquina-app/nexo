@@ -1,25 +1,55 @@
 ## [Unreleased]
 
+## [0.8.1] - 2026-08-19
+
+Sandbox tiers made honest and skill resources made usable. A skill's `scripts/` and
+`assets/` live outside every sandbox, so an agent could not reach them; `Skills.materialize`
+stages them in through the sandbox's own `#write`, which is the one route that works on
+`:local`, `:container` and `:remote` alike. Along the way the `:apple` runtime turned out
+to be unable to start a container at all, and `Container#write` was reporting success
+while writing nothing. Verified end to end against Apple `container` 1.2.2 and Docker
+29.4.0.
+
+### Fixed
+
+- **`Container#write` creates parent directories and raises on failure.** It ran
+  `sh -c 'cat > "$0"'` and discarded the exit status, so writing a nested path into a
+  fresh workspace failed with `Directory nonexistent` while reporting success to the
+  caller. `Local#write` has always done `mkdir_p` and raised; the two now match. Staging
+  anything with a directory in its path — a skill's `scripts/render.rb` — silently
+  produced nothing on a container before this.
+- **The `:apple` runtime can start a container.** `#run_argv` passed
+  `--security-opt no-new-privileges` and `--pids-limit`, which Apple's `container` CLI
+  rejects with `Unknown option`, so `runtime: :apple` failed before any tool ran. Both
+  come from defaults, so no configuration avoided it. They are now omitted for `:apple`
+  and reported through `#hardening_gaps`.
+
 ### Added
 
 - **`Nexo::Skills.materialize(name, into:)`** — copies a skill's `scripts/`, `assets/`
-  and `references/` into a sandbox so an agent can actually reach them. A skill lives
-  under `skills_path`, outside every sandbox, and each sandbox confines file access to
-  its own working directory, so those files were unreachable until staged. Goes through
-  the sandbox's own `#write`, the only route that works on every tier — `Local` writes to
-  the filesystem, `Container` streams over `docker exec` / `container exec`, `Remote`
-  hands off to the injected client — and returns **sandbox-relative** paths so callers
-  can build a command without knowing which tier they are on. `kinds:` narrows the copy;
+  and `references/` into a sandbox so an agent can actually reach them, through the
+  sandbox's own `#write`. Returns **sandbox-relative** paths so callers can build a
+  command without knowing which tier they are on. `kinds:` narrows the copy;
   `overwrite: false` skips files already present, for images that bake the skill in.
+- **`Container#hardening_gaps`** — hardening the caller asked for that the runtime
+  cannot honor, as human-readable strings; empty on `:docker`. Running with weaker
+  isolation than requested is now visible rather than silent. It also reports that
+  Apple's `--tmpfs` is not writable under `--read-only`, which makes the default
+  `readonly_rootfs: true` leave an `:apple` sandbox with no writable workspace.
 - **`Agent#wrap_mcp_tool(tool)`** — a hook called once per MCP tool, after gating and
   before attachment, for decorating every MCP tool an agent gets (capping an oversized
-  reply, timings, redaction). Default returns the tool unchanged. Previously the only way
-  in was overriding the private `#apply_mcp`. Gating happens underneath, so a wrapper
-  only ever sees an already-authorized call and cannot widen what the agent may do.
+  reply, timings, redaction). Default returns the tool unchanged; previously the only
+  way in was overriding the private `#apply_mcp`. Gating happens underneath, so a
+  wrapper cannot widen what the agent may do.
 - **`Nexo.config.tool_concurrency`** — surfaces RubyLLM's concurrent execution of
   multiple tool calls from one assistant turn (`:fibers` / `:threads` / `false`).
-  Defaults to `nil`, leaving RubyLLM's own setting alone, so behaviour is unchanged until
-  you opt in. Applied after every tool is attached, since each `with_tools` resets it.
+  Defaults to `nil`, leaving RubyLLM's own setting alone, so behaviour is unchanged
+  until you opt in. Applied after every tool is attached, since each `with_tools`
+  resets it.
+- **`Sandboxes::Remote#instructions`**, with an optional `instructions:` on the
+  constructor. `Local` and `Container` describe their environment to the agent;
+  `Remote` returned `nil`, leaving the tier most likely to surprise a tool-caller the
+  one it knew least about.
 
 ### Changed
 
@@ -27,58 +57,25 @@
   accepted and ignored. It still cannot halt a run — ruby_llm executes the whole tool
   loop inside `Chat#ask` and its callbacks are observation-only — but exceeding the
   budget now emits `:turn_limit_exceeded` with `{turns:, max_turns:}`, once per prompt.
-  Previously the parameter read as a safety bound it has never been. Documented as
-  telemetry, with the routes to a hard ceiling.
+  Previously the parameter read as a safety bound it has never been.
 
 ### Documentation
 
-- `docs/skills.md` documents `Skills.materialize`, including the writable-space tradeoff
-  (a staged script sits where an agent holding `:shell` could rewrite it).
-- `docs/mcp.md` documents `wrap_mcp_tool`.
-- `docs/concurrency.md` documents `tool_concurrency`, and that tools must be safe to run
-  concurrently before enabling it.
-- `docs/loops.md` documents what `max_turns` does and does not do.
-
-### Fixed
-
-- **`Container#write` creates parent directories and raises on failure.** It ran
-  `sh -c 'cat > "$0"'` and discarded the exit status, so writing a nested path into a
-  fresh workspace failed with `Directory nonexistent` while reporting success to the
-  caller. `Local#write` has always done `mkdir_p` and raised; the two now match.
-  Staging anything with a directory in its path — a skill's `scripts/render.rb`, say —
-  silently produced nothing on a container before this.
-- **The `:apple` runtime can start a container.** `#run_argv` passed
-  `--security-opt no-new-privileges` and `--pids-limit`, which Apple's `container` CLI
-  rejects with `Unknown option`, so `runtime: :apple` failed before any tool ran. Both
-  come from defaults, so no configuration avoided it. They are now omitted for
-  `:apple` and reported through the new `#hardening_gaps`.
-
-### Added
-
-- **`Container#hardening_gaps`** — hardening the caller asked for that the runtime
-  cannot honor, as human-readable strings; empty on `:docker`. Running with weaker
-  isolation than requested is now visible rather than silent. It also reports that
-  Apple's `--tmpfs` is not writable under `--read-only`, which makes the default
-  `readonly_rootfs: true` leave an `:apple` sandbox with no writable workspace.
-- **`Sandboxes::Remote#instructions`**, with an optional `instructions:` on the
-  constructor. `Local` and `Container` describe their environment to the agent;
-  `Remote` returned `nil`, leaving the tier most likely to surprise a tool-caller the
-  one it knew least about.
-
-### Documentation
-
-- **Apple `container` parity table filled from live runs** (`container` 1.2.2 / Docker
-  29.4.0) — replacing the previous all-`unverified` placeholder. Records that
-  `--network none` *does* work on Apple, that `ps -aqf` does not exist there (Apple has
-  `list`), and the `--tmpfs`-under-`--read-only` divergence.
 - **`docs/skills.md`: bundled files are not reachable until staged.** The docs stated
   that a skill's `scripts/`/`references/` are reached through Nexo's sandbox-backed
-  tools. They are not: a skill lives under `skills_path`, outside every sandbox, and
-  nothing bridged the two. Documents staging through `sandbox.write` — the only route
-  that works on every tier — plus the relative-path and ambient-environment pitfalls.
+  tools. They are not — a skill lives under `skills_path`, outside every sandbox, and
+  nothing bridged the two. Now documents `Skills.materialize`, the relative-path rule,
+  the ambient-environment pitfall, and the writable-space tradeoff.
+- **Apple `container` parity table filled from live runs**, replacing the previous
+  all-`unverified` placeholder. Records that `--network none` *does* work on Apple,
+  that `ps -aqf` does not exist there (Apple has `list`), and the
+  `--tmpfs`-under-`--read-only` divergence.
 - **`docs/sandboxes.md`: path confinement on `:remote` is the client's job.** `Local`
   and `Container` raise `SecurityError` on escape; `Remote` passes paths through
-  untouched. That is deliberate, but it moves a guarantee callers may rely on.
+  untouched. Deliberate, but it moves a guarantee callers may rely on.
+- `docs/mcp.md` documents `wrap_mcp_tool`; `docs/concurrency.md` documents
+  `tool_concurrency` and that tools must be concurrency-safe before enabling it;
+  `docs/loops.md` documents what `max_turns` does and does not do.
 
 ## [0.8.0] - 2026-07-16
 
