@@ -337,12 +337,38 @@ module Nexo
       texts = []
       texts << @instructions if @instructions
       texts << @sandbox.instructions if @sandbox.instructions
-      self.class.skills.each { |name| texts << Skills.find(name).content }
+      self.class.skills.each { |name| texts << skill_instructions(Skills.find(name)) }
 
       texts.each_with_index do |text, i|
         chat = chat.with_instructions(text, append: i.positive?)
       end
       chat
+    end
+
+    # One skill's contribution to the system prompt: its body, plus its
+    # +compatibility:+ frontmatter when set.
+    #
+    # +compatibility:+ is the Agent Skills spec's own field for what a skill needs
+    # in order to run ("requires a Ruby interpreter and a UTF-8 locale"), and it is
+    # free text by design — the spec deliberately does not make it machine-checkable.
+    # Nexo parsed it and then dropped it, so the one place an author can state a
+    # requirement never reached the model. That matters now that a skill can ship a
+    # script Nexo stages into a sandbox (Skills.materialize): the environment is no
+    # longer the author's machine, and the model is the one deciding whether to run
+    # the thing.
+    #
+    # Labelled rather than concatenated, so the model can tell a requirement from an
+    # instruction. Absent or blank +compatibility:+ contributes nothing, leaving the
+    # prompt byte-for-byte as before for every skill that does not set it. +license:+
+    # and +allowed-tools:+ are deliberately NOT surfaced: the first is prompt noise,
+    # and the second would be a second source of truth about what an agent may do,
+    # competing with Nexo::Permissions, which is the real gate.
+    def skill_instructions(skill)
+      body = skill.content.to_s
+      compat = skill.compatibility.to_s.strip if skill.respond_to?(:compatibility)
+      return body if compat.nil? || compat.empty?
+
+      "#{body}\n\nCompatibility: #{compat}".strip
     end
 
     # Lazily connects the declared MCP servers and attaches their tools, each

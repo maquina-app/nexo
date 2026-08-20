@@ -57,6 +57,35 @@ Without it installed, `require "nexo"` still loads; touching a skill raises a cl
 `Nexo::MissingDependencyError` telling you to add `gem "ruby_llm-skills"`. Referencing a
 skill that does not exist raises `Nexo::Error` naming the missing `SKILL.md` path.
 
+## Say what a skill needs with `compatibility:`
+
+A skill's script runs in whatever the agent's sandbox happens to be — which is not the
+machine the script was written on. A container typically has **no locale**, so Ruby's
+default external encoding is `US-ASCII` and a bare `File.read` on a UTF-8 file raises;
+it may also have no interpreter at all.
+
+`compatibility:` is the Agent Skills spec's field for saying so, and Nexo passes it to
+the model alongside the skill body:
+
+```yaml
+---
+name: dashboard-designer
+description: Render the briefing dashboard.
+compatibility: Requires a Ruby interpreter (>= 3.1) and a UTF-8 locale.
+---
+```
+
+The model sees the body, then `Compatibility: Requires a Ruby interpreter …` as a labelled
+line, so it can tell a requirement from a step. Skills that do not set the field contribute
+exactly their body, unchanged.
+
+It is **free text, by design** — the spec does not make it machine-checkable, and Nexo does
+not try to. It is documentation aimed at a human or a model, not a dependency manifest:
+provisioning the sandbox (a gem, a library, a config) is the job of whoever wires the agent
+to it, not of the skill file. `license:` and `allowed-tools:` are parsed by
+`ruby_llm-skills` but deliberately **not** surfaced — the first is prompt noise, and the
+second would compete with `Nexo::Permissions`, which is the real gate.
+
 ## Skill tools stay gated
 
 A skill contributes **instructions only**. A loaded skill ships no independent tools, and
