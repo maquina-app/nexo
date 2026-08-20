@@ -22,7 +22,7 @@ module Nexo
     # configuration instead of silently resetting to defaults.
     CONFIG_IVARS = %i[
       @model @assume_model_exists @provider @sandbox @permissions @instructions
-      @skills @mcp @mcp_allow @fetch_allow @search_backend @requires
+      @skills @mcp @mcp_allow @fetch_allow @search_backend @requires @produces
     ].freeze
 
     class << self

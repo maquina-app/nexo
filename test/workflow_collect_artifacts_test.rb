@@ -225,6 +225,13 @@ class WorkflowCollectArtifactsTest < Minitest::Test
     end
   end
 
+  # produces accumulates through inheritance like skills does, so a specialized
+  # agent keeps its parent's outputs instead of silently dropping them.
+  def test_produces_is_inherited_and_accumulates
+    assert_equal %w[dashboard.html digest.json out/*.json], GlobbingAgent.produces
+    assert_equal %w[dashboard.html digest.json], Class.new(WritingAgent).produces
+  end
+
   # An agent declaring nothing is unchanged: no artifacts, no error.
   def test_an_agent_that_declares_nothing_records_nothing
     klass = Class.new(WritingAgent) { @produces = [] }
