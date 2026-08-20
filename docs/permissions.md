@@ -8,7 +8,7 @@ and the agent loop continues — it does not raise. A path that escapes the work
 
 |                          | `:read` | `:glob` | `:write`            | `:shell`                          | `:fetch`   | `:search`  |
 | ------------------------ | ------- | ------- | ------------------- | --------------------------------- | ---------- | ---------- |
-| `:read_only` (default)   | ✅      | ✅      | ❌ `{error}`        | ❌ `{error}`                      | ❌ `{error}` | ❌ `{error}` |
+| `:read_only` (default)   | ✅      | ✅      | ❌ not attached ‡   | ❌ not attached ‡                 | ❌ not attached ‡ | ❌ not attached ‡ |
 | `:auto`                  | ✅      | ✅      | ✅                  | ✅                                | ✅         | ✅         |
 | `:ask`                   | ✅      | ✅      | per `on_ask`        | per `on_ask`                      | per `on_ask` | per `on_ask` |
 | `:approve`               | ✅      | ✅      | per `decision`      | per `decision`                    | per `decision` | per `decision` |
@@ -18,7 +18,22 @@ and the agent loop continues — it does not raise. A path that escapes the work
 
 `:read`/`:glob` are auto-allowed under **every** mode (they sit in the default
 `allow` list), so `:ask`/`:approve` never prompt for them — only
-`:write`/`:shell`/`:fetch`/`:search` reach the gate. **†** `:fetch` and `:search`
+`:write`/`:shell`/`:fetch`/`:search` reach the gate.
+
+**‡** Under `:read_only` these four capabilities can *never* be authorized, so their tools are
+not attached at all — the model never sees `WriteFile`, `Shell`, `Fetch` or `WebSearch` in its
+schema. Anything named in `allow:` is exempt and attaches normally, and `:auto`/`:ask`/`:approve`
+always attach because they decide per call. Leaving a guaranteed failure in the schema is not
+free: a model that reads the schema tries the tool, and each attempt costs a full round trip.
+`Permissions#never_allows?` is the predicate, and it is derived from the same `PRIVILEGED` list
+`#authorize!` uses so the two cannot disagree. This is a cost and description-accuracy measure,
+**not** a security boundary — `#authorize!` is still the gate and still denies at call time.
+
+Note that declaring `fetch_allow` or a `search_backend` is *not* a capability grant: `fetch_allow`
+scopes which hosts are reachable, and both still need `:fetch` / `:search` permitted before the
+tool is attached.
+
+**†** `:fetch` and `:search`
 run in the **host process** (stdlib `net/http` / a host-injected backend), so **no
 sandbox constrains them** — not even a `--network none` container. They are bounded
 only by the capability gate above plus `fetch_allow` / the injected backend.

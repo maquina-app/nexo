@@ -20,6 +20,11 @@ module Nexo
     # The recognized permission modes: +:auto+, +:read_only+, +:ask+, +:approve+.
     MODES = %i[auto read_only ask approve].freeze
 
+    # The capabilities +:read_only+ refuses. Named once so #authorize! and
+    # #never_allows? cannot drift apart: the whole value of the predicate is that
+    # it reports what the gate will actually do, so both must read the same list.
+    PRIVILEGED = %i[write shell fetch search].freeze
+
     # Raised when a capability is not authorized. Tools rescue this and return
     # +{ error: ... }+ so the agent loop continues.
     class Denied < StandardError; end
@@ -76,9 +81,8 @@ module Nexo
       when :auto
         true
       when :read_only
-        if %i[write shell fetch search].include?(capability)
-          raise Denied, "#{capability} denied in read_only mode"
-        end
+        raise Denied, "#{capability} denied in read_only mode" if PRIVILEGED.include?(capability)
+
         true
       when :ask
         # Scoped-ask: when ask_when says this action doesn't need a prompt,
@@ -107,6 +111,25 @@ module Nexo
           raise Denied, "#{capability} (#{detail}) not approved"
         end
       end
+    end
+
+    # Whether +capability+ can NEVER be authorized by this gate, for any call.
+    #
+    # True only under +:read_only+, for a PRIVILEGED capability absent from
+    # +allow:+ — that is the one case knowable ahead of time. Every other mode
+    # decides per call and must be reported as *possible*: +:auto+ allows, +:ask+
+    # consults its hook, and +:approve+ has to reach the gate so it can raise
+    # ApprovalRequired and suspend the run.
+    #
+    # Agent#chat uses this to skip ATTACHING a tool the model could never
+    # successfully call, so a guaranteed failure stops occupying the tool schema
+    # on every turn. That makes this a cost and description-accuracy measure, not
+    # a security boundary: #authorize! remains the gate and still denies at call
+    # time whether or not the tool was advertised.
+    def never_allows?(capability)
+      return false if @allow.include?(capability)
+
+      @mode == :read_only && PRIVILEGED.include?(capability)
     end
 
     # Authorizes an MCP tool *call* by name. A deliberate sibling of #authorize!

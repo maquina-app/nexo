@@ -54,10 +54,19 @@ scope; none widens authority silently.
   instructions → sandbox instructions → skill instructions**. Provider-neutral, injected through
   the existing `with_instructions` path.
 
-- **Capability-gated tool attach (`Sandbox#supports?`).** A `:virtual` agent no longer advertises
-  a `Shell` tool it can never run — `Agent#chat` attaches `Shell` only when
-  `@sandbox.supports?(:shell)`. `Local`/`Container` support all four capabilities; `Virtual`
-  supports everything but `:shell`. `ReadFile`/`WriteFile`/`Glob` are always attached.
+- **Gated tool attach, on two axes.** An agent does not advertise a tool it could never
+  successfully call, because a guaranteed failure in the schema costs a round trip every time a
+  model tries it. `Agent#chat` attaches a tool only when **both** hold:
+
+  1. *The sandbox supports the capability* (`Sandbox#supports?`). `Local`/`Container` support all
+     four; `Virtual` supports everything but `:shell`, so a `:virtual` agent has no `Shell`.
+  2. *The permission gate does not deny it statically* (`Permissions#never_allows?`). Under
+     `:read_only`, `:write` and `:shell` can never be authorized unless listed in `allow:`, so
+     neither `WriteFile` nor `Shell` is attached. `:auto`, `:ask` and `:approve` decide per call
+     and always attach — `:approve` in particular *must* reach the gate so it can suspend the run.
+
+  `ReadFile` and `Glob` are always attached. This is a cost and description-accuracy measure, not
+  a security boundary: `Permissions#authorize!` remains the gate and still denies at call time.
 
 - **Shell output truncation (`Nexo::OutputTruncator`).** Unbounded command output (`npm install`,
   `git log`) is truncated before it reaches the model, so a single command can't blow a small

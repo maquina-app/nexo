@@ -285,14 +285,19 @@ module Nexo
       # One ReadTracker per chat, shared by ReadFile (records) and WriteFile
       # (enforces the read-before-write + stale guard) — R4.
       tracker = ReadTracker.new
-      tools = [
-        Tools::ReadFile.new(sandbox: @sandbox, permissions: @permissions, tracker: tracker),
-        Tools::WriteFile.new(sandbox: @sandbox, permissions: @permissions, tracker: tracker),
-        Tools::Glob.new(sandbox: @sandbox, permissions: @permissions)
-      ]
-      # Attach Shell only when the sandbox can actually run one (R2), so a
-      # :virtual agent stops advertising a tool it can never run.
-      if @sandbox.supports?(:shell)
+      # A sandbox tool is attached only when the agent could actually use it, on
+      # BOTH axes: the sandbox has to support the capability (R2 — a :virtual
+      # sandbox has no shell) and the gate must not deny it statically (a
+      # :read_only agent can never be authorized for :write or :shell). Otherwise
+      # a guaranteed failure sits in the tool schema on every turn and models do
+      # try it. This is the same attach-time gating apply_fetch/apply_search
+      # already apply; #authorize! stays the actual boundary either way.
+      tools = [Tools::ReadFile.new(sandbox: @sandbox, permissions: @permissions, tracker: tracker)]
+      unless @permissions.never_allows?(:write)
+        tools << Tools::WriteFile.new(sandbox: @sandbox, permissions: @permissions, tracker: tracker)
+      end
+      tools << Tools::Glob.new(sandbox: @sandbox, permissions: @permissions)
+      if @sandbox.supports?(:shell) && !@permissions.never_allows?(:shell)
         tools << Tools::Shell.new(sandbox: @sandbox, permissions: @permissions)
       end
       c.with_tools(*tools)
@@ -570,6 +575,10 @@ module Nexo
     # allow-list only scopes hosts, it is not the capability grant.
     def apply_fetch(chat)
       return if self.class.fetch_allow.empty?
+      # The allow-list scopes hosts; it is not the capability grant. A gate that
+      # can never authorize :fetch gets no tool rather than a guaranteed failure
+      # in its schema (see Permissions#never_allows?).
+      return if @permissions.never_allows?(:fetch)
 
       chat.with_tools(
         Tools::Fetch.new(sandbox: @sandbox, permissions: @permissions, allow_hosts: self.class.fetch_allow)
@@ -585,6 +594,7 @@ module Nexo
     # through Permissions#authorize! at call time.
     def apply_search(chat)
       backend = self.class.search_backend or return
+      return if @permissions.never_allows?(:search)
 
       chat.with_tools(
         Tools::WebSearch.new(sandbox: @sandbox, permissions: @permissions, backend: backend)

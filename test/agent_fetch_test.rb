@@ -23,4 +23,30 @@ class AgentFetchTest < Minitest::Test
     klass = Class.new(Nexo::Agent) { model "test-model" }
     assert_empty klass.fetch_allow
   end
+
+  # fetch_allow scopes HOSTS; :fetch is the capability grant. Both are required
+  # for the tool to be advertised, so a gate that can never authorize :fetch gets
+  # no Fetch tool rather than one that fails on every call.
+  def test_fetch_allow_with_fetch_permitted_attaches_the_tool
+    skip "agent wiring test uses the stubbed provider" if ENV["NEXO_LIVE"] == "1"
+    RubyLLM::Test.reset
+    klass = Class.new(Nexo::Agent) do
+      model "gpt-4o-mini"
+      sandbox :virtual
+      fetch_allow %w[news.example.com]
+      permissions Nexo::Permissions.new(mode: :read_only, allow: %i[read glob fetch])
+    end
+    assert_includes klass.new.chat.tools.values.map(&:class), Nexo::Tools::Fetch
+  end
+
+  def test_fetch_allow_under_read_only_does_not_attach_the_tool
+    skip "agent wiring test uses the stubbed provider" if ENV["NEXO_LIVE"] == "1"
+    RubyLLM::Test.reset
+    klass = Class.new(Nexo::Agent) do
+      model "gpt-4o-mini"
+      sandbox :virtual
+      fetch_allow %w[news.example.com]
+    end
+    refute_includes klass.new.chat.tools.values.map(&:class), Nexo::Tools::Fetch
+  end
 end

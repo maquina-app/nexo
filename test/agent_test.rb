@@ -15,10 +15,27 @@ class AgentTest < Minitest::Test
     instructions "Be careful."
   end
 
-  # Sandbox :local, model via macro.
+  # Sandbox :local, model via macro. read_only by default, so :write and :shell
+  # are statically denied for it.
   class LocalAgent < Nexo::Agent
     model TEST_MODEL
     sandbox :local
+  end
+
+  # :virtual, but permitted to write and shell — isolates the SANDBOX axis of the
+  # tool-attach gate, since the permission axis can no longer be the cause.
+  class PermissiveVirtualAgent < Nexo::Agent
+    model TEST_MODEL
+    sandbox :virtual
+    permissions Nexo::Permissions.new(mode: :read_only, allow: %i[read glob write shell])
+  end
+
+  # :local and permitted to write and shell — both axes satisfied, so the full
+  # sandbox toolset attaches.
+  class PermissiveLocalAgent < Nexo::Agent
+    model TEST_MODEL
+    sandbox :local
+    permissions Nexo::Permissions.new(mode: :read_only, allow: %i[read glob write shell])
   end
 
   # No model anywhere.
@@ -55,19 +72,50 @@ class AgentTest < Minitest::Test
   end
 
   def test_chat_attaches_sandbox_backed_tools_gating_shell_by_capability
-    chat = VirtualAgent.new.chat
+    chat = PermissiveVirtualAgent.new.chat
     tool_classes = chat.tools.values.map(&:class)
 
     assert_includes tool_classes, Nexo::Tools::ReadFile
     assert_includes tool_classes, Nexo::Tools::WriteFile
     assert_includes tool_classes, Nexo::Tools::Glob
-    # The :virtual sandbox has no shell, so Shell is not attached (Spec 14 R2).
+    # The :virtual sandbox has no shell, so Shell is not attached (Spec 14 R2)
+    # even though this agent's gate would permit it.
     refute_includes tool_classes, Nexo::Tools::Shell
   end
 
   def test_local_agent_chat_attaches_shell
-    chat = LocalAgent.new(cwd: Dir.pwd).chat
+    chat = PermissiveLocalAgent.new(cwd: Dir.pwd).chat
     assert_includes chat.tools.values.map(&:class), Nexo::Tools::Shell
+  end
+
+  # The permission axis of the same gate: :read_only can NEVER authorize :write or
+  # :shell, so neither tool is advertised — on a :local sandbox that supports both.
+  # Previously they were attached and failed at call time, which cost a round trip
+  # per attempt and described the agent inaccurately to the model.
+  def test_read_only_agent_does_not_advertise_write_or_shell
+    tool_classes = LocalAgent.new(cwd: Dir.pwd).chat.tools.values.map(&:class)
+
+    assert_includes tool_classes, Nexo::Tools::ReadFile
+    assert_includes tool_classes, Nexo::Tools::Glob
+    refute_includes tool_classes, Nexo::Tools::WriteFile
+    refute_includes tool_classes, Nexo::Tools::Shell
+  end
+
+  # :ask and :approve decide per call, so neither is statically deniable and both
+  # keep the tools. :approve especially MUST reach the gate — that is how it
+  # raises ApprovalRequired and suspends the run.
+  def test_per_call_modes_still_advertise_write_and_shell
+    %i[ask approve].each do |mode|
+      klass = Class.new(Nexo::Agent) do
+        model TEST_MODEL
+        sandbox :local
+        permissions Nexo::Permissions.new(mode: mode, on_ask: ->(*) { true })
+      end
+      tool_classes = klass.new(cwd: Dir.pwd).chat.tools.values.map(&:class)
+
+      assert_includes tool_classes, Nexo::Tools::WriteFile, "#{mode} should keep WriteFile"
+      assert_includes tool_classes, Nexo::Tools::Shell, "#{mode} should keep Shell"
+    end
   end
 
   def test_macro_instructions_appear_on_the_built_chat
