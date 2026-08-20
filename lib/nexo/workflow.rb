@@ -628,6 +628,9 @@ module Nexo
       pairs.size
     end
 
+    # Where #artifact drops its in-sandbox copy, relative to the sandbox root.
+    ARTIFACTS_DIR = "artifacts"
+
     # Records a named deliverable on the run (Spec 7 R3). The body comes from
     # either +content:+ (used verbatim) or +from:+ (a **trusted, developer-authored**
     # ERB template — a real disk file when +File.exist?(from)+, else a staged
@@ -637,26 +640,130 @@ module Nexo
     # file you control — NEVER model output or user-uploaded content. Templates are
     # code, not data (see README).
     #
-    # The body is written to the sandbox at +/artifacts/<name>+ (so scripts/agents
-    # can read it during the run) and recorded on the run as a string-keyed hash
+    # +path:+ is the third mode and the one for **agent output**: it copies a
+    # sandbox path VERBATIM, with no ERB and no rendering of any kind.
+    # +from:+ cannot be used for this — it evaluates the file as ERB, which is
+    # exactly what the security note above forbids for model-written content, and
+    # would corrupt any file containing +<%+ regardless. Use +path:+ for anything
+    # an agent produced; +from:+ only for templates you wrote.
+    #
+    # The body is written to the sandbox at the workspace-relative
+    # +artifacts/<name>+ (so scripts/agents can read it during the run) and
+    # recorded on the run as a string-keyed hash
     # +{"name" =>, "content" =>, "at" =>}+, matching how #emit string-keys events
-    # so Memory and the AR json column round-trip identically. Artifacts persist
-    # immediately (never buffered). Raises Nexo::Error when neither +content:+ nor
-    # +from:+ produces a body. Returns the artifact hash.
-    def artifact(name, content: nil, from: nil, locals: {})
+    # so Memory and the AR json column round-trip identically. Bytes that are not
+    # valid UTF-8 are Base64-encoded and marked +"encoding" => "base64"+, because
+    # an AR json column cannot hold arbitrary binary — see .artifact_body for the
+    # decode side. Artifacts persist immediately (never buffered). Raises
+    # Nexo::Error when no mode produces a body. Returns the artifact hash.
+    def artifact(name, content: nil, from: nil, path: nil, locals: {})
       body = content
       if from
         template = File.exist?(from) ? File.read(from) : sandbox.read(from)
         body = ERB.new(template, trim_mode: "-").result_with_hash(locals)
       end
-      raise Nexo::Error, "artifact #{name} needs content: or from:" if body.nil?
+      body = sandbox.read(path) if path
+      raise Nexo::Error, "artifact #{name} needs content:, from: or path:" if body.nil?
 
-      sandbox.write("/artifacts/#{name}", body)
-      art = {"name" => name.to_s, "content" => body, "at" => Time.now.utc.iso8601}
+      # Workspace-relative on purpose. This was an ABSOLUTE "/artifacts/#{name}",
+      # which every real sandbox rejects — Local#absolute and Container#guard_path
+      # both raise SecurityError ("path escapes sandbox") for a path outside the
+      # single root. #artifact therefore only ever worked on :virtual, whose
+      # in-memory paths are unguarded; on :local and :container it raised. Relative
+      # resolves under the sandbox root on all four tiers.
+      sandbox.write(File.join(ARTIFACTS_DIR, name.to_s), body)
+      art = {"name" => name.to_s, "at" => Time.now.utc.iso8601}.merge(encoded_body(body))
       @run.push_artifact(art)
       @run.save_artifacts! if @run.respond_to?(:save_artifacts!)
       art
     end
+
+    # The bytes of a recorded artifact, decoding the Base64 form when present.
+    # The counterpart to the encoding #artifact applies; use it rather than
+    # reading +art["content"]+ directly, which is Base64 text for binary.
+    def self.artifact_body(art)
+      body = art["content"].to_s
+      (art["encoding"] == "base64") ? body.unpack1("m") : body
+    end
+
+    # Copies every artifact an agent DECLARED into the run, immediately after that
+    # agent runs and before anything can tear its sandbox down.
+    #
+    # This is the missing half of Skills.materialize. That gets a skill's files
+    # INTO a sandbox; nothing got results back OUT, and on an ephemeral tier there
+    # is nowhere else for them to live: Container#close is +rm -f+, and
+    # Workflow.execute releases the run's sandbox on EVERY terminal path — done,
+    # failed, and **suspended**. So a durable-approval pause (the whole point of
+    # Spec 16) destroyed everything the run had produced up to the approval, while
+    # the identical code on +:local+ kept it, because there the sandbox is just a
+    # directory. Same workflow, durable on one tier and lossy on another, with no
+    # error either way.
+    #
+    # Declared, never inferred: a sweep of the sandbox would collect staged skill
+    # scripts, templates and scratch files, and an agent naming its outputs is also
+    # the only honest way to say "this run produced nothing". A name may be a glob
+    # (+"out/*.json"+), and an agent may declare as many as it likes. A declared
+    # artifact that does not exist is skipped rather than fatal — a run can
+    # legitimately not produce one, and this must never be what fails a run.
+    # Returns the artifacts recorded.
+    def collect_artifacts(agent)
+      # Guarded like #run_agent's +agent.close+: an injected test double or a
+      # non-Nexo::Agent duck simply declares nothing.
+      return [] unless agent.class.respond_to?(:produces)
+
+      names = agent.class.produces
+      return [] if names.empty?
+
+      names.flat_map { |name| artifact_paths(name) }.uniq.filter_map do |path|
+        artifact(File.basename(path), path: path)
+      rescue => e
+        emit(:artifact_skipped, {"path" => path.to_s, "error" => e.message})
+        nil
+      end
+    end
+
+    # Materializes previously collected artifacts back into the run's sandbox, so
+    # a later stage can read what an earlier one produced. The hand-off half: on a
+    # persistent tier stage N+1 just reads the path stage N wrote, and this makes
+    # that true on an ephemeral tier too — including across a suspend/resume, where
+    # the sandbox that held them no longer exists. Names nothing by default (every
+    # recorded artifact); pass +only:+ to restore a subset. Returns the paths written.
+    def restore_artifacts(only: nil, into: ".")
+      wanted = only && Array(only).map(&:to_s)
+      @run.artifacts.filter_map do |art|
+        name = art["name"].to_s
+        next if wanted && !wanted.include?(name)
+
+        path = File.join(into, name)
+        sandbox.write(path, self.class.artifact_body(art))
+        path
+      end
+    end
+
+    private
+
+    # Expands one declared name against the sandbox, so +produces "out/*.json"+
+    # works. A name with no glob character is taken literally and checked for
+    # existence, which keeps the common case off the glob path entirely.
+    def artifact_paths(name)
+      return sandbox.glob(name.to_s) if name.to_s.match?(/[*?\[]/)
+
+      sandbox.read(name.to_s)
+      [name.to_s]
+    rescue
+      []
+    end
+
+    # An artifact body plus, when the bytes are not valid UTF-8, the Base64
+    # envelope that lets them survive a JSON column round trip.
+    def encoded_body(body)
+      text = body.to_s
+      return {"content" => text} if text.dup.force_encoding(Encoding::UTF_8).valid_encoding?
+
+      {"content" => [text].pack("m0"), "encoding" => "base64"}
+    end
+
+    public
 
     # Drives the workflow's declared ::agent (Spec 8), bound to *this* run's
     # sandbox (Spec 7), forwarding every +(type, payload)+ event the agent's loop
@@ -708,6 +815,14 @@ module Nexo
       @run.save_state! if @run.respond_to?(:save_state!)
       suspend!(reason: "approval: #{a.detail}", resume_key: a.detail.to_s)
     ensure
+      # Collect BEFORE teardown, and in the ensure so it also runs when the agent
+      # suspended for approval or raised — those are the paths where the sandbox
+      # dies with results still in it. Never allowed to mask the original outcome.
+      begin
+        collect_artifacts(agent) if agent
+      rescue => e
+        emit(:artifact_skipped, {"error" => e.message})
+      end
       # Guarded so it's safe if Spec 6 (Agent#close) isn't present in the agent,
       # or if agent construction itself raised (agent is nil).
       agent.close if agent.respond_to?(:close)

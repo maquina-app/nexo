@@ -45,7 +45,7 @@ class WorkflowArtifactTest < Minitest::Test
     wf = Digest.new(stub)
     wf.call({})
 
-    assert_equal "the digest body", wf.sandbox.read("/artifacts/digest.md")
+    assert_equal "the digest body", wf.sandbox.read("artifacts/digest.md")
   end
 
   def test_from_renders_a_trusted_template_with_locals
@@ -58,7 +58,7 @@ class WorkflowArtifactTest < Minitest::Test
   def test_artifact_without_content_or_from_raises
     error = assert_raises(Nexo::Error) { Empty.run({}) }
 
-    assert_match(/artifact nothing needs content: or from:/, error.message)
+    assert_match(/artifact nothing needs content:, from: or path:/, error.message)
   end
 
   def test_artifacts_preserve_emission_order

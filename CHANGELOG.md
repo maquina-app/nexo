@@ -25,6 +25,29 @@
   UTF-8 file raises — measured on Docker and Apple `container` alike.
 - **`Nexo::EnvironmentError`** (a `ConfigurationError`) for the above: the fix is in the
   image or the sandbox wiring rather than in the Ruby.
+- **`produces` on an agent, collected into the run before the sandbox dies.** An agent
+  declares the artifacts it writes (`produces "dashboard.html", "out/*.json"` — many per
+  agent, globs allowed) and `run_agent` copies them out and records them on the run the
+  moment the agent finishes, **including when it suspended for approval or raised**. A
+  workflow releases its sandbox on every terminal path and `Container#close` is `rm -f`,
+  so before this a durable-approval pause destroyed everything the run had produced, while
+  the identical code on `:local` kept it. Verified end to end through real ephemeral
+  containers on Docker 29.4.0 and Apple `container` 1.2.2.
+- **`Workflow#artifact(name, path:)`** — a verbatim third mode. `from:` renders ERB and is
+  documented as trusted templates only, which agent output can never be; `path:` copies
+  sandbox bytes with no rendering. Non-UTF-8 bytes are Base64-wrapped so they survive a
+  JSON column; `Workflow.artifact_body(art)` decodes.
+- **`Workflow#restore_artifacts`** — materializes recorded artifacts back into the run's
+  sandbox, so a later stage can read what an earlier one produced even on an ephemeral
+  tier. The missing counterpart to `Skills.materialize`.
+
+### Fixed
+
+- **`Workflow#artifact` wrote to an absolute `/artifacts/<name>`, which every real sandbox
+  rejects.** `Local#absolute` and `Container#guard_path` both raise
+  `SecurityError: path escapes sandbox`, so the feature only ever worked on `:virtual`,
+  whose in-memory paths are unguarded. The copy is now workspace-relative
+  (`artifacts/<name>`) and resolves under the root on all four tiers.
 
 ## [0.8.1] - 2026-08-19
 
