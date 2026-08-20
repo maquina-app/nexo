@@ -94,6 +94,85 @@ scope; none widens authority silently.
   )
   ```
 
+## Ask a sandbox what it has — `#environment`
+
+`#instructions` describes the execution environment *for the model*. `#environment`
+answers the same question *for code*, in one `#shell` round trip:
+
+```ruby
+sandbox.environment
+# => { commands: { "ruby" => { path: "/usr/local/bin/ruby", version: "4.0.0" } },
+#      locale: "C.UTF-8",
+#      error: nil }
+```
+
+It exists because a skill's script runs wherever the sandbox is, which is not the machine
+it was written on. Measured on three real sandboxes:
+
+| Sandbox | Probe | `locale` | Commands found |
+|---|---|---|---|
+| `:local` (host) | 0.14s | `en_US.UTF-8` | ruby 4.0.0, python3 3.14.5, node 26.3.0 |
+| `:docker alpine:latest` | 0.25s | **none** | sh only |
+| `:docker` full image (~5 GB) | 0.50s | **none** | ruby 4.0.0, python3 3.12.3, node 26.7.0 |
+| `:apple` full image | 1.84s | **none** | ruby 4.0.0, python3 3.12.3, node 26.4.0 |
+
+Note the last three rows: **a container has no locale even when it has a full toolchain.**
+Under an unset locale Ruby's default external encoding is `US-ASCII`, and a bare
+`File.read` on a UTF-8 file raises `Encoding::InvalidByteSequenceError`. "Has the
+interpreter" and "can read a UTF-8 file" are independent, so they are reported separately.
+
+The probe is POSIX `sh` — no interpreter needed on the far side, so it works on busybox —
+memoized for the sandbox's lifetime, and extensible per call:
+
+```ruby
+sandbox.environment(commands: %w[ruby convert])
+```
+
+**It never raises.** A sandbox with no shell (`Virtual`) and a probe that could not run
+both report empty, with the reason under `:error`:
+
+```ruby
+Nexo::Sandboxes::Virtual.new.environment[:error]
+# => "sandbox has no shell"
+```
+
+That distinction matters: "I looked and there is no ruby" and "I never got to look" have
+different fixes. An `:apple` container left on the default `readonly_rootfs: true`, for
+instance, cannot start a process at all (`The volume is read only`) — reported as an
+`:error`, not as an empty toolchain.
+
+**Scope is deliberately coarse: commands on `PATH` and the locale, never packages.** Gems,
+wheels and npm modules belong to whoever builds the image; modelling them here would be a
+cross-language dependency resolver competing with the manifest every ecosystem already has.
+
+### Declaring what an agent needs
+
+```ruby
+class Publisher < Nexo::Agent
+  skills :dashboard_designer
+  requires commands: {"ruby" => ">= 3.1"}, locale: :utf8
+end
+```
+
+Checked once, before the first turn, and it fails with every unmet requirement at once:
+
+```
+Publisher cannot run here: no ruby on PATH; no locale set (needs a UTF-8 locale).
+Provision the sandbox, or drop the `requires` declaration.
+```
+
+- `commands:` maps a command to a `Gem::Requirement` string, or `"*"` for any version. A
+  command whose version cannot be read (busybox `sh` prints none) satisfies any constraint
+  by being present — an unreadable version is not evidence of a wrong one.
+- `locale:` takes `:utf8` (any UTF-8 locale, the case that actually comes up) or an exact
+  `String`.
+- Declaring nothing is the default and costs **no probe at all**.
+
+The declaration lives here, in Nexo's vocabulary, rather than in the skill file: whoever
+wires an agent to a sandbox is the only person who can *fix* a gap, so the declaration and
+the fix sit together. A skill states its needs in prose through `compatibility:`, which is
+the Agent Skills spec's field for it and is aimed at a human or a model.
+
 ## Remote sandbox — bring your own container
 
 `Sandboxes::Remote` contains **zero vendor code**. It wraps any object that satisfies a

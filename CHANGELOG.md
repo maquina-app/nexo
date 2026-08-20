@@ -10,6 +10,21 @@
   `allowed-tools:` stay unsurfaced on purpose: the first is prompt noise, and the second
   would be a second source of truth about what an agent may do, competing with
   `Nexo::Permissions`.
+- **`Sandbox#environment` — a sandbox can report what it actually provides.** One POSIX
+  `sh` round trip returns the commands on `PATH` (with versions) and the locale, memoized
+  for the sandbox's lifetime and extensible per call. It never raises: a shell-less
+  sandbox and a probe that could not run both answer empty, carrying the reason under
+  `:error`, because "there is no ruby" and "I never got to look" have different fixes.
+  Deliberately coarse — commands and locale, never packages.
+- **`requires` on an agent, checked before the first turn.**
+  `requires commands: {"ruby" => ">= 3.1"}, locale: :utf8` raises `Nexo::EnvironmentError`
+  listing every unmet requirement at once, instead of letting the run reach
+  `sh: ruby: not found` several turns in. Declaring nothing is the default and costs no
+  probe. Motivating case: a container has **no locale even when it has a full toolchain**,
+  under which Ruby's default external encoding is `US-ASCII` and a bare `File.read` on a
+  UTF-8 file raises — measured on Docker and Apple `container` alike.
+- **`Nexo::EnvironmentError`** (a `ConfigurationError`) for the above: the fix is in the
+  image or the sandbox wiring rather than in the Ruby.
 
 ## [0.8.1] - 2026-08-19
 
