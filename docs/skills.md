@@ -61,8 +61,42 @@ skill that does not exist raises `Nexo::Error` naming the missing `SKILL.md` pat
 
 A skill contributes **instructions only**. A loaded skill ships no independent tools, and
 Nexo deliberately does not attach `ruby_llm-skills`' progressive-disclosure tool (which
-reads files outside the sandbox). The model reaches a skill's `references/`/`scripts/`
-files through Nexo's own permission-gated, sandbox-backed tools — so **attaching a skill
-never widens what an agent can do** beyond its configured sandbox/permission mode.
+reads files outside the sandbox) — so **attaching a skill never widens what an agent can
+do** beyond its configured sandbox/permission mode.
+
+## Bundled files are not reachable until you stage them
+
+A skill's `scripts/`, `assets/` and `references/` live under `skills_path`, which is
+**outside every sandbox**. Sandboxes confine file access to their own working directory
+(`Local` and `Container` raise `SecurityError` on escape), so an agent cannot read or run
+a skill's bundled files just because the skill is attached.
+
+To make them reachable, copy them in through the sandbox's own `#write` — the only route
+that works on every tier:
+
+```ruby
+skill = Nexo::Skills.find(:dashboard_designer)
+
+skill.scripts.each do |host_path|
+  agent.sandbox.write(File.join("scripts", File.basename(host_path)), File.binread(host_path))
+end
+```
+
+They are then ordinary workspace files, reached through the permission-gated `read`,
+`glob` and `shell` tools like anything else in the workspace.
+
+Two things to get right:
+
+- **Use relative paths** (`"scripts/render.rb"`), in the write and in any command you
+  hand the agent. A host-absolute path is meaningless inside a container and on a remote
+  sandbox.
+- **A bundled script must not depend on ambient environment.** It runs wherever the
+  sandbox is, which may have no locale (Ruby then defaults to `US-ASCII`, and reading a
+  UTF-8 file raises `Encoding::InvalidByteSequenceError`), a different `PATH`, or no
+  interpreter at all. Be explicit — `File.read(path, encoding: "UTF-8")` — and document
+  which interpreter your skill needs.
+
+Staged files land in **writable** space. If the agent also holds `:shell` it can rewrite
+a script before running it, so re-stage on every run when that matters.
 
 ← Back to the [README](../README.md)

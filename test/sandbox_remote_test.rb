@@ -112,4 +112,22 @@ class SandboxRemoteTest < Minitest::Test
     script = 'for f in $1; do [ -e "$f" ] && echo "$f"; done'
     assert_includes command, Shellwords.escape(script)
   end
+
+  # Local and Container describe their environment so a weak tool-caller knows where it
+  # runs; Remote returned nil, leaving the tier most likely to surprise an agent the
+  # one it knew least about.
+  def test_instructions_describe_the_remote_environment_by_default
+    text = Nexo::Sandboxes::Remote.new(client: FakeClient.new).instructions
+
+    refute_nil text
+    assert_includes text, "remote sandbox"
+  end
+
+  def test_instructions_can_be_supplied_by_the_shim
+    text = Nexo::Sandboxes::Remote.new(
+      client: FakeClient.new, instructions: "You run in an E2B sandbox, cwd /home/user."
+    ).instructions
+
+    assert_equal "You run in an E2B sandbox, cwd /home/user.", text
+  end
 end

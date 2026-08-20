@@ -1,5 +1,46 @@
 ## [Unreleased]
 
+### Fixed
+
+- **`Container#write` creates parent directories and raises on failure.** It ran
+  `sh -c 'cat > "$0"'` and discarded the exit status, so writing a nested path into a
+  fresh workspace failed with `Directory nonexistent` while reporting success to the
+  caller. `Local#write` has always done `mkdir_p` and raised; the two now match.
+  Staging anything with a directory in its path — a skill's `scripts/render.rb`, say —
+  silently produced nothing on a container before this.
+- **The `:apple` runtime can start a container.** `#run_argv` passed
+  `--security-opt no-new-privileges` and `--pids-limit`, which Apple's `container` CLI
+  rejects with `Unknown option`, so `runtime: :apple` failed before any tool ran. Both
+  come from defaults, so no configuration avoided it. They are now omitted for
+  `:apple` and reported through the new `#hardening_gaps`.
+
+### Added
+
+- **`Container#hardening_gaps`** — hardening the caller asked for that the runtime
+  cannot honor, as human-readable strings; empty on `:docker`. Running with weaker
+  isolation than requested is now visible rather than silent. It also reports that
+  Apple's `--tmpfs` is not writable under `--read-only`, which makes the default
+  `readonly_rootfs: true` leave an `:apple` sandbox with no writable workspace.
+- **`Sandboxes::Remote#instructions`**, with an optional `instructions:` on the
+  constructor. `Local` and `Container` describe their environment to the agent;
+  `Remote` returned `nil`, leaving the tier most likely to surprise a tool-caller the
+  one it knew least about.
+
+### Documentation
+
+- **Apple `container` parity table filled from live runs** (`container` 1.2.2 / Docker
+  29.4.0) — replacing the previous all-`unverified` placeholder. Records that
+  `--network none` *does* work on Apple, that `ps -aqf` does not exist there (Apple has
+  `list`), and the `--tmpfs`-under-`--read-only` divergence.
+- **`docs/skills.md`: bundled files are not reachable until staged.** The docs stated
+  that a skill's `scripts/`/`references/` are reached through Nexo's sandbox-backed
+  tools. They are not: a skill lives under `skills_path`, outside every sandbox, and
+  nothing bridged the two. Documents staging through `sandbox.write` — the only route
+  that works on every tier — plus the relative-path and ambient-environment pitfalls.
+- **`docs/sandboxes.md`: path confinement on `:remote` is the client's job.** `Local`
+  and `Container` raise `SecurityError` on escape; `Remote` passes paths through
+  untouched. That is deliberate, but it moves a guarantee callers may rely on.
+
 ## [0.8.0] - 2026-07-16
 
 Durability enhancements for workflows: a suspended run can now wake itself on a
