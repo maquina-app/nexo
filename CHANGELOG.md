@@ -1,5 +1,17 @@
 ## [Unreleased]
 
+## [0.9.0] - 2026-08-20
+
+Skills and sandboxes learn to talk about the environment, and an agent's output finally
+survives its sandbox. A skill can state what it needs (`compatibility:`, which was parsed
+and then dropped), a sandbox can report what it has (`Sandbox#environment`), and an agent
+can require the two to match before the first turn. Separately, an agent's declared output
+is now collected before teardown — a workflow releases its sandbox on **every** terminal
+path, `suspended` included, so pausing for a human approval used to destroy everything the
+run had produced on a container tier while the identical code on `:local` kept it. Along
+the way `Workflow#artifact` turned out never to have worked outside `:virtual`. Verified
+end to end against Docker 29.4.0 and Apple `container` 1.2.2.
+
 ### Added
 
 - **A skill's `compatibility:` frontmatter now reaches the model.** `apply_instructions`
@@ -48,6 +60,13 @@
   `SecurityError: path escapes sandbox`, so the feature only ever worked on `:virtual`,
   whose in-memory paths are unguarded. The copy is now workspace-relative
   (`artifacts/<name>`) and resolves under the root on all four tiers.
+
+### Changed
+
+- **The in-sandbox copy of an artifact moved from `/artifacts/<name>` to
+  `artifacts/<name>`**, relative to the sandbox root. Visible only to `:virtual` users —
+  the only ones for whom `#artifact` worked at all — and only if they read the copy back
+  by absolute path. The recorded `run.artifacts` data is unchanged.
 
 ## [0.8.1] - 2026-08-19
 
