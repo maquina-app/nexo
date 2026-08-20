@@ -82,6 +82,34 @@ ActiveRecord when it is available and the in-memory store otherwise. The schema
 uses portable `json` columns (SQLite and PostgreSQL alike) and a UUID string
 primary key.
 
+### Durable without a database — `RunStore::Disk`
+
+The in-memory store dies with the process, and **everything durable reads state
+back from the store**: `checkpoint`, `suspend!`/`resume`, and a run's recorded
+artifacts. So for a CLI or a script — no Rails, no database, but a process that
+ends — point the store at a directory:
+
+```ruby
+Nexo.config.run_store = Nexo::RunStore::Disk.new(dir: "~/.local/state/myapp/runs")
+```
+
+One JSON document per run, rewritten whenever the run changes, written to a temp
+file and renamed so a crash cannot leave a truncated document behind. The run shape
+and every read helper are Memory's — `Disk::Run` subclasses it — so host code
+written against one store behaves identically on the other. `#all` lists the
+directory newest-first, which is what a host wants for *"what did the last run
+produce?"*.
+
+A configured store wins over the automatic choice, including under Rails.
+
+**Scope, honestly.** Rewriting the whole document per change suits the run sizes this
+is meant for (a CLI's own history) and is wrong for a busy multi-worker queue — that
+is what the ActiveRecord backend is for. `claim_for_resume!` re-reads from disk, so a
+stale in-memory copy cannot win a claim, but it is atomic **within** a process only.
+Runs are never pruned: retention is the host's policy and `dir` is a plain directory
+it can manage. `Workflow.reconcile_interrupted!` sweeps the Memory and ActiveRecord
+stores only.
+
 ## Input staging and artifacts
 
 A run owns a **sandbox** — declared with the `sandbox` class macro (default

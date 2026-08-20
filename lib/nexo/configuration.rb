@@ -57,6 +57,14 @@ module Nexo
     # this only gates the opt-in Turbo mirror.
     attr_accessor :broadcast_events
 
+    # The run store Workflow persists runs through, default +nil+ → the automatic
+    # choice (ActiveRecord under Rails, in-memory otherwise). Set an instance to
+    # override, which is what a host outside Rails needs for anything durable:
+    # checkpoint/suspend/resume all read state back from the store, and the
+    # in-memory one dies with the process. +Nexo::RunStore::Disk.new(dir:)+ is the
+    # shipped answer for a CLI or a script.
+    attr_accessor :run_store
+
     # The ActiveJob queue Workflow.run_later enqueues onto (Spec 11 R1), default
     # +nil+ → ActiveJob's default queue. Set to a symbol (e.g. +:nexo+) to route
     # workflow jobs to a dedicated queue.
@@ -74,6 +82,7 @@ module Nexo
       @buffer_workflow_events = false
       @session_chat_model = "Chat" # ruby_llm's own default acts_as_chat host
       @broadcast_events = false # safe default: opt in to the Turbo mirror
+      @run_store = nil # nil → the automatic choice (ActiveRecord under Rails, else Memory)
       @job_queue = nil # nil → ActiveJob's default queue
     end
 
