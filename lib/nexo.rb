@@ -30,6 +30,12 @@ module Nexo
   # no model and no configured default).
   class ConfigurationError < Error; end
 
+  # Raised when an agent's declared +requires+ are not met by the sandbox it is
+  # about to run in — no interpreter on +PATH+, or no UTF-8 locale. A
+  # configuration error in spirit, but named separately because the fix is in the
+  # image or the sandbox wiring rather than in the Ruby.
+  class EnvironmentError < ConfigurationError; end
+
   # Control-flow signal raised by the +:approve+ permission gate (Spec 16) when a
   # capability needs a human decision and none has been threaded in yet. Unlike
   # Permissions::Denied ("no, adapt" — tools rescue it into +{error:}+),

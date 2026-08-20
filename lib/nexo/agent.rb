@@ -22,7 +22,7 @@ module Nexo
     # configuration instead of silently resetting to defaults.
     CONFIG_IVARS = %i[
       @model @assume_model_exists @provider @sandbox @permissions @instructions
-      @skills @mcp @mcp_allow @fetch_allow @search_backend
+      @skills @mcp @mcp_allow @fetch_allow @search_backend @requires
     ].freeze
 
     class << self
@@ -100,6 +100,35 @@ module Nexo
       #   end
       def skills(*names)
         names.empty? ? (@skills || []) : (@skills = ((@skills || []) + names).uniq)
+      end
+
+      # What this agent needs from whatever sandbox it runs in — checked once,
+      # before the first turn, against Sandbox#environment:
+      #
+      #   class Publisher < Nexo::Agent
+      #     skills :dashboard_designer
+      #     requires commands: {"ruby" => ">= 3.1"}, locale: :utf8
+      #   end
+      #
+      # Declared HERE, in Nexo's own vocabulary, rather than in the skill file:
+      # whoever wires an agent to a sandbox is the only person who can *fix* a
+      # gap, so the declaration and the fix live in the same place. A skill states
+      # its needs in prose via +compatibility:+, which is the spec's field for it
+      # and is aimed at a human or a model.
+      #
+      # +commands:+ maps a command that must be on +PATH+ to a version constraint
+      # — a Gem::Requirement string (+">= 3.1"+) or +"*"+ for "any version". A
+      # command whose version cannot be read (busybox +sh+ prints none) satisfies
+      # any constraint by being present: an unreadable version is not evidence of
+      # a wrong one. +locale:+ takes +:utf8+ (any UTF-8 locale — the useful case)
+      # or an exact String.
+      #
+      # Deliberately coarse, and never packages: gems, wheels and npm modules
+      # belong to the image, not here (see Sandbox#environment).
+      def requires(commands: nil, locale: nil)
+        return @requires if commands.nil? && locale.nil?
+
+        @requires = {commands: commands || {}, locale: locale}
       end
 
       # Declares an MCP server for this agent (Spec 6). Accumulating: multiple
@@ -255,8 +284,86 @@ module Nexo
     # so swapping +loop:+ swaps the engine without touching this class. The
     # optional +&on_event+ block receives +(type, payload)+ progress events.
     def prompt(text, max_turns: 25, &on_event)
+      verify_environment!
       @loop.run(agent: self, prompt: text, max_turns: max_turns, &on_event)
     end
+
+    # Checks the agent's declared ::requires against its sandbox, once, before the
+    # first turn. A no-op — and zero cost, no probe at all — when nothing is
+    # declared, which is the default.
+    #
+    # Fails BEFORE the model is called, because the alternative is what this
+    # exists to prevent: the agent spends turns deciding to run a script, runs it,
+    # and gets +sh: ruby: not found+ or an Encoding::InvalidByteSequenceError three
+    # frames into a JSON parse. One legible sentence naming what is missing and
+    # where beats a stack trace after the fact.
+    #
+    # Raises Nexo::EnvironmentError listing every unmet requirement at once, so a
+    # misprovisioned image is fixed in one pass rather than one round trip per
+    # missing command.
+    def verify_environment!
+      return if @environment_verified
+
+      req = self.class.requires
+      @environment_verified = true
+      return if req.nil?
+
+      missing = unmet_requirements(req, @sandbox.environment)
+      return if missing.empty?
+
+      raise Nexo::EnvironmentError,
+        "#{self.class} cannot run here: #{missing.join("; ")}. " \
+        "Provision the sandbox, or drop the `requires` declaration."
+    end
+
+    private
+
+    # The declared requirements this environment does not meet, as human-readable
+    # phrases. Reports the probe's own failure first when it could not run at all:
+    # "no ruby" and "I never got to look" are different problems with different
+    # fixes, and saying the first when the second is true sends the reader to the
+    # wrong place.
+    def unmet_requirements(req, env)
+      return ["could not inspect the sandbox (#{env[:error]})"] if env[:error]
+
+      missing = req[:commands].filter_map do |name, constraint|
+        found = env[:commands][name.to_s]
+        next "no #{name} on PATH" if found.nil?
+        next unless version_short?(found[:version], constraint)
+
+        "#{name} #{found[:version]} does not satisfy #{constraint}"
+      end
+      missing << locale_complaint(req[:locale], env[:locale]) if locale_unmet?(req[:locale], env[:locale])
+      missing
+    end
+
+    # Whether a found command's version fails +constraint+. A missing version, an
+    # unparseable constraint, or +"*"+ all pass: presence is the requirement, and
+    # an unreadable version is not evidence of a wrong one.
+    def version_short?(version, constraint)
+      return false if version.nil? || constraint.nil? || constraint.to_s.strip == "*"
+
+      !Gem::Requirement.new(constraint.to_s).satisfied_by?(Gem::Version.new(version))
+    rescue ArgumentError
+      false
+    end
+
+    # +:utf8+ asks for any UTF-8 locale (the only case that comes up in practice);
+    # a String asks for that exact locale. An unset locale never satisfies either
+    # — that is the container default, and the bug this catches.
+    def locale_unmet?(required, actual)
+      return false if required.nil?
+      return true if actual.nil?
+
+      (required == :utf8) ? !actual.match?(/utf-?8/i) : actual != required.to_s
+    end
+
+    def locale_complaint(required, actual)
+      want = (required == :utf8) ? "a UTF-8 locale" : "locale #{required}"
+      actual.nil? ? "no locale set (needs #{want})" : "locale #{actual} is not #{want}"
+    end
+
+    public
 
     # The agent's Nexo permission mode mapped onto an opt-in backend's own
     # permission vocabulary (see PERMISSION_MODE_MAP). Consumed by
