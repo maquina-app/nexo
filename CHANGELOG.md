@@ -1,5 +1,16 @@
 ## [Unreleased]
 
+### Added
+
+- **A skill's `compatibility:` frontmatter now reaches the model.** `apply_instructions`
+  passed only `skill.content`, so `compatibility:` — the Agent Skills spec's own field for
+  stating what a skill needs in order to run — was parsed and then dropped. It is now
+  appended to the skill's body as a labelled `Compatibility: …` line. Skills that do not
+  set it contribute exactly their body, byte for byte, as before. `license:` and
+  `allowed-tools:` stay unsurfaced on purpose: the first is prompt noise, and the second
+  would be a second source of truth about what an agent may do, competing with
+  `Nexo::Permissions`.
+
 ## [0.8.1] - 2026-08-19
 
 Sandbox tiers made honest and skill resources made usable. A skill's `scripts/` and
