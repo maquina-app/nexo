@@ -22,10 +22,19 @@ module Nexo
       # +chat:+ lets a Nexo::Session inject the hydrated, continuing chat so the
       # loop runs over the persisted thread; left nil it builds the agent's own
       # fresh chat exactly as before — the default (no-session) path is unchanged.
+      # +max_turns+ is a BUDGET, not a hard stop. ruby_llm runs the whole tool loop
+      # inside #ask and its callbacks cannot halt it, so this loop cannot cut a run
+      # short. What it can do is COUNT the tool calls and say so: exceeding the budget
+      # emits a +:turn_limit_exceeded+ event (once) carrying the count and the limit.
+      #
+      # Previously the parameter was accepted and never read, which made it look like
+      # a safety bound it has never been. Treat it as telemetry: if you need a hard
+      # ceiling, bound the work inside your tools, or use Loops::AgentSDK whose engine
+      # enforces its own max_turns natively.
       def run(agent:, prompt:, max_turns: 25, chat: nil, &on_event)
         chat ||= agent.chat
 
-        wire_observability(chat, &on_event)
+        wire_observability(chat, max_turns: max_turns, &on_event)
 
         response = chat.ask(prompt)
         on_event&.call(:done, response)
@@ -47,19 +56,38 @@ module Nexo
       # prompt observes with its own block rather than the first one. A fresh chat
       # (the default per-prompt path) simply wires once — byte-for-byte the prior
       # behavior.
-      def wire_observability(chat, &on_event)
+      def wire_observability(chat, max_turns: nil, &on_event)
         return unless chat.respond_to?(:before_tool_call) && chat.respond_to?(:after_tool_result)
 
         chat.instance_variable_set(:@nexo_on_event, on_event)
+        chat.instance_variable_set(:@nexo_max_turns, max_turns)
+        # The count belongs to the PROMPT, not the chat: a continuing Session runs the
+        # loop repeatedly over one chat, and each prompt gets its own budget.
+        chat.instance_variable_set(:@nexo_turns, 0)
+        chat.instance_variable_set(:@nexo_turns_reported, false)
         return if chat.instance_variable_get(:@nexo_observed)
 
         chat.instance_variable_set(:@nexo_observed, true)
         chat.before_tool_call do |tc|
+          count_turn(chat)
           chat.instance_variable_get(:@nexo_on_event)&.call(:tool_call, tc)
         end
         chat.after_tool_result do |r|
           chat.instance_variable_get(:@nexo_on_event)&.call(:tool_result, r)
         end
+      end
+
+      # Counts one tool call and reports the first time the budget is passed. Reported
+      # once per prompt, not per call, so a long run does not drown its own event log.
+      def count_turn(chat)
+        limit = chat.instance_variable_get(:@nexo_max_turns)
+        turns = chat.instance_variable_get(:@nexo_turns).to_i + 1
+        chat.instance_variable_set(:@nexo_turns, turns)
+        return unless limit && turns > limit
+        return if chat.instance_variable_get(:@nexo_turns_reported)
+
+        chat.instance_variable_set(:@nexo_turns_reported, true)
+        chat.instance_variable_get(:@nexo_on_event)&.call(:turn_limit_exceeded, {turns: turns, max_turns: limit})
       end
     end
   end

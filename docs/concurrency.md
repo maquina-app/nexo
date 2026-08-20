@@ -97,4 +97,32 @@ Note that DB work under a reactor is *offloaded/pooled*, not truly fiber-async �
 Nexo does not ship a fiber-native DB driver. For server setup (Falcon, the fiber
 scheduler), see the [`async` guide](https://socketry.github.io/async/).
 
+
+## Tool concurrency — several tool calls in one turn
+
+`Nexo.config.concurrency` governs how **Nexo** runs blocking work. A separate setting
+governs how **RubyLLM** executes multiple tool calls returned in a *single* assistant
+turn:
+
+```ruby
+Nexo.configure { |c| c.tool_concurrency = :fibers }   # :fibers | :threads | false | nil
+```
+
+- `:fibers` — via `async`, the same driver `Nexo.concurrent` uses.
+- `:threads` — OS threads.
+- `false` — one at a time.
+- `nil` (**default**) — leave RubyLLM's own setting alone, so behaviour is unchanged
+  until you opt in.
+
+It is applied to the chat after every tool is attached, because each `with_tools` call
+resets the chat's concurrency.
+
+This only matters when a model returns several tool calls in one turn. Tools that batch
+their own work — one call that reads twenty messages rather than twenty calls — make it
+largely moot, and are the better optimization where you control the tool.
+
+**Your tools must be safe to run concurrently before you turn this on.** Anything sharing
+a process-wide resource — a CLI that serializes on a keychain, a single connection, a
+non-reentrant client — needs its own lock regardless of this setting.
+
 ← Back to the [README](../README.md)

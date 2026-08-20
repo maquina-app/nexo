@@ -1,5 +1,44 @@
 ## [Unreleased]
 
+### Added
+
+- **`Nexo::Skills.materialize(name, into:)`** — copies a skill's `scripts/`, `assets/`
+  and `references/` into a sandbox so an agent can actually reach them. A skill lives
+  under `skills_path`, outside every sandbox, and each sandbox confines file access to
+  its own working directory, so those files were unreachable until staged. Goes through
+  the sandbox's own `#write`, the only route that works on every tier — `Local` writes to
+  the filesystem, `Container` streams over `docker exec` / `container exec`, `Remote`
+  hands off to the injected client — and returns **sandbox-relative** paths so callers
+  can build a command without knowing which tier they are on. `kinds:` narrows the copy;
+  `overwrite: false` skips files already present, for images that bake the skill in.
+- **`Agent#wrap_mcp_tool(tool)`** — a hook called once per MCP tool, after gating and
+  before attachment, for decorating every MCP tool an agent gets (capping an oversized
+  reply, timings, redaction). Default returns the tool unchanged. Previously the only way
+  in was overriding the private `#apply_mcp`. Gating happens underneath, so a wrapper
+  only ever sees an already-authorized call and cannot widen what the agent may do.
+- **`Nexo.config.tool_concurrency`** — surfaces RubyLLM's concurrent execution of
+  multiple tool calls from one assistant turn (`:fibers` / `:threads` / `false`).
+  Defaults to `nil`, leaving RubyLLM's own setting alone, so behaviour is unchanged until
+  you opt in. Applied after every tool is attached, since each `with_tools` resets it.
+
+### Changed
+
+- **`max_turns` is now counted and reported** on `Loops::RubyLLM` instead of being
+  accepted and ignored. It still cannot halt a run — ruby_llm executes the whole tool
+  loop inside `Chat#ask` and its callbacks are observation-only — but exceeding the
+  budget now emits `:turn_limit_exceeded` with `{turns:, max_turns:}`, once per prompt.
+  Previously the parameter read as a safety bound it has never been. Documented as
+  telemetry, with the routes to a hard ceiling.
+
+### Documentation
+
+- `docs/skills.md` documents `Skills.materialize`, including the writable-space tradeoff
+  (a staged script sits where an agent holding `:shell` could rewrite it).
+- `docs/mcp.md` documents `wrap_mcp_tool`.
+- `docs/concurrency.md` documents `tool_concurrency`, and that tools must be safe to run
+  concurrently before enabling it.
+- `docs/loops.md` documents what `max_turns` does and does not do.
+
 ### Fixed
 
 - **`Container#write` creates parent directories and raises on failure.** It ran

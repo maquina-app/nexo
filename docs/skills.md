@@ -71,19 +71,32 @@ A skill's `scripts/`, `assets/` and `references/` live under `skills_path`, whic
 (`Local` and `Container` raise `SecurityError` on escape), so an agent cannot read or run
 a skill's bundled files just because the skill is attached.
 
-To make them reachable, copy them in through the sandbox's own `#write` — the only route
+`Skills.materialize` copies them in, through the sandbox's own `#write` — the only route
 that works on every tier:
 
 ```ruby
-skill = Nexo::Skills.find(:dashboard_designer)
-
-skill.scripts.each do |host_path|
-  agent.sandbox.write(File.join("scripts", File.basename(host_path)), File.binread(host_path))
-end
+staged = Nexo::Skills.materialize(:dashboard_designer, into: agent.sandbox)
+# => { scripts: ["scripts/render_dashboard.rb"],
+#      assets:  ["assets/dashboard-template.html"] }
 ```
 
 They are then ordinary workspace files, reached through the permission-gated `read`,
-`glob` and `shell` tools like anything else in the workspace.
+`glob` and `shell` tools like anything else in the workspace — and the returned paths are
+**sandbox-relative**, so you can build a command without knowing which tier you are on:
+
+```ruby
+agent.prompt("Run: ruby #{staged[:scripts].first} digest.json #{staged[:assets].first} out.html")
+```
+
+`Local` writes to the filesystem, `Container` streams over `docker exec` / `container
+exec`, and `Remote` hands off to the injected client. The call is identical.
+
+| Option | Meaning |
+|---|---|
+| `kinds:` | which of `scripts` / `assets` / `references` to copy (default: all three) |
+| `overwrite:` | `false` skips files already present — what you want against an image that bakes the skill in |
+
+Kinds the skill ships nothing for are omitted from the result.
 
 Two things to get right:
 
@@ -96,7 +109,10 @@ Two things to get right:
   interpreter at all. Be explicit — `File.read(path, encoding: "UTF-8")` — and document
   which interpreter your skill needs.
 
-Staged files land in **writable** space. If the agent also holds `:shell` it can rewrite
-a script before running it, so re-stage on every run when that matters.
+Staged files land in **writable** space. If the agent also holds `:shell` it can rewrite a
+script before running it — where the same file, left outside the sandbox, could not be
+touched at all. `materialize` overwrites by default, so re-materializing at the start of
+every run bounds tampering to a single turn. If that is not enough, keep the resource out
+of the sandbox and feed the agent its contents another way.
 
 ← Back to the [README](../README.md)
