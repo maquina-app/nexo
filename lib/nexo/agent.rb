@@ -246,6 +246,7 @@ module Nexo
       apply_mcp(c)
       apply_fetch(c)
       apply_search(c)
+      apply_tool_concurrency(c)
       c
     end
 
@@ -360,9 +361,47 @@ module Nexo
 
       @mcp_clients ||= self.class.mcp.map { |cfg| Nexo::MCP.build(**cfg) }
       gated = @mcp_clients.flat_map(&:tools).map do |tool|
-        Nexo::MCP::GatedTool.new(tool: tool, permissions: @permissions)
+        wrap_mcp_tool(Nexo::MCP::GatedTool.new(tool: tool, permissions: @permissions))
       end
       chat.with_tools(*gated) unless gated.empty?
+    end
+
+    # Applies Nexo.config.tool_concurrency to the chat, LAST — every +with_tools+ call
+    # resets the chat's concurrency to its current value, so setting it before the
+    # tools are attached would be undone. +nil+ leaves RubyLLM's own setting alone.
+    def apply_tool_concurrency(chat)
+      mode = Nexo.config.tool_concurrency
+      return if mode.nil?
+      return unless chat.respond_to?(:with_tools)
+
+      chat.with_tools(concurrency: mode)
+    end
+
+    # Hook: called once per MCP tool, AFTER it is wrapped in a permission-gating
+    # MCP::GatedTool and before it is attached. Returns the tool to attach; the
+    # default returns it unchanged.
+    #
+    # Override to decorate every MCP tool an agent gets — capping an oversized reply,
+    # recording timings, redacting a field. A third-party MCP server's response shape
+    # is not yours to change, and its tools are attached by the harness rather than by
+    # you, so without this seam the only way in was to override the private
+    # +#apply_mcp+.
+    #
+    #   class MailAgent < Nexo::Agent
+    #     mcp :mail, transport: :stdio, command: "apple-mail-mcp"
+    #
+    #     def wrap_mcp_tool(tool)
+    #       CappedTool.new(tool: tool, max_chars: 4_000)
+    #     end
+    #   end
+    #
+    # A wrapper must keep the duck type the chat relies on — +#name+, +#description+,
+    # +#params_schema+ and +#call+. GatedTool delegates the rest through
+    # +method_missing+, so wrappers compose. Gating happens underneath, so a wrapper
+    # only ever sees an already-authorized call: wrapping cannot widen what the agent
+    # may do.
+    def wrap_mcp_tool(tool)
+      tool
     end
 
     # Attaches a single Nexo::Tools::Fetch scoped to the agent's +fetch_allow+

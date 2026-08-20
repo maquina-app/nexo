@@ -141,4 +141,30 @@ deny-all). Attaching an authenticated server adds no permission surface.
 server. Without it installed, `require "nexo"` still loads; building a server raises a clear
 `Nexo::MissingDependencyError` telling you to add `gem "ruby_llm-mcp"`.
 
+
+## Decorating MCP tools
+
+`wrap_mcp_tool` is called once per MCP tool, after it is wrapped in a permission-gating
+`MCP::GatedTool` and before it is attached. Override it to decorate every MCP tool an
+agent gets — a third-party server's response shape is not yours to change, and its tools
+are attached by the harness rather than by you:
+
+```ruby
+class MailAgent < Nexo::Agent
+  mcp :mail, transport: :stdio, command: "apple-mail-mcp"
+
+  # This server returns an entire message body with no cap; bound it.
+  def wrap_mcp_tool(tool)
+    CappedTool.new(tool: tool, max_chars: 4_000)
+  end
+end
+```
+
+A wrapper must keep the duck type the chat relies on — `#name`, `#description`,
+`#params_schema` and `#call`. `GatedTool` delegates the rest through `method_missing`, so
+wrappers compose.
+
+Gating happens **underneath** the wrapper, so it only ever sees an already-authorized
+call. Wrapping cannot widen what an agent may do.
+
 ← Back to the [README](../README.md)

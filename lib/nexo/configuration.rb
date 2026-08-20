@@ -27,6 +27,14 @@ module Nexo
 
     # Max in-flight tasks for Nexo.concurrent fan-out (Spec 5), default +8+.
     # The single most important knob for staying under provider rate limits.
+    # How RubyLLM executes MULTIPLE tool calls returned in a single assistant turn:
+    # +:fibers+ (via +async+, the same driver Nexo.concurrent uses), +:threads+, or
+    # +false+ for one at a time. +nil+ (the default) leaves RubyLLM's own setting
+    # alone, so existing behaviour is unchanged until you opt in.
+    #
+    # Distinct from #concurrency, which governs how Nexo itself runs blocking work.
+    attr_accessor :tool_concurrency
+
     attr_accessor :max_in_flight
 
     # Whether Workflow buffers events in memory and flushes once at the end of

@@ -90,4 +90,31 @@ NEXO_LIVE=1 NEXO_MODEL=gemma3:12b bundle exec rake test TEST=test/live_smoke_tes
 If Gemma's tool-calling proves too weak, point `NEXO_MODEL` at a stronger model — the gem
 stays provider-neutral; only the smoke target changes.
 
+
+## `max_turns` is a budget, not a hard stop
+
+`Agent#prompt`, `Session#prompt` and `Workflow#run_agent` all take `max_turns:`. On the
+default `Loops::RubyLLM` it **cannot halt a run**: ruby_llm executes the entire tool loop
+inside `Chat#ask`, and the callbacks Nexo wires are observation-only.
+
+What it does do is count tool calls and tell you when the budget is passed:
+
+```ruby
+agent.prompt("Triage the inbox", max_turns: 10) do |type, payload|
+  warn "over budget: #{payload}" if type == :turn_limit_exceeded
+end
+# => :turn_limit_exceeded, { turns: 11, max_turns: 10 }
+```
+
+Emitted once per prompt, not per call.
+
+If you need a **hard** ceiling, the options are:
+
+- bound the work inside your own tools (a read tool that accepts at most N ids);
+- use `Loops::AgentSDK`, whose engine enforces `max_turns` natively;
+- stop the run yourself from the event block.
+
+Treat `max_turns` on the default loop as telemetry. It was previously accepted and never
+read, which made it look like a safety bound it has never been.
+
 ← Back to the [README](../README.md)
