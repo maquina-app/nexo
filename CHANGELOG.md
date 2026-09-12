@@ -1,10 +1,18 @@
 ## [Unreleased]
 
+## [0.12.0] - 2026-09-12
+
+The gem now says exactly which ruby_llm it supports, and its API docs are written in Markdown.
+
 ### Changed
 
 - **`ruby_llm` is now pinned to the 1.16 line (`~> 1.16`, was `>= 1.16`).** The supported
   version is 1.16.0 — every composed API was verified against it. The upcoming ruby_llm 2.0
   is not supported yet, and the pessimistic constraint keeps it from being resolved in.
+- **API documentation is written in Markdown.** RDoc now runs with `markup: markdown`
+  (`.rdoc_options` + the `rake doc` task), and every doc comment under `lib/` was converted
+  from RDoc markup — backtick code spans, `##` headings, fenced code samples. Guides link the
+  `examples/` files by GitHub URL so the links work on rubydoc.info as well as on GitHub.
 
 ## [0.11.0] - 2026-08-20
 
