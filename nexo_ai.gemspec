@@ -43,7 +43,12 @@ Gem::Specification.new do |spec|
   # dependency is ruby_llm, which reaches every LLM provider through one interface.
   # Soft deps (ruby_llm-skills / ruby_llm-mcp / ruby_llm-agent_sdk) are intentionally
   # NOT declared here — they are lazily required in their own specs.
-  spec.add_dependency "ruby_llm", ">= 1.16"
+  #
+  # Pinned to the 1.16 line: every ruby_llm API Nexo composes (Chat#with_tools,
+  # #with_instructions, the before_tool_call/after_tool_result callbacks, the
+  # acts_as_chat persistence layer) was verified against 1.16.0. The upcoming
+  # ruby_llm 2.0 is NOT supported yet — the pessimistic constraint keeps it out.
+  spec.add_dependency "ruby_llm", "~> 1.16"
   spec.add_dependency "zeitwerk", "~> 2.6"
 
   # Dev dependencies. ruby_llm-test stubs models so the suite runs offline (first

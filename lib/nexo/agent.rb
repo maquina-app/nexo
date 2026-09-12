@@ -3,19 +3,21 @@
 module Nexo
   # The DSL that composes a model, a sandbox, permissions, and instructions into
   # a working tool-using agent. Subclass it and declare the pieces with class
-  # macros, then call +#prompt+:
+  # macros, then call `#prompt`:
   #
-  #   class CodeReviewer < Nexo::Agent
-  #     model       ENV.fetch("NEXO_MODEL")
-  #     sandbox     :local
-  #     permissions :read_only
-  #     instructions "You are a careful code reviewer."
-  #   end
+  # ```ruby
+  # class CodeReviewer < Nexo::Agent
+  #   model       ENV.fetch("NEXO_MODEL")
+  #   sandbox     :local
+  #   permissions :read_only
+  #   instructions "You are a careful code reviewer."
+  # end
   #
-  #   CodeReviewer.new(cwd: "/path/to/repo").prompt("Review the auth module")
+  # CodeReviewer.new(cwd: "/path/to/repo").prompt("Review the auth module")
+  # ```
   #
   # No sandbox, permission, or tool object is instantiated by hand. Defaults are
-  # safe: +:virtual+ sandbox + +:read_only+ permissions unless overridden.
+  # safe: `:virtual` sandbox + `:read_only` permissions unless overridden.
   class Agent
     # The class-level ivars every macro reads/writes. Copied to a subclass in
     # .inherited so `class Child < ConfiguredAgent; end` keeps the parent's
@@ -27,7 +29,7 @@ module Nexo
 
     class << self
       # Carries the parent's macro configuration onto a subclass. Arrays/Hashes are
-      # duped so a subclass extending an accumulating macro (e.g. a second +mcp+
+      # duped so a subclass extending an accumulating macro (e.g. a second `mcp`
       # line) never mutates the parent's collection; scalars and shared config
       # instances (a class-level Permissions) are copied by reference.
       def inherited(subclass)
@@ -42,24 +44,24 @@ module Nexo
       end
 
       # Each macro is a reader with no argument and a writer with one. Unset
-      # +sandbox+/+permissions+ fall back to the harness-wide config defaults.
+      # `sandbox`/`permissions` fall back to the harness-wide config defaults.
       def model(value = nil)
         value.nil? ? @model : (@model = value)
       end
 
       # Opt out of ruby_llm's models.json registry validation for this agent so
       # it can run unregistered models (Ollama tags, self-hosted, brand-new
-      # releases). Boolean opt-in: because +nil?+ still distinguishes read from
-      # write, +assume_model_exists false+ is an explicit write (sets +false+),
-      # not a read. Unset reads as +false+, keeping registry validation on.
+      # releases). Boolean opt-in: because `nil?` still distinguishes read from
+      # write, `assume_model_exists false` is an explicit write (sets `false`),
+      # not a read. Unset reads as `false`, keeping registry validation on.
       def assume_model_exists(value = nil)
         value.nil? ? (@assume_model_exists || false) : (@assume_model_exists = value)
       end
 
-      # The provider symbol/string (e.g. +:ollama+) passed straight through to
-      # +RubyLLM.chat+. Required whenever +assume_model_exists+ is set, since
+      # The provider symbol/string (e.g. `:ollama`) passed straight through to
+      # `RubyLLM.chat`. Required whenever `assume_model_exists` is set, since
       # ruby_llm cannot infer a provider once the registry lookup is skipped.
-      # Unset resolves to +nil+.
+      # Unset resolves to `nil`.
       def provider(value = nil)
         value.nil? ? @provider : (@provider = value)
       end
@@ -67,8 +69,8 @@ module Nexo
       # The sandbox macro. With no argument it reads the configured value
       # (falling back to the harness-wide default). With a bare value it stores a
       # symbol/instance as before; with keywords it stores an options Hash
-      # (+{ type: value, **opts }+) resolved by Nexo::Sandboxes.resolve — e.g.
-      # +sandbox :docker, image: "node:22-slim", binds: {...}+.
+      # (`{ type: value, **opts }`) resolved by Nexo::Sandboxes.resolve — e.g.
+      # `sandbox :docker, image: "node:22-slim", binds: {...}`.
       def sandbox(value = nil, **opts)
         return @sandbox || Nexo.config.default_sandbox if value.nil? && opts.empty?
 
@@ -76,28 +78,30 @@ module Nexo
       end
 
       # The permissions macro. With no argument it reads the configured value
-      # (falling back to the harness-wide default, +:read_only+); with a value it
+      # (falling back to the harness-wide default, `:read_only`); with a value it
       # records the mode symbol or a pre-built Permissions instance.
       def permissions(value = nil)
         value.nil? ? (@permissions || Nexo.config.default_permissions) : (@permissions = value)
       end
 
       # The instructions macro. With no argument it reads the stored system
-      # prompt (default +nil+); with a value it records it.
+      # prompt (default `nil`); with a value it records it.
       def instructions(value = nil)
         value.nil? ? @instructions : (@instructions = value)
       end
 
       # Declares the skills attached to this agent. With no args it returns the
-      # configured list (default +[]+); with args it ACCUMULATES the names
-      # (deduped), so multiple +skills+ lines add up instead of the last one
-      # silently replacing the earlier ones — consistent with +mcp+.
+      # configured list (default `[]`); with args it ACCUMULATES the names
+      # (deduped), so multiple `skills` lines add up instead of the last one
+      # silently replacing the earlier ones — consistent with `mcp`.
       #
-      #   class TriageAgent < Nexo::Agent
-      #     model ENV.fetch("NEXO_MODEL")
-      #     skills :triage          # one macro, no loader setup
-      #     skills :formatting      # adds to :triage, does not replace it
-      #   end
+      # ```ruby
+      # class TriageAgent < Nexo::Agent
+      #   model ENV.fetch("NEXO_MODEL")
+      #   skills :triage          # one macro, no loader setup
+      #   skills :formatting      # adds to :triage, does not replace it
+      # end
+      # ```
       def skills(*names)
         names.empty? ? (@skills || []) : (@skills = ((@skills || []) + names).uniq)
       end
@@ -105,22 +109,24 @@ module Nexo
       # What this agent needs from whatever sandbox it runs in — checked once,
       # before the first turn, against Sandbox#environment:
       #
-      #   class Publisher < Nexo::Agent
-      #     skills :dashboard_designer
-      #     requires commands: {"ruby" => ">= 3.1"}, locale: :utf8
-      #   end
+      # ```ruby
+      # class Publisher < Nexo::Agent
+      #   skills :dashboard_designer
+      #   requires commands: {"ruby" => ">= 3.1"}, locale: :utf8
+      # end
+      # ```
       #
       # Declared HERE, in Nexo's own vocabulary, rather than in the skill file:
       # whoever wires an agent to a sandbox is the only person who can *fix* a
       # gap, so the declaration and the fix live in the same place. A skill states
-      # its needs in prose via +compatibility:+, which is the spec's field for it
+      # its needs in prose via `compatibility:`, which is the spec's field for it
       # and is aimed at a human or a model.
       #
-      # +commands:+ maps a command that must be on +PATH+ to a version constraint
-      # — a Gem::Requirement string (+">= 3.1"+) or +"*"+ for "any version". A
-      # command whose version cannot be read (busybox +sh+ prints none) satisfies
+      # `commands:` maps a command that must be on `PATH` to a version constraint
+      # — a Gem::Requirement string (`">= 3.1"`) or `"*"` for "any version". A
+      # command whose version cannot be read (busybox `sh` prints none) satisfies
       # any constraint by being present: an unreadable version is not evidence of
-      # a wrong one. +locale:+ takes +:utf8+ (any UTF-8 locale — the useful case)
+      # a wrong one. `locale:` takes `:utf8` (any UTF-8 locale — the useful case)
       # or an exact String.
       #
       # Deliberately coarse, and never packages: gems, wheels and npm modules
@@ -135,16 +141,18 @@ module Nexo
       # workflow copies out of the sandbox and records on the run as soon as the
       # agent finishes:
       #
-      #   class Publisher < Nexo::Agent
-      #     produces "dashboard.html", "digest.json", "out/*.csv"
-      #   end
+      # ```ruby
+      # class Publisher < Nexo::Agent
+      #   produces "dashboard.html", "digest.json", "out/*.csv"
+      # end
+      # ```
       #
-      # Accumulating and deduped, like +skills+: an agent may produce many
-      # artifacts, and several +produces+ lines add up rather than replacing.
+      # Accumulating and deduped, like `skills`: an agent may produce many
+      # artifacts, and several `produces` lines add up rather than replacing.
       #
-      # This is the agent's OUTPUT, not a template. Workflow#artifact's +from:+
+      # This is the agent's OUTPUT, not a template. Workflow#artifact's `from:`
       # mode renders ERB and is only ever for files you wrote; what an agent
-      # produces is model output and is copied verbatim (Workflow#artifact +path:+).
+      # produces is model output and is copied verbatim (Workflow#artifact `path:`).
       #
       # Declared rather than inferred because a sweep of the sandbox would also
       # collect staged skill scripts, templates and scratch files — and because
@@ -156,15 +164,17 @@ module Nexo
       end
 
       # Declares an MCP server for this agent (Spec 6). Accumulating: multiple
-      # +mcp+ lines are collected. With no args (+name+ nil and +opts+ empty) it
-      # reads the list (default +[]+); otherwise it appends the friendly,
+      # `mcp` lines are collected. With no args (`name` nil and `opts` empty) it
+      # reads the list (default `[]`); otherwise it appends the friendly,
       # transport-shaped config consumed by Nexo::MCP.build.
       #
-      #   class InboxDigest < Nexo::Agent
-      #     model ENV.fetch("NEXO_MODEL")
-      #     mcp :gmail, transport: :stdio, command: "npx", args: %w[-y srv-gmail]
-      #     mcp :fetch, transport: :sse,   url: "http://localhost:8080/sse"
-      #   end
+      # ```ruby
+      # class InboxDigest < Nexo::Agent
+      #   model ENV.fetch("NEXO_MODEL")
+      #   mcp :gmail, transport: :stdio, command: "npx", args: %w[-y srv-gmail]
+      #   mcp :fetch, transport: :sse,   url: "http://localhost:8080/sse"
+      # end
+      # ```
       def mcp(name = nil, **opts)
         return @mcp || [] if name.nil? && opts.empty?
 
@@ -172,36 +182,36 @@ module Nexo
       end
 
       # The MCP tool-name allow-list threaded into this agent's Permissions (see
-      # +mcp_allow:+ in #resolve_permissions). Exact tool-name match only — no
-      # globs. Like +skills+, with args it ACCUMULATES the flattened names as
-      # strings (deduped); with none it reads the list (default +[]+).
+      # `mcp_allow:` in #resolve_permissions). Exact tool-name match only — no
+      # globs. Like `skills`, with args it ACCUMULATES the flattened names as
+      # strings (deduped); with none it reads the list (default `[]`).
       def mcp_allow(*names)
         names.empty? ? (@mcp_allow || []) : (@mcp_allow = ((@mcp_allow || []) + names.flatten.map(&:to_s)).uniq)
       end
 
       # The host allow-list scoping this agent's Nexo::Tools::Fetch (Spec 9).
       # Subdomain-aware, exact-host-suffix matching only — no globs. Like
-      # +skills+/+mcp_allow+, with args it ACCUMULATES the flattened hosts as
-      # strings (deduped); with none it reads the list (default +[]+).
+      # `skills`/`mcp_allow`, with args it ACCUMULATES the flattened hosts as
+      # strings (deduped); with none it reads the list (default `[]`).
       #
-      # Declaring +fetch_allow+ only SCOPES hosts — it does not grant the +:fetch+
-      # capability, which is default-denied like +:shell+. An agent that wants
-      # egress must also run under +:auto+ or carry an explicit
-      # +Permissions.new(mode: :read_only, allow: %i[read glob fetch])+. Both locks
+      # Declaring `fetch_allow` only SCOPES hosts — it does not grant the `:fetch`
+      # capability, which is default-denied like `:shell`. An agent that wants
+      # egress must also run under `:auto` or carry an explicit
+      # `Permissions.new(mode: :read_only, allow: %i[read glob fetch])`. Both locks
       # must open before a fetch happens.
       def fetch_allow(*hosts)
         hosts.empty? ? (@fetch_allow || []) : (@fetch_allow = ((@fetch_allow || []) + hosts.flatten.map(&:to_s)).uniq)
       end
 
       # The host-injected search backend for this agent's Nexo::Tools::WebSearch
-      # (Spec 19). Reader/writer by nil-check, matching the +model+ macro
-      # convention. Any object responding to +search(query, **opts)+ that
-      # returns an Enumerable of +{title:, url:, snippet:}+ rows works — Nexo ships
-      # no backend. Unset reads as +nil+, in which case no search tool is attached.
+      # (Spec 19). Reader/writer by nil-check, matching the `model` macro
+      # convention. Any object responding to `search(query, **opts)` that
+      # returns an Enumerable of `{title:, url:, snippet:}` rows works — Nexo ships
+      # no backend. Unset reads as `nil`, in which case no search tool is attached.
       #
-      # Declaring +search_backend+ does not grant the +:search+ capability, which is
-      # default-denied like +:fetch+/+:shell+. An agent that wants web discovery must
-      # also run under +:auto+ or carry an explicit +allow: [..., :search]+.
+      # Declaring `search_backend` does not grant the `:search` capability, which is
+      # default-denied like `:fetch`/`:shell`. An agent that wants web discovery must
+      # also run under `:auto` or carry an explicit `allow: [..., :search]`.
       def search_backend(obj = nil)
         obj.nil? ? @search_backend : (@search_backend = obj)
       end
@@ -213,8 +223,8 @@ module Nexo
     ALLOWED_TOOLS = %w[Read Write Edit Bash Glob Grep].freeze
 
     # Maps Nexo's permission modes onto AgentSDK's own permission vocabulary,
-    # consumed by Loops::AgentSDK. +:ask+ maps to +:default+ on purpose: human
-    # gating stays in Nexo's own +on_ask+ path and is not delegated to the SDK.
+    # consumed by Loops::AgentSDK. `:ask` maps to `:default` on purpose: human
+    # gating stays in Nexo's own `on_ask` path and is not delegated to the SDK.
     PERMISSION_MODE_MAP = {
       read_only: :default,
       auto: :bypass_permissions,
@@ -222,20 +232,20 @@ module Nexo
     }.freeze
 
     # The resolved per-instance configuration (arg → class macro → config): the
-    # working directory, model, provider, +assume_model_exists+ flag, the resolved
+    # working directory, model, provider, `assume_model_exists` flag, the resolved
     # Sandbox and Permissions, the system instructions, and the injected Loop.
     attr_reader :cwd, :model, :provider, :assume_model_exists, :sandbox, :permissions, :instructions, :loop
 
     # Every argument is optional; each resolves arg -> class macro -> config.
     # Symbol shorthands (:virtual/:local, :read_only/:auto/:ask/:approve) and
-    # pre-built Sandbox/Permissions instances are both accepted. +loop:+ injects
+    # pre-built Sandbox/Permissions instances are both accepted. `loop:` injects
     # the engine that drives a prompt — the provider-neutral Loops::RubyLLM by
     # default, or an opt-in backend like Loops::AgentSDK.
     #
-    # +decision:+ (Spec 16, default +nil+) is a per-run approval answer
-    # (+{approved: true|false}+) threaded into the resolved Permissions so an
-    # +:approve+ gate allows/denies instead of raising Nexo::ApprovalRequired.
-    # It only supplies the *answer* to an already-+:approve+ gate — it never
+    # `decision:` (Spec 16, default `nil`) is a per-run approval answer
+    # (`{approved: true|false}`) threaded into the resolved Permissions so an
+    # `:approve` gate allows/denies instead of raising Nexo::ApprovalRequired.
+    # It only supplies the *answer* to an already-`:approve` gate — it never
     # widens capability. Workflow#run_agent passes it on the resume pass.
     def initialize(cwd: Dir.pwd, model: nil, sandbox: nil, permissions: nil, decision: nil, loop: Loops::RubyLLM.new)
       @cwd = cwd
@@ -253,7 +263,7 @@ module Nexo
       end
 
       # The agent owns (and so closes) its sandbox only when it resolved one from
-      # its own config. A sandbox injected via +sandbox:+ (e.g. Workflow#run_agent
+      # its own config. A sandbox injected via `sandbox:` (e.g. Workflow#run_agent
       # sharing the run's sandbox) is BORROWED — closing it would strand the owner.
       @owns_sandbox = sandbox.nil?
       @sandbox = resolve_sandbox(sandbox || self.class.sandbox)
@@ -266,17 +276,17 @@ module Nexo
     # instances bound to this agent's sandbox and permissions, then layers on the
     # instructions of every declared skill.
     #
-    # +base:+ lets a Nexo::Session pass a persisted +acts_as_chat+ record
-    # (hydrated via ruby_llm's +#to_llm+ delegation) so the very same wiring —
+    # `base:` lets a Nexo::Session pass a persisted `acts_as_chat` record
+    # (hydrated via ruby_llm's `#to_llm` delegation) so the very same wiring —
     # instructions, the four sandbox tools, skills, MCP, fetch — is applied onto
-    # the continuing thread instead of a fresh chat. When +base+ is nil the path
-    # is byte-for-byte the standalone-agent build: a fresh +RubyLLM.chat+. A
+    # the continuing thread instead of a fresh chat. When `base` is nil the path
+    # is byte-for-byte the standalone-agent build: a fresh `RubyLLM.chat`. A
     # session therefore changes only *memory/persistence*, never authority or
     # execution — the record supplies the thread, the agent supplies the wiring.
     #
-    # Re-applying +@instructions+ on every resume stays idempotent because the
-    # persisted-chat +#with_instructions+ (default +append: false+) *replaces* the
-    # stored +role: :system+ messages rather than appending, so the thread keeps
+    # Re-applying `@instructions` on every resume stays idempotent because the
+    # persisted-chat `#with_instructions` (default `append: false`) *replaces* the
+    # stored `role: :system` messages rather than appending, so the thread keeps
     # exactly one copy across resumes (VERIFIED, ruby_llm 1.16.0).
     def chat(base: nil)
       c = base || RubyLLM.chat(**chat_model_options)
@@ -310,8 +320,8 @@ module Nexo
 
     # Runs one prompt through the agent by delegating to the injected loop. The
     # loop body that used to live here is now in Loops::RubyLLM (the default),
-    # so swapping +loop:+ swaps the engine without touching this class. The
-    # optional +&on_event+ block receives +(type, payload)+ progress events.
+    # so swapping `loop:` swaps the engine without touching this class. The
+    # optional `&on_event` block receives `(type, payload)` progress events.
     def prompt(text, max_turns: 25, &on_event)
       verify_environment!
       @loop.run(agent: self, prompt: text, max_turns: max_turns, &on_event)
@@ -323,7 +333,7 @@ module Nexo
     #
     # Fails BEFORE the model is called, because the alternative is what this
     # exists to prevent: the agent spends turns deciding to run a script, runs it,
-    # and gets +sh: ruby: not found+ or an Encoding::InvalidByteSequenceError three
+    # and gets `sh: ruby: not found` or an Encoding::InvalidByteSequenceError three
     # frames into a JSON parse. One legible sentence naming what is missing and
     # where beats a stack trace after the fact.
     #
@@ -366,8 +376,8 @@ module Nexo
       missing
     end
 
-    # Whether a found command's version fails +constraint+. A missing version, an
-    # unparseable constraint, or +"*"+ all pass: presence is the requirement, and
+    # Whether a found command's version fails `constraint`. A missing version, an
+    # unparseable constraint, or `"*"` all pass: presence is the requirement, and
     # an unreadable version is not evidence of a wrong one.
     def version_short?(version, constraint)
       return false if version.nil? || constraint.nil? || constraint.to_s.strip == "*"
@@ -377,7 +387,7 @@ module Nexo
       false
     end
 
-    # +:utf8+ asks for any UTF-8 locale (the only case that comes up in practice);
+    # `:utf8` asks for any UTF-8 locale (the only case that comes up in practice);
     # a String asks for that exact locale. An unset locale never satisfies either
     # — that is the container default, and the bug this catches.
     def locale_unmet?(required, actual)
@@ -409,11 +419,11 @@ module Nexo
 
     # Releases any MCP server connections held by this agent instance. Clients are
     # memoized on the instance and reused across prompts (Spec 6 lifecycle default),
-    # so a long-lived agent holding stdio/SSE servers should call +#close+ when
+    # so a long-lived agent holding stdio/SSE servers should call `#close` when
     # done. Idempotent: safe to call with no MCP servers attached or more than once.
     #
-    # VERIFY (Group 0, ruby_llm-mcp 1.0.0): the client teardown method is +#stop+
-    # (guarded by +respond_to?+, falling back to +#close+ for other client shapes).
+    # VERIFY (Group 0, ruby_llm-mcp 1.0.0): the client teardown method is `#stop`
+    # (guarded by `respond_to?`, falling back to `#close` for other client shapes).
     def close
       @mcp_clients&.each do |client|
         if client.respond_to?(:stop)
@@ -429,9 +439,9 @@ module Nexo
       @mcp_clients = nil
 
       # Release the sandbox too, so a container/remote-backed agent doesn't leak
-      # its container/connection when the caller only remembers +close+. Only close
+      # its container/connection when the caller only remembers `close`. Only close
       # a sandbox this agent OWNS (resolved from its own config) — a borrowed one
-      # (injected via +sandbox:+, e.g. Workflow#run_agent's shared run sandbox) is
+      # (injected via `sandbox:`, e.g. Workflow#run_agent's shared run sandbox) is
       # the injector's to close. The base Sandbox#close is a no-op, so this is safe
       # and idempotent for :virtual/:local. Best-effort: never raise out of close.
       if @owns_sandbox
@@ -445,10 +455,10 @@ module Nexo
 
     private
 
-    # Builds the +RubyLLM.chat+ options conditionally so the default agent's
-    # call is byte-for-byte what it was before this feature: +{model: @model}+.
-    # +provider+ is added only when resolved; +assume_model_exists: true+ only
-    # when opted in (never passed as +false+).
+    # Builds the `RubyLLM.chat` options conditionally so the default agent's
+    # call is byte-for-byte what it was before this feature: `{model: @model}`.
+    # `provider` is added only when resolved; `assume_model_exists: true` only
+    # when opted in (never passed as `false`).
     def chat_model_options
       opts = {model: @model}
       opts[:provider] = @provider if @provider
@@ -456,18 +466,18 @@ module Nexo
       opts
     end
 
-    # Applies the full system-prompt stack to +chat+ in deterministic order: the
+    # Applies the full system-prompt stack to `chat` in deterministic order: the
     # agent's own instructions, then the self-describing sandbox instructions (R1),
     # then each declared skill's body. A skill contributes instructions only — it
     # ships no independent tools (its scripts/references are reached through the
     # already-gated sandbox tools), so attaching one never widens the agent.
     #
-    # The FIRST contribution is applied with +append: false+ and the rest with
-    # +append: true+. On a fresh chat that is byte-for-byte the prior behavior; on
-    # a Nexo::Session's persisted, re-hydrated chat the leading +append: false+
-    # collapses all prior +role: :system+ messages to one before the rest
+    # The FIRST contribution is applied with `append: false` and the rest with
+    # `append: true`. On a fresh chat that is byte-for-byte the prior behavior; on
+    # a Nexo::Session's persisted, re-hydrated chat the leading `append: false`
+    # collapses all prior `role: :system` messages to one before the rest
     # re-append, so N resumes keep exactly ONE copy of the stack — even when the
-    # agent declares no +instructions+ (the case that previously let skills/sandbox
+    # agent declares no `instructions` (the case that previously let skills/sandbox
     # instructions accumulate a fresh copy per resume).
     def apply_instructions(chat)
       texts = []
@@ -482,9 +492,9 @@ module Nexo
     end
 
     # One skill's contribution to the system prompt: its body, plus its
-    # +compatibility:+ frontmatter when set.
+    # `compatibility:` frontmatter when set.
     #
-    # +compatibility:+ is the Agent Skills spec's own field for what a skill needs
+    # `compatibility:` is the Agent Skills spec's own field for what a skill needs
     # in order to run ("requires a Ruby interpreter and a UTF-8 locale"), and it is
     # free text by design — the spec deliberately does not make it machine-checkable.
     # Nexo parsed it and then dropped it, so the one place an author can state a
@@ -494,9 +504,9 @@ module Nexo
     # the thing.
     #
     # Labelled rather than concatenated, so the model can tell a requirement from an
-    # instruction. Absent or blank +compatibility:+ contributes nothing, leaving the
-    # prompt byte-for-byte as before for every skill that does not set it. +license:+
-    # and +allowed-tools:+ are deliberately NOT surfaced: the first is prompt noise,
+    # instruction. Absent or blank `compatibility:` contributes nothing, leaving the
+    # prompt byte-for-byte as before for every skill that does not set it. `license:`
+    # and `allowed-tools:` are deliberately NOT surfaced: the first is prompt noise,
     # and the second would be a second source of truth about what an agent may do,
     # competing with Nexo::Permissions, which is the real gate.
     def skill_instructions(skill)
@@ -510,14 +520,14 @@ module Nexo
     # Lazily connects the declared MCP servers and attaches their tools, each
     # wrapped in a MCP::GatedTool so every invocation is authorized through this
     # agent's Permissions first. Attached after the four sandbox tools and the
-    # skills, so MCP tools fire the chat's +before_tool_call+/+after_tool_result+
+    # skills, so MCP tools fire the chat's `before_tool_call`/`after_tool_result`
     # callbacks (wired in Loops::RubyLLM) and appear in the run's event log with
     # no extra wiring. Returns early when no server is declared.
     #
     # Clients are built once and memoized on the instance (Spec 6 lifecycle
-    # default): the +ruby_llm-mcp+ client connects on construction and is reusable
-    # across prompts, so subsequent +#chat+ calls reuse the live connections until
-    # #close. VERIFY (Group 0): tools accessor is +client.tools+ (an Array).
+    # default): the `ruby_llm-mcp` client connects on construction and is reusable
+    # across prompts, so subsequent `#chat` calls reuse the live connections until
+    # #close. VERIFY (Group 0): tools accessor is `client.tools` (an Array).
     def apply_mcp(chat)
       return if self.class.mcp.empty?
 
@@ -528,9 +538,9 @@ module Nexo
       chat.with_tools(*gated) unless gated.empty?
     end
 
-    # Applies Nexo.config.tool_concurrency to the chat, LAST — every +with_tools+ call
+    # Applies Nexo.config.tool_concurrency to the chat, LAST — every `with_tools` call
     # resets the chat's concurrency to its current value, so setting it before the
-    # tools are attached would be undone. +nil+ leaves RubyLLM's own setting alone.
+    # tools are attached would be undone. `nil` leaves RubyLLM's own setting alone.
     def apply_tool_concurrency(chat)
       mode = Nexo.config.tool_concurrency
       return if mode.nil?
@@ -547,30 +557,32 @@ module Nexo
     # recording timings, redacting a field. A third-party MCP server's response shape
     # is not yours to change, and its tools are attached by the harness rather than by
     # you, so without this seam the only way in was to override the private
-    # +#apply_mcp+.
+    # `#apply_mcp`.
     #
-    #   class MailAgent < Nexo::Agent
-    #     mcp :mail, transport: :stdio, command: "apple-mail-mcp"
+    # ```ruby
+    # class MailAgent < Nexo::Agent
+    #   mcp :mail, transport: :stdio, command: "apple-mail-mcp"
+    # ```
     #
     #     def wrap_mcp_tool(tool)
     #       CappedTool.new(tool: tool, max_chars: 4_000)
     #     end
     #   end
     #
-    # A wrapper must keep the duck type the chat relies on — +#name+, +#description+,
-    # +#params_schema+ and +#call+. GatedTool delegates the rest through
-    # +method_missing+, so wrappers compose. Gating happens underneath, so a wrapper
+    # A wrapper must keep the duck type the chat relies on — `#name`, `#description`,
+    # `#params_schema` and `#call`. GatedTool delegates the rest through
+    # `method_missing`, so wrappers compose. Gating happens underneath, so a wrapper
     # only ever sees an already-authorized call: wrapping cannot widen what the agent
     # may do.
     def wrap_mcp_tool(tool)
       tool
     end
 
-    # Attaches a single Nexo::Tools::Fetch scoped to the agent's +fetch_allow+
+    # Attaches a single Nexo::Tools::Fetch scoped to the agent's `fetch_allow`
     # hosts (Spec 9). Returns early when no host is declared, so an agent that never
-    # calls +fetch_allow+ gets no fetch tool. Attached right after +apply_mcp+ so
-    # the tool participates in the chat's +before_tool_call+/+after_tool_result+
-    # event stream (wired in Loops::RubyLLM) with no extra wiring. The +:fetch+
+    # calls `fetch_allow` gets no fetch tool. Attached right after `apply_mcp` so
+    # the tool participates in the chat's `before_tool_call`/`after_tool_result`
+    # event stream (wired in Loops::RubyLLM) with no extra wiring. The `:fetch`
     # capability itself is gated through Permissions#authorize! at call time — the
     # allow-list only scopes hosts, it is not the capability grant.
     def apply_fetch(chat)
@@ -586,11 +598,11 @@ module Nexo
     end
 
     # Attaches a single Nexo::Tools::WebSearch bound to the agent's injected
-    # +search_backend+ (Spec 19). Returns early when no backend is declared, so an
-    # agent that never calls +search_backend+ gets no search tool — existing agents
-    # are byte-for-byte unchanged. Attached right after +apply_fetch+ so the tool
-    # rides the same +before_tool_call+/+after_tool_result+ event stream (wired in
-    # Loops::RubyLLM) with no extra wiring. The +:search+ capability itself is gated
+    # `search_backend` (Spec 19). Returns early when no backend is declared, so an
+    # agent that never calls `search_backend` gets no search tool — existing agents
+    # are byte-for-byte unchanged. Attached right after `apply_fetch` so the tool
+    # rides the same `before_tool_call`/`after_tool_result` event stream (wired in
+    # Loops::RubyLLM) with no extra wiring. The `:search` capability itself is gated
     # through Permissions#authorize! at call time.
     def apply_search(chat)
       backend = self.class.search_backend or return
@@ -602,8 +614,8 @@ module Nexo
     end
 
     # Resolves this agent's sandbox declaration via the shared resolver (Spec 15),
-    # passing the agent's instance +@cwd+ as the host working directory (used only
-    # by +:local+; container tiers keep their own +/workspace+ default).
+    # passing the agent's instance `@cwd` as the host working directory (used only
+    # by `:local`; container tiers keep their own `/workspace` default).
     def resolve_sandbox(value) = Sandboxes.resolve(value, cwd: @cwd)
 
     def resolve_permissions(value, decision: nil)

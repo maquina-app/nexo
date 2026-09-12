@@ -10,3 +10,6 @@
 *.gem
 
 /Gemfile.lock
+
+# Local planning notes, not part of the shipped docs
+/docs/SITE_DOCS_PLAN.md

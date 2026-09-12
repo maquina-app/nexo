@@ -7,21 +7,23 @@ module Nexo
   module Generators
     # Scaffolds an Agent Skills package in a host Rails app:
     #
-    #   rails g nexo:skill triage
+    # ```sh
+    # rails g nexo:skill triage
+    # ```
     #
-    # creates +app/skills/triage/SKILL.md+ (valid frontmatter + placeholder
+    # creates `app/skills/triage/SKILL.md` (valid frontmatter + placeholder
     # process steps, per agentskills.io/specification) and a kept
-    # +app/skills/triage/references/+ directory for supporting docs the skill can
-    # cite. Reference it from an agent with the +skills :triage+ macro.
+    # `app/skills/triage/references/` directory for supporting docs the skill can
+    # cite. Reference it from an agent with the `skills :triage` macro.
     #
-    # Rails-coupled, like Nexo's other generators: it requires +rails/generators+
+    # Rails-coupled, like Nexo's other generators: it requires `rails/generators`
     # at load time and is never autoloaded by the plain-Ruby core, so
-    # +require "nexo"+ with no Rails present neither defines nor fails on it.
+    # `require "nexo"` with no Rails present neither defines nor fails on it.
     class SkillGenerator < Rails::Generators::NamedBase
       source_root File.expand_path("templates", __dir__)
 
-      # Generation step: scaffold +app/skills/<name>/+ with a kept +references/+
-      # directory and a valid +SKILL.md+ rendered from the template.
+      # Generation step: scaffold `app/skills/<name>/` with a kept `references/`
+      # directory and a valid `SKILL.md` rendered from the template.
       def create_skill_package
         empty_directory File.join(skill_root, "references")
         # An empty references/ would not survive git; .keep keeps it tracked.

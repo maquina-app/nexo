@@ -467,6 +467,16 @@ Match the agent to the file type touched; skip an agent when no file of its type
   the spec's counter `grep -rEc "\{[A-Z]…\}" lib` bottoms out at 2 (those interpolations), NOT 0; the
   comment cross-ref count IS 0. Every lib `.rb` diff is comment-only (verified: no non-comment line
   changed), so `rake test` is untouched.
+- **All doc comments are Markdown, not RDoc markup (project-wide `markup: markdown`).** `.rdoc_options`
+  (tracked, so `gem rdoc`/rubydoc.info honor it) and `rd.markup = "markdown"` in the `Rakefile` switch
+  every `lib/**/*.rb` comment to RDoc's Markdown parser. Write `` `code` `` (never `+code+`/`<tt>`),
+  `## Heading` (never `== Heading`), and fenced ```` ```ruby ```` / ```` ```sh ```` blocks for samples
+  (never the 2-space-indented RDoc verbatim form — under Markdown it renders as a plain paragraph).
+  Cross-refs still auto-link inside code spans (`` `Nexo::Foo` ``, `` `#prompt` `` → linked `<code>`),
+  verified against rdoc 7.2.0. A `+…+` span must not wrap across comment lines and a comment line must
+  not start with `+ ` (Markdown reads it as a list bullet). No YARD tags (`@return`, `@param`) — RDoc
+  renders them as literal text. Relative links from `docs/*.md` to `examples/*` are rewritten by RDoc to
+  `…_rb.html` pages that don't exist in the site, so guides link examples by GitHub blob URL instead.
 
 - **MCP OAuth header key + construction-only refresh (Spec 18, VERIFIED ruby_llm-mcp 1.0.0).**
   `MCP.build(name:, transport:, token: nil, **config)` gained a `token:` (static String or callable)

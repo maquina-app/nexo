@@ -9,22 +9,22 @@ module Nexo
   # (which records) and Tools::WriteFile (which enforces). Scope is clobber
   # safety *within a session* only: no versioning, no locking, no VCS semantics.
   class ReadTracker
-    # Starts an empty tracker (an internal +path => mtime+ map).
+    # Starts an empty tracker (an internal `path => mtime` map).
     def initialize
       @mtimes = {}
     end
 
-    # Records that +path+ was read when it had modification time +mtime+.
+    # Records that `path` was read when it had modification time `mtime`.
     def record(path, mtime)
       @mtimes[path] = mtime
     end
 
-    # Whether +path+ has been read in this session.
+    # Whether `path` has been read in this session.
     def read?(path)
       @mtimes.key?(path)
     end
 
-    # The mtime recorded when +path+ was read, or +nil+ if it was never read.
+    # The mtime recorded when `path` was read, or `nil` if it was never read.
     def recorded_mtime(path)
       @mtimes[path]
     end

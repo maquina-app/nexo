@@ -2,56 +2,56 @@
 
 module Nexo
   # The authorization gate for a sandbox's capabilities. Each tool asks
-  # +authorize!+ before it touches the sandbox, so gating is provider-independent
+  # `authorize!` before it touches the sandbox, so gating is provider-independent
   # and does not rely on any framework callback.
   #
   # Modes:
-  # * +:auto+      — allow everything.
-  # * +:read_only+ — allow +:read+/+:glob+, deny +:write+/+:shell+/+:fetch+/+:search+ (the default).
-  # * +:ask+       — defer to +on_ask+; a truthy return allows, anything else denies.
-  # * +:approve+   — durable, cross-process sibling of +:ask+ (Spec 16): with no
-  #   +decision+ it raises Nexo::ApprovalRequired (→ Workflow#run_agent
-  #   suspends the run); with +{approved: true}+ it allows, with
-  #   +{approved: false}+ it Denied denies.
+  # * `:auto`      — allow everything.
+  # * `:read_only` — allow `:read`/`:glob`, deny `:write`/`:shell`/`:fetch`/`:search` (the default).
+  # * `:ask`       — defer to `on_ask`; a truthy return allows, anything else denies.
+  # * `:approve`   — durable, cross-process sibling of `:ask` (Spec 16): with no
+  #   `decision` it raises Nexo::ApprovalRequired (→ Workflow#run_agent
+  #   suspends the run); with `{approved: true}` it allows, with
+  #   `{approved: false}` it Denied denies.
   #
-  # Capabilities are +:read+, +:glob+, +:write+, +:shell+, +:fetch+, +:search+.
-  # Anything listed in +allow:+ is permitted regardless of mode.
+  # Capabilities are `:read`, `:glob`, `:write`, `:shell`, `:fetch`, `:search`.
+  # Anything listed in `allow:` is permitted regardless of mode.
   class Permissions
-    # The recognized permission modes: +:auto+, +:read_only+, +:ask+, +:approve+.
+    # The recognized permission modes: `:auto`, `:read_only`, `:ask`, `:approve`.
     MODES = %i[auto read_only ask approve].freeze
 
-    # The capabilities +:read_only+ refuses. Named once so #authorize! and
+    # The capabilities `:read_only` refuses. Named once so #authorize! and
     # #never_allows? cannot drift apart: the whole value of the predicate is that
     # it reports what the gate will actually do, so both must read the same list.
     PRIVILEGED = %i[write shell fetch search].freeze
 
     # Raised when a capability is not authorized. Tools rescue this and return
-    # +{ error: ... }+ so the agent loop continues.
+    # `{ error: ... }` so the agent loop continues.
     class Denied < StandardError; end
 
     # The configured Nexo permission mode (one of MODES). Read by the agent to
     # map onto an opt-in backend's own permission vocabulary (see
-    # +Agent#permission_mode+).
+    # `Agent#permission_mode`).
     attr_reader :mode
 
-    # The approval decision under +:approve+ (Spec 16): +nil+ (undecided ⇒
-    # suspend) or a +{approved: true|false}+ Hash. Writable after construction so
+    # The approval decision under `:approve` (Spec 16): `nil` (undecided ⇒
+    # suspend) or a `{approved: true|false}` Hash. Writable after construction so
     # Workflow#run_agent can thread a resume decision into an
-    # already-resolved +:approve+ gate without rebuilding it. Ignored by every
+    # already-resolved `:approve` gate without rebuilding it. Ignored by every
     # other mode.
     attr_accessor :decision
 
-    # +ask_when:+ is an optional +->(capability, detail)+ predicate that scopes
-    # *which* actions actually prompt under +:ask+ (and, unchanged, under
-    # +:approve+): when it returns falsey the action is auto-allowed without
-    # calling +on_ask+ / requiring a decision; truthy (or when unset) falls
-    # through to +on_ask+ / the approval gate exactly as before. It only ever
+    # `ask_when:` is an optional `->(capability, detail)` predicate that scopes
+    # *which* actions actually prompt under `:ask` (and, unchanged, under
+    # `:approve`): when it returns falsey the action is auto-allowed without
+    # calling `on_ask` / requiring a decision; truthy (or when unset) falls
+    # through to `on_ask` / the approval gate exactly as before. It only ever
     # *narrows* what is auto-allowed from the "ask/approve for everything"
     # baseline — it never widens authority. Applies to #authorize! only, not
-    # #authorize_mcp!. +approve_when:+ is an alias that maps onto the same
+    # #authorize_mcp!. `approve_when:` is an alias that maps onto the same
     # predicate (there is one predicate, not two — Spec 16 Q4).
     #
-    # +decision:+ (default +nil+) seeds the +:approve+ decision (see #decision).
+    # `decision:` (default `nil`) seeds the `:approve` decision (see #decision).
     def initialize(mode: :read_only, allow: %i[read glob], mcp_allow: [], on_ask: nil, ask_when: nil,
       approve_when: nil, decision: nil)
       raise ArgumentError, "unknown mode #{mode}" unless MODES.include?(mode)
@@ -64,16 +64,16 @@ module Nexo
       @decision = decision
     end
 
-    # Returns a copy of this gate carrying +decision+ (a +{approved: …}+ Hash or
-    # +nil+), leaving the receiver untouched (Spec 16). Used to thread a per-run
-    # resume decision into a user-supplied, class-level +:approve+ +Permissions+
+    # Returns a copy of this gate carrying `decision` (a `{approved: …}` Hash or
+    # `nil`), leaving the receiver untouched (Spec 16). Used to thread a per-run
+    # resume decision into a user-supplied, class-level `:approve` `Permissions`
     # without mutating the shared instance.
     def with_decision(decision)
       dup.tap { |copy| copy.decision = decision }
     end
 
-    # Authorizes +capability+ (with optional +detail+ passed to an +:ask+ hook).
-    # Returns +true+ when allowed; raises Denied otherwise.
+    # Authorizes `capability` (with optional `detail` passed to an `:ask` hook).
+    # Returns `true` when allowed; raises Denied otherwise.
     def authorize!(capability, detail = nil)
       return true if @allow.include?(capability)
 
@@ -113,12 +113,12 @@ module Nexo
       end
     end
 
-    # Whether +capability+ can NEVER be authorized by this gate, for any call.
+    # Whether `capability` can NEVER be authorized by this gate, for any call.
     #
-    # True only under +:read_only+, for a PRIVILEGED capability absent from
-    # +allow:+ — that is the one case knowable ahead of time. Every other mode
-    # decides per call and must be reported as *possible*: +:auto+ allows, +:ask+
-    # consults its hook, and +:approve+ has to reach the gate so it can raise
+    # True only under `:read_only`, for a PRIVILEGED capability absent from
+    # `allow:` — that is the one case knowable ahead of time. Every other mode
+    # decides per call and must be reported as *possible*: `:auto` allows, `:ask`
+    # consults its hook, and `:approve` has to reach the gate so it can raise
     # ApprovalRequired and suspend the run.
     #
     # Agent#chat uses this to skip ATTACHING a tool the model could never
@@ -135,19 +135,19 @@ module Nexo
     # Authorizes an MCP tool *call* by name. A deliberate sibling of #authorize!
     # on a separate capability axis: an MCP tool runs inside the MCP server,
     # outside the sandbox, so this gates the authority to *invoke* it — a different
-    # guarantee than sandbox capability. Fails closed under +:read_only+ (nothing
-    # allowed unless the exact +tool_name+ is listed in +mcp_allow+).
+    # guarantee than sandbox capability. Fails closed under `:read_only` (nothing
+    # allowed unless the exact `tool_name` is listed in `mcp_allow`).
     #
-    # * +:auto+      — allow every MCP tool.
-    # * +:read_only+ — allow only names in +mcp_allow+ (default +[]+ ⇒ deny all).
-    # * +:ask+       — defer to +on_ask+ with +(:mcp, {tool:, args:})+; a truthy
+    # * `:auto`      — allow every MCP tool.
+    # * `:read_only` — allow only names in `mcp_allow` (default `[]` ⇒ deny all).
+    # * `:ask`       — defer to `on_ask` with `(:mcp, {tool:, args:})`; a truthy
     #   return allows, anything else denies.
-    # * +:approve+   — durable sibling of +:ask+ on the MCP axis: names in
-    #   +mcp_allow+ are pre-approved, anything else needs a decision — undecided
-    #   raises Nexo::ApprovalRequired (→ Workflow#run_agent suspends), +approved+
-    #   allows, +approved: false+ Denies.
+    # * `:approve`   — durable sibling of `:ask` on the MCP axis: names in
+    #   `mcp_allow` are pre-approved, anything else needs a decision — undecided
+    #   raises Nexo::ApprovalRequired (→ Workflow#run_agent suspends), `approved`
+    #   allows, `approved: false` Denies.
     #
-    # Returns +true+ when allowed; raises Denied otherwise. The +else+ is a
+    # Returns `true` when allowed; raises Denied otherwise. The `else` is a
     # fail-closed backstop: a future mode that forgets to extend this gate denies
     # by default rather than silently allowing (the bug this replaced).
     def authorize_mcp!(tool_name, args = {})

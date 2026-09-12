@@ -3,11 +3,11 @@
 module Nexo
   # The sandbox-backed, permission-gated tools Nexo attaches to an agent's chat:
   # ReadFile, WriteFile, Shell, Glob, and Fetch. Each authorizes a capability
-  # against the agent's Permissions before acting and returns +{ error: ... }+ on
+  # against the agent's Permissions before acting and returns `{ error: ... }` on
   # a denial rather than raising into the tool loop.
   module Tools
-    # Reads a file from the agent's sandbox. Authorizes +:read+ before touching
-    # the sandbox; a denial or a missing file is returned as +{ error: ... }+ so
+    # Reads a file from the agent's sandbox. Authorizes `:read` before touching
+    # the sandbox; a denial or a missing file is returned as `{ error: ... }` so
     # the model can adapt instead of the loop crashing.
     class ReadFile < RubyLLM::Tool
       description "Read a file from the workspace."
@@ -18,8 +18,8 @@ module Nexo
       # guard is unaffected — it records the file's mtime, not its content.
       MAX_BYTES = 200_000
 
-      # +tracker:+ is an optional ReadTracker shared with Tools::WriteFile
-      # for the read-before-write + stale guard. Default +nil+ ⇒ nothing is
+      # `tracker:` is an optional ReadTracker shared with Tools::WriteFile
+      # for the read-before-write + stale guard. Default `nil` ⇒ nothing is
       # recorded, preserving direct-construction behavior.
       def initialize(sandbox:, permissions:, tracker: nil)
         @sandbox = sandbox
@@ -28,8 +28,8 @@ module Nexo
         super()
       end
 
-      # Authorizes +:read+, reads +path+ from the sandbox, records +(path, mtime)+
-      # on the tracker (if any), and returns the content — or +{ error: ... }+ on a
+      # Authorizes `:read`, reads `path` from the sandbox, records `(path, mtime)`
+      # on the tracker (if any), and returns the content — or `{ error: ... }` on a
       # denied read or a missing file.
       def execute(path:)
         @permissions.authorize!(:read, path)

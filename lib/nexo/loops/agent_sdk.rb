@@ -2,25 +2,25 @@
 
 module Nexo
   module Loops
-    # An opt-in, Anthropic-oriented loop that delegates to +ruby_llm-agent_sdk+'s
-    # own engine: native +max_turns+, permission modes, and the SDK's built-in
+    # An opt-in, Anthropic-oriented loop that delegates to `ruby_llm-agent_sdk`'s
+    # own engine: native `max_turns`, permission modes, and the SDK's built-in
     # tools. It is NOT the default and is not provider-neutral — choose it
-    # explicitly with +loop: Nexo::Loops::AgentSDK.new+ when you are on Anthropic
+    # explicitly with `loop: Nexo::Loops::AgentSDK.new` when you are on Anthropic
     # and want the Claude fast path.
     #
     # The trade vs. Loops::RubyLLM: this leans on the SDK's own built-in tools
     # and runs in the host process, so it does NOT execute through Nexo's
-    # pluggable sandbox. That is the documented cost of the native +max_turns+
+    # pluggable sandbox. That is the documented cost of the native `max_turns`
     # hard cap (see the turn-cap caveat in the README).
     #
-    # +ruby_llm-agent_sdk+ is a SOFT dependency: it is required lazily inside
-    # +#run+ and, when absent, surfaces as a Nexo::MissingDependencyError with
-    # install guidance — +require "nexo"+ without the gem never raises.
+    # `ruby_llm-agent_sdk` is a SOFT dependency: it is required lazily inside
+    # `#run` and, when absent, surfaces as a Nexo::MissingDependencyError with
+    # install guidance — `require "nexo"` without the gem never raises.
     #
     # VERIFY-on-install: the gem is not installed in this environment, so
-    # +RubyLLM::AgentSDK.query+'s exact signature and the +:result+ terminal
+    # `RubyLLM::AgentSDK.query`'s exact signature and the `:result` terminal
     # message shape below remain provisional (per references.md). Confirm them
-    # against the +ruby_llm-agent_sdk+ README the moment the gem is added and
+    # against the `ruby_llm-agent_sdk` README the moment the gem is added and
     # record the result under "Verified APIs".
     class AgentSDK < Nexo::Loop
       def run(agent:, prompt:, max_turns: 25, chat: nil, &on_event)
@@ -53,9 +53,9 @@ module Nexo
 
       private
 
-      # Lazily loads the opt-in +ruby_llm-agent_sdk+ gem. The rescue wraps ONLY the
+      # Lazily loads the opt-in `ruby_llm-agent_sdk` gem. The rescue wraps ONLY the
       # require (mirroring Skills.load!/MCP.load!), so a LoadError raised from
-      # inside the SDK's own +query+ or the caller's block is NOT mislabeled as a
+      # inside the SDK's own `query` or the caller's block is NOT mislabeled as a
       # missing-gem error.
       def load_sdk!
         require "ruby_llm/agent_sdk" # VERIFY exact require path on install

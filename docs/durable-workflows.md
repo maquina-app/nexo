@@ -61,7 +61,7 @@ run:
 DocumentApproval.resume_later(run.id, { approved: true }, queue: :nexo)
 ```
 
-See [`examples/approval_workflow.rb`](../examples/approval_workflow.rb) for the full
+See [`examples/approval_workflow.rb`](https://github.com/maquina-app/nexo/blob/main/examples/approval_workflow.rb) for the full
 offline flow (`ruby -Ilib examples/approval_workflow.rb`).
 
 ## Parallel checkpoints — `checkpoint_all`
@@ -187,7 +187,7 @@ resumed.status                                 # => "done" (the gate allowed the
   `ruby_llm` swallows tool exceptions, tool-triggered approval would be constrained — a
   genuine upstream dependency, stated plainly.
 
-See [`examples/approval_agent.rb`](../examples/approval_agent.rb) for the live flow
+See [`examples/approval_agent.rb`](https://github.com/maquina-app/nexo/blob/main/examples/approval_agent.rb) for the live flow
 (`NEXO_LIVE=1 NEXO_MODEL=… ruby -Ilib examples/approval_agent.rb`).
 
 The `state` column ships with fresh installs. Apps installed before this feature
