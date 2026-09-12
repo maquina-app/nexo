@@ -14,11 +14,11 @@ require_relative "nexo/version"
 # Nexo composes the RubyLLM ecosystem into one front door, adding a
 # Sandbox + Permissions seam and a WorkflowRun lifecycle primitive.
 #
-# The published gem is +nexo_ai+; the Ruby namespace is always +Nexo+.
+# The published gem is `nexo_ai`; the Ruby namespace is always `Nexo`.
 module Nexo
   # Base class for every error Nexo raises. Library misuse (programmer/config
   # errors) raises one of these; tool runtime failures do not — they return
-  # a Hash with an +:error+ key so the model can recover.
+  # a Hash with an `:error` key so the model can recover.
   class Error < StandardError; end
 
   # Raised when an optional (soft) dependency is required but not installed.
@@ -30,29 +30,29 @@ module Nexo
   # no model and no configured default).
   class ConfigurationError < Error; end
 
-  # Raised when an agent's declared +requires+ are not met by the sandbox it is
-  # about to run in — no interpreter on +PATH+, or no UTF-8 locale. A
+  # Raised when an agent's declared `requires` are not met by the sandbox it is
+  # about to run in — no interpreter on `PATH`, or no UTF-8 locale. A
   # configuration error in spirit, but named separately because the fix is in the
   # image or the sandbox wiring rather than in the Ruby.
   class EnvironmentError < ConfigurationError; end
 
-  # Control-flow signal raised by the +:approve+ permission gate (Spec 16) when a
+  # Control-flow signal raised by the `:approve` permission gate (Spec 16) when a
   # capability needs a human decision and none has been threaded in yet. Unlike
-  # Permissions::Denied ("no, adapt" — tools rescue it into +{error:}+),
-  # +ApprovalRequired+ means "pause and ask a human": tools must **not** rescue
-  # it, so it propagates out of the +ruby_llm+ tool loop and out of
+  # Permissions::Denied ("no, adapt" — tools rescue it into `{error:}`),
+  # `ApprovalRequired` means "pause and ask a human": tools must **not** rescue
+  # it, so it propagates out of the `ruby_llm` tool loop and out of
   # Agent#prompt, where Workflow#run_agent catches it and turns it into a
-  # durable Workflow#suspend!. It subclasses +StandardError+ directly (not
+  # durable Workflow#suspend!. It subclasses `StandardError` directly (not
   # Error), mirroring Permissions::Denied's base — it is a signal, not a
-  # library-misuse error. Carries the pending call's +capability+, +detail+ (the
-  # tool/path), and +args+ so a host can render the approval prompt from
-  # +run.state["__approval__"]+.
+  # library-misuse error. Carries the pending call's `capability`, `detail` (the
+  # tool/path), and `args` so a host can render the approval prompt from
+  # `run.state["__approval__"]`.
   class ApprovalRequired < StandardError
-    # The pending call's capability (e.g. +:write+), its +detail+ (the tool/path),
-    # and the tool +args+ — enough for a host to render the approval prompt.
+    # The pending call's capability (e.g. `:write`), its `detail` (the tool/path),
+    # and the tool `args` — enough for a host to render the approval prompt.
     attr_reader :capability, :detail, :args
 
-    # Builds the signal for +capability+ acting on +detail+ with +args+; the
+    # Builds the signal for `capability` acting on `detail` with `args`; the
     # message reads "approval required for <capability> (<detail>)".
     def initialize(capability, detail = nil, args = nil)
       @capability = capability
@@ -65,7 +65,9 @@ module Nexo
   class << self
     # Yields the singleton Configuration for in-place setup and returns it.
     #
-    #   Nexo.configure { |config| config.default_model = ENV["NEXO_MODEL"] }
+    # ```ruby
+    # Nexo.configure { |config| config.default_model = ENV["NEXO_MODEL"] }
+    # ```
     def configure
       yield(config)
       config
@@ -90,14 +92,16 @@ module Nexo
     end
 
     # Bounded, fiber-based fan-out (Spec 5). Yields a collector; every block
-    # added via +c.add { ... }+ runs concurrently inside one +async+ reactor,
-    # capped at +max_in_flight+ in flight, with results returned in submission
-    # order and the first task error re-raised. Requires the optional +async+
+    # added via `c.add { ... }` runs concurrently inside one `async` reactor,
+    # capped at `max_in_flight` in flight, with results returned in submission
+    # order and the first task error re-raised. Requires the optional `async`
     # gem — raises MissingDependencyError if it is not installed.
     #
-    #   results = Nexo.concurrent(max_in_flight: 8) do |c|
-    #     docs.each { |d| c.add { SummarizeDocument.run(text: d.body).result } }
-    #   end
+    # ```ruby
+    # results = Nexo.concurrent(max_in_flight: 8) do |c|
+    #   docs.each { |d| c.add { SummarizeDocument.run(text: d.body).result } }
+    # end
+    # ```
     def concurrent(max_in_flight: config.max_in_flight, &setup)
       c = Concurrent.new(max_in_flight: max_in_flight)
       setup.call(c)

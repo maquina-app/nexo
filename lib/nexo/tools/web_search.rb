@@ -2,23 +2,23 @@
 
 module Nexo
   module Tools
-    # Vendor-neutral web search, gated by the +:search+ capability (denied by
-    # default, like +:fetch+/+:shell+). Follows the +Tools::Fetch+ shape exactly:
-    # authorize first, act, and rescue +Permissions::Denied+ into +{ error: ... }+
+    # Vendor-neutral web search, gated by the `:search` capability (denied by
+    # default, like `:fetch`/`:shell`). Follows the `Tools::Fetch` shape exactly:
+    # authorize first, act, and rescue `Permissions::Denied` into `{ error: ... }`
     # so the loop never crashes.
     #
     # Nexo ships NO search provider. The query is delegated to a host-injected
-    # +backend+ responding to +#search(query, **opts)+ that returns an Enumerable
-    # of +{title:, url:, snippet:}+ rows (Hashes or objects responding to +#to_h+).
+    # `backend` responding to `#search(query, **opts)` that returns an Enumerable
+    # of `{title:, url:, snippet:}` rows (Hashes or objects responding to `#to_h`).
     # Results are count- and snippet-capped so untrusted provider output can't blow
-    # the context window. It pairs with +Tools::Fetch+: search finds URLs, fetch
+    # the context window. It pairs with `Tools::Fetch`: search finds URLs, fetch
     # reads one.
     #
     # Backend results are UNTRUSTED model input (prompt-injection risk in snippets);
     # the backend is trust-bearing and runs in the host process, not the sandbox.
     #
-    # Return shape: success is +{ results: [{title:, url:, snippet:}, …] }+ (≤8
-    # rows); any denial or error is +{ error: <message> }+.
+    # Return shape: success is `{ results: [{title:, url:, snippet:}, …] }` (≤8
+    # rows); any denial or error is `{ error: <message> }`.
     class WebSearch < RubyLLM::Tool
       description "Search the web for a query; returns titles, URLs, and snippets."
       param :query, type: :string, required: true, desc: "The search query"
@@ -28,8 +28,8 @@ module Nexo
       # Each result snippet is truncated to this many characters.
       MAX_SNIPPET = 300
 
-      # +permissions+ gates the +:search+ capability; +backend+ is the injected,
-      # host-owned provider. +sandbox:+ is accepted for signature parity with the
+      # `permissions` gates the `:search` capability; `backend` is the injected,
+      # host-owned provider. `sandbox:` is accepted for signature parity with the
       # other tools even though search runs in the host process, not the sandbox.
       def initialize(sandbox:, permissions:, backend:)
         @permissions = permissions
@@ -37,7 +37,7 @@ module Nexo
         super()
       end
 
-      # Order of operations (every denial/error returns +{ error: }+, never raises
+      # Order of operations (every denial/error returns `{ error: }`, never raises
       # into the loop): capability gate → delegate to the backend (query-only) →
       # normalize and cap. The gate runs before the backend, so a denied search
       # never touches it.
@@ -59,9 +59,9 @@ module Nexo
 
       private
 
-      # Accepts a Hash or any object responding to +#to_h+, with either symbol- or
-      # string-keyed fields (a backend that returns +{"title" => …}+ works the
-      # same as +{title: …}+); returns a row with stringified fields and the
+      # Accepts a Hash or any object responding to `#to_h`, with either symbol- or
+      # string-keyed fields (a backend that returns `{"title" => …}` works the
+      # same as `{title: …}`); returns a row with stringified fields and the
       # snippet truncated to MAX_SNIPPET.
       def normalize(r)
         h = r.respond_to?(:to_h) ? r.to_h : r
@@ -72,7 +72,7 @@ module Nexo
         }
       end
 
-      # Reads +key+ from a row tolerating symbol OR string keys.
+      # Reads `key` from a row tolerating symbol OR string keys.
       def field(hash, key)
         hash[key] || hash[key.to_s]
       end

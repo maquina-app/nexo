@@ -4,28 +4,28 @@ module Nexo
   # Namespace for the pluggable loop backends that drive one prompt to
   # completion: Loops::RubyLLM (the default, provider-neutral) and
   # Loops::AgentSDK (opt-in, Anthropic-oriented). Selected per agent via the
-  # +loop:+ constructor injection; the base contract is Nexo::Loop.
+  # `loop:` constructor injection; the base contract is Nexo::Loop.
   module Loops
-    # The default, provider-neutral loop. It is the Spec 1 +Agent#prompt+ body
+    # The default, provider-neutral loop. It is the Spec 1 `Agent#prompt` body
     # extracted verbatim: build the agent's chat (with its four sandbox-backed
-    # tools) and let +ruby_llm+ run the whole tool loop inside +#ask+. It works
-    # identically on any +ruby_llm+-supported model — Anthropic, OpenAI, Gemini,
+    # tools) and let `ruby_llm` run the whole tool loop inside `#ask`. It works
+    # identically on any `ruby_llm`-supported model — Anthropic, OpenAI, Gemini,
     # Ollama/Gemma — because file/shell capability comes entirely from the
     # agent's own sandbox-backed tools, not from anything vendor-specific here.
     #
     # Tool-call *observability* (not a hard cap — see the turn-cap caveat in the
-    # README) is wired through +ruby_llm+'s +before_tool_call+/+after_tool_result+
+    # README) is wired through `ruby_llm`'s `before_tool_call`/`after_tool_result`
     # callbacks when the installed version exposes them, and is silently omitted
-    # otherwise so an older/newer +ruby_llm+ degrades to no observability rather
+    # otherwise so an older/newer `ruby_llm` degrades to no observability rather
     # than crashing.
     class RubyLLM < Nexo::Loop
-      # +chat:+ lets a Nexo::Session inject the hydrated, continuing chat so the
+      # `chat:` lets a Nexo::Session inject the hydrated, continuing chat so the
       # loop runs over the persisted thread; left nil it builds the agent's own
       # fresh chat exactly as before — the default (no-session) path is unchanged.
-      # +max_turns+ is a BUDGET, not a hard stop. ruby_llm runs the whole tool loop
+      # `max_turns` is a BUDGET, not a hard stop. ruby_llm runs the whole tool loop
       # inside #ask and its callbacks cannot halt it, so this loop cannot cut a run
       # short. What it can do is COUNT the tool calls and say so: exceeding the budget
-      # emits a +:turn_limit_exceeded+ event (once) carrying the count and the limit.
+      # emits a `:turn_limit_exceeded` event (once) carrying the count and the limit.
       #
       # Previously the parameter was accepted and never read, which made it look like
       # a safety bound it has never been. Treat it as telemetry: if you need a hard
@@ -52,7 +52,7 @@ module Nexo
       # A continuing Nexo::Session runs the loop repeatedly over the SAME chat, so
       # the wiring is done once per chat (flagged with an ivar) — otherwise ruby_llm
       # (which *appends* callbacks) would stack a fresh pair every prompt and fire
-      # each event N times. The current +on_event+ is stashed on the chat so a later
+      # each event N times. The current `on_event` is stashed on the chat so a later
       # prompt observes with its own block rather than the first one. A fresh chat
       # (the default per-prompt path) simply wires once — byte-for-byte the prior
       # behavior.

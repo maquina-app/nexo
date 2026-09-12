@@ -176,7 +176,7 @@ artifact("digest.md", from: "app/templates/digest.md.erb",
 > or uploaded template is remote code execution. If a body is untrusted, pass it
 > as `content:` (inert data), not as a `from:` template.
 
-See [`examples/artifact_from_template.rb`](../examples/artifact_from_template.rb) for
+See [`examples/artifact_from_template.rb`](https://github.com/maquina-app/nexo/blob/main/examples/artifact_from_template.rb) for
 the full offline flow (`ruby -Ilib examples/artifact_from_template.rb`).
 ### Agent output — `produces`
 
@@ -307,7 +307,7 @@ end
 > *how* (skills/instructions). Driving an agent never widens its authority — its
 > safe default (`:read_only`) is untouched.
 
-See [`examples/inbox_digest_task.rb`](../examples/inbox_digest_task.rb) for a live
+See [`examples/inbox_digest_task.rb`](https://github.com/maquina-app/nexo/blob/main/examples/inbox_digest_task.rb) for a live
 example that wraps the MCP-backed `InboxTriage` agent in a workflow and captures
 the digest as an artifact.
 

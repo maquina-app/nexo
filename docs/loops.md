@@ -63,7 +63,8 @@ proven.
 
 ## Verified vs assumed
 
-Built against **`ruby_llm` 1.16** and **`ruby_llm-test` 0.2**. The tool body method is
+Built against **`ruby_llm` 1.16.0** (the supported line — the gemspec pins `~> 1.16`, and the
+upcoming `ruby_llm` 2.0 is not supported yet) and **`ruby_llm-test` 0.2**. The tool body method is
 `#execute`, tools attach with `chat.with_tools(*instances)`, and instructions set with
 `chat.with_instructions`. `Open3.capture3` has no `timeout:` keyword on the target Ruby, so
 `Local#shell` bounds the command with `Timeout.timeout`. These may differ on other

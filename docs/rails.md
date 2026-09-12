@@ -156,7 +156,7 @@ run.artifact("digest.md")          # => {"name" =>, "content" =>, "at" =>} or ni
 run.artifact_content("digest.md")  # => "…the body…" or nil
 ```
 
-See [`examples/rails_usage.md`](../examples/rails_usage.md) for a controller +
+See [`examples/rails_usage.md`](https://github.com/maquina-app/nexo/blob/main/examples/rails_usage.md) for a controller +
 Turbo-page walkthrough.
 
 ← Back to the [README](../README.md)

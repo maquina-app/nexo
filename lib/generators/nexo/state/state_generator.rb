@@ -5,15 +5,17 @@ require "rails/generators/migration"
 
 module Nexo
   module Generators
-    # Adds the +state+ column to an already-installed +nexo_workflow_runs+ table
+    # Adds the `state` column to an already-installed `nexo_workflow_runs` table
     # (Spec 13):
     #
-    #   rails g nexo:state
+    # ```sh
+    # rails g nexo:state
+    # ```
     #
-    # copies a timestamped, additive migration adding a +json+ +state+ column
-    # (default +{}+), after which +rails db:migrate+ lets Nexo::Workflow runs
+    # copies a timestamped, additive migration adding a `json` `state` column
+    # (default `{}`), after which `rails db:migrate` lets Nexo::Workflow runs
     # store checkpoint results and suspend metadata (durable suspend/resume).
-    # Fresh installs get the column from +nexo:workflows+ directly; this generator
+    # Fresh installs get the column from `nexo:workflows` directly; this generator
     # is for apps installed before Spec 13. Modeled on ArtifactsGenerator.
     class StateGenerator < Rails::Generators::Base
       include Rails::Generators::Migration
@@ -27,8 +29,8 @@ module Nexo
         ::ActiveRecord::Migration.next_migration_number(next_migration_number)
       end
 
-      # Generation step: copy the timestamped +state+-column migration into
-      # +db/migrate+.
+      # Generation step: copy the timestamped `state`-column migration into
+      # `db/migrate`.
       def create_migration_file
         migration_template "add_state_to_nexo_workflow_runs.rb", "db/migrate/add_state_to_nexo_workflow_runs.rb"
       end

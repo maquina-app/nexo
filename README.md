@@ -94,7 +94,8 @@ access until you explicitly opt in.
 ## Requirements
 
 - Ruby 3.3+
-- [ruby_llm](https://github.com/crmne/ruby_llm) >= 1.16
+- [ruby_llm](https://github.com/crmne/ruby_llm) 1.16.x (`~> 1.16`) — the supported version is
+  **1.16.0**; the upcoming ruby_llm 2.0 is not supported yet
 - [ruby_llm-skills](https://github.com/kieranklaassen/ruby_llm-skills) — optional, only
   when you use the `skills` macro
 - [ruby_llm-mcp](https://github.com/patvice/ruby_llm-mcp) — optional, only when you attach

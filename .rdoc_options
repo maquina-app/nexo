@@ -1,0 +1,5 @@
+# RDoc configuration for `rdoc`, `gem rdoc`, and rubydoc.info. All comments in
+# lib/ and the docs/ guides are written in Markdown, not RDoc markup.
+markup: markdown
+main_page: README.md
+title: nexo_ai

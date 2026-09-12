@@ -1,5 +1,11 @@
 ## [Unreleased]
 
+### Changed
+
+- **`ruby_llm` is now pinned to the 1.16 line (`~> 1.16`, was `>= 1.16`).** The supported
+  version is 1.16.0 — every composed API was verified against it. The upcoming ruby_llm 2.0
+  is not supported yet, and the pessimistic constraint keeps it from being resolved in.
+
 ## [0.11.0] - 2026-08-20
 
 An agent's tool schema now tells the truth about what it may do.

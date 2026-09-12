@@ -7,7 +7,7 @@
 # autoload is registered and defined?(Nexo::WorkflowRun) stays false offline.
 if defined?(::ActiveRecord::Base)
   module Nexo
-    # The +nexo_workflow_runs+ record: a run's id, workflow class, status,
+    # The `nexo_workflow_runs` record: a run's id, workflow class, status,
     # payload, result, error, and ordered event log. Mirrors the shape of the
     # in-memory store's Run struct so a single Workflow drives either backend.
     class WorkflowRun < ::ActiveRecord::Base
@@ -58,9 +58,9 @@ if defined?(::ActiveRecord::Base)
         state&.dig("__suspend__", "reason")
       end
 
-      # The stored result of a completed +checkpoint(name)+ (Spec 13), or nil when
-      # that checkpoint has not run yet. Tolerates string/symbol +name+ like the
-      # +artifact+ reader; the reserved "__suspend__" key is not a checkpoint.
+      # The stored result of a completed `checkpoint(name)` (Spec 13), or nil when
+      # that checkpoint has not run yet. Tolerates string/symbol `name` like the
+      # `artifact` reader; the reserved "__suspend__" key is not a checkpoint.
       def checkpoint_result(name)
         state&.[](name.to_s)
       end
@@ -79,7 +79,7 @@ if defined?(::ActiveRecord::Base)
         artifact(name)&.then { |a| a["content"] || a[:content] }
       end
 
-      # No presence validations on +result+ or +events+: both are empty until
+      # No presence validations on `result` or `events`: both are empty until
       # the run finishes.
 
       # Appends an event to the ordered log. Reassigns the array (rather than
@@ -88,7 +88,7 @@ if defined?(::ActiveRecord::Base)
         self.events = (events || []) + [ev]
       end
 
-      # Persists the event log without bumping +updated_at+ — events accrue
+      # Persists the event log without bumping `updated_at` — events accrue
       # incrementally during a run and shouldn't each count as a full touch.
       def save_events!
         save!(touch: false)
@@ -101,15 +101,15 @@ if defined?(::ActiveRecord::Base)
         self.artifacts = (artifacts || []) + [a]
       end
 
-      # Persists the artifact index without bumping +updated_at+, mirroring
+      # Persists the artifact index without bumping `updated_at`, mirroring
       # #save_events!.
       def save_artifacts!
         save!(touch: false)
       end
 
-      # Persists the run's checkpoint/suspend +state+ (Spec 13) without bumping
-      # +updated_at+ — checkpoints accrue during a run just like events/artifacts,
-      # so each shouldn't count as a full touch. The +state+ json object is
+      # Persists the run's checkpoint/suspend `state` (Spec 13) without bumping
+      # `updated_at` — checkpoints accrue during a run just like events/artifacts,
+      # so each shouldn't count as a full touch. The `state` json object is
       # read/written by Workflow#checkpoint with string keys, so it round-trips
       # identically to the Memory store.
       def save_state!

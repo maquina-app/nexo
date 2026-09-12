@@ -6,10 +6,10 @@ module Nexo
     # Hash keyed by normalized absolute path, so nothing the model writes ever
     # touches the host filesystem.
     #
-    # +#shell+ raises +NotImplementedError+ on purpose: in-memory means there is
+    # `#shell` raises `NotImplementedError` on purpose: in-memory means there is
     # no process to run a command in. That is the safety property, not a gap.
     class Virtual < Sandbox
-      # Starts an empty in-memory filesystem rooted at +cwd+ (default +/workspace+).
+      # Starts an empty in-memory filesystem rooted at `cwd` (default `/workspace`).
       def initialize(cwd: "/workspace")
         @cwd = cwd
         @files = {}

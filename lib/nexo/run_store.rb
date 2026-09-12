@@ -9,12 +9,12 @@ module Nexo
   # same shape, which is what lets one Workflow implementation drive either
   # the in-memory store (plain Ruby) or the ActiveRecord store (Rails).
   #
-  # A run object responds to: +id+, +workflow_class+, +status+, +payload+,
-  # +result+, +error+, +events+, +artifacts+, +state+, plus +update!(attrs)+,
-  # +push_event(event)+, +save_events!+, +push_artifact(artifact)+,
-  # +save_artifacts!+, and +save_state!+ (Spec 13).
+  # A run object responds to: `id`, `workflow_class`, `status`, `payload`,
+  # `result`, `error`, `events`, `artifacts`, `state`, plus `update!(attrs)`,
+  # `push_event(event)`, `save_events!`, `push_artifact(artifact)`,
+  # `save_artifacts!`, and `save_state!` (Spec 13).
   module RunStore
-    # Selects a backend: +Nexo.config.run_store+ when a host set one, else the
+    # Selects a backend: `Nexo.config.run_store` when a host set one, else the
     # ActiveRecord store when both ::ActiveRecord::Base and Nexo::WorkflowRun are
     # defined (the Rails path), otherwise the in-memory store. With no Rails loaded
     # the AR check short-circuits, so the plain-Ruby path never references
@@ -42,16 +42,16 @@ module Nexo
     # how the ActiveRecord backend shares one database. Nothing is persisted to
     # disk; the store lives only for the process.
     class Memory
-      # A run record with the shared store shape. +update!+ assigns attributes,
-      # +push_event+ appends to the event log, and +save_events!+ is a no-op
+      # A run record with the shared store shape. `update!` assigns attributes,
+      # `push_event` appends to the event log, and `save_events!` is a no-op
       # (the AR backend persists; Memory keeps everything in the Struct).
-      # Built with keyword arguments; a Struct defined without +keyword_init:+
-      # accepts them on Ruby 3.2+, so (well within the 3.3 floor) +keyword_init:
-      # true+ is unnecessary.
+      # Built with keyword arguments; a Struct defined without `keyword_init:`
+      # accepts them on Ruby 3.2+, so (well within the 3.3 floor)
+      # `keyword_init: true` is unnecessary.
       # Mutations serialize on the store-wide mutex (see Memory.mutex): the
       # process-wide store can be driven from multiple threads (Local#offload
       # workers, run_later under a threaded adapter, a multithreaded Puma host
-      # without ActiveRecord), and on Rubies without a GVL a bare +<<+/+[]=+ can
+      # without ActiveRecord), and on Rubies without a GVL a bare `<<`/`[]=` can
       # lose events or corrupt the table.
       Run = Struct.new(:id, :workflow_class, :status, :payload, :result, :error, :events, :artifacts, :state) do
         def update!(attrs) = Memory.mutex.synchronize { attrs.each { |k, v| self[k] = v } }
@@ -102,7 +102,7 @@ module Nexo
         # never collide.
         attr_reader :runs
 
-        # The store-wide lock guarding +runs+ and every run mutation. Not
+        # The store-wide lock guarding `runs` and every run mutation. Not
         # reentrant, so no method that holds it calls another that grabs it.
         attr_reader :mutex
 
@@ -112,7 +112,7 @@ module Nexo
         end
       end
 
-      # Builds a fresh +"pending"+ Run (UUID id, empty events/artifacts/state) and
+      # Builds a fresh `"pending"` Run (UUID id, empty events/artifacts/state) and
       # stores it in the process-wide table, returning it.
       def create(workflow_class:, payload:)
         run = Run.new(
@@ -133,7 +133,7 @@ module Nexo
       # acceptable for v1.
       def find(id) = self.class.mutex.synchronize { self.class.runs.fetch(id) }
 
-      # Atomically claims a +"suspended"+ run for resume: flips it to +"running"+
+      # Atomically claims a `"suspended"` run for resume: flips it to `"running"`
       # and returns true only if it was still suspended, so two concurrent resumes
       # can't both re-enter #call (Spec 13 double-execution guard). The status
       # flip is direct (not via #update!) to avoid re-entering the non-reentrant
@@ -151,17 +151,17 @@ module Nexo
     # ActiveRecord backend used by the Rails path. Delegates to the
     # Nexo::WorkflowRun model, which carries the same run shape.
     class ActiveRecord
-      # Creates and persists a +"pending"+ Nexo::WorkflowRun row, returning it.
+      # Creates and persists a `"pending"` Nexo::WorkflowRun row, returning it.
       def create(workflow_class:, payload:)
         Nexo::WorkflowRun.create!(workflow_class: workflow_class, payload: payload, status: "pending")
       end
 
-      # Fetches a persisted run by id (raises +ActiveRecord::RecordNotFound+ on a miss).
+      # Fetches a persisted run by id (raises `ActiveRecord::RecordNotFound` on a miss).
       def find(id) = Nexo::WorkflowRun.find(id)
 
-      # Atomically claims a +"suspended"+ run for resume with a single conditional
+      # Atomically claims a `"suspended"` run for resume with a single conditional
       # UPDATE, returning true only for the worker that won the row. This closes
-      # the cross-process double-resume race the plain +find+-then-check couldn't:
+      # the cross-process double-resume race the plain `find`-then-check couldn't:
       # a queued resume_later and a concurrent sync resume can't both re-enter.
       def claim_for_resume!(run)
         Nexo::WorkflowRun
@@ -171,26 +171,28 @@ module Nexo
     end
 
     # File-backed backend for a host with no database: one JSON document per run
-    # under +dir+, rewritten whenever the run changes. This is what makes durability
+    # under `dir`, rewritten whenever the run changes. This is what makes durability
     # available outside Rails — checkpoint, suspend/resume and a run's recorded
     # artifacts all read state back from the store, and Memory dies with the process.
     #
-    #   Nexo.config.run_store = Nexo::RunStore::Disk.new(dir: "~/.local/state/myapp/runs")
+    # ```ruby
+    # Nexo.config.run_store = Nexo::RunStore::Disk.new(dir: "~/.local/state/myapp/runs")
+    # ```
     #
     # The Run is Memory's, subclassed: the shape and every read helper are shared, so
     # a host written against one store behaves identically on the other. Only the
-    # +save_*+ hooks differ — they write the document. +push_event+/+push_artifact+
-    # deliberately do NOT, because Workflow always calls the matching +save_*+ right
+    # `save_*` hooks differ — they write the document. `push_event`/`push_artifact`
+    # deliberately do NOT, because Workflow always calls the matching `save_*` right
     # after, and persisting twice would double the writes for nothing.
     #
     # Scope, honestly: rewriting the whole document per change is fine for the run
     # sizes this is meant for (a CLI's own history) and wrong for a busy multi-worker
-    # queue — that is what the ActiveRecord backend is for. +claim_for_resume!+ is
+    # queue — that is what the ActiveRecord backend is for. `claim_for_resume!` is
     # atomic within a process but NOT across processes; two machines resuming the
     # same run concurrently is out of scope. Runs are never pruned here: retention is
-    # the host's policy, and +dir+ is a plain directory it can manage.
+    # the host's policy, and `dir` is a plain directory it can manage.
     class Disk
-      # A Memory::Run that writes itself to +path+ whenever Workflow saves it.
+      # A Memory::Run that writes itself to `path` whenever Workflow saves it.
       class Run < Memory::Run
         # Absolute path of this run's JSON document. Assigned by the store.
         attr_accessor :path
@@ -226,7 +228,7 @@ module Nexo
       # Serializes writes within the process, mirroring Memory's store-wide lock.
       MUTEX = Mutex.new
 
-      # +dir+ is created on demand; +~+ is expanded.
+      # `dir` is created on demand; `~` is expanded.
       def initialize(dir:)
         @dir = ::File.expand_path(dir)
       end
@@ -234,7 +236,7 @@ module Nexo
       # The directory runs are written to.
       attr_reader :dir
 
-      # Builds a fresh +"pending"+ Run, writes it, and returns it.
+      # Builds a fresh `"pending"` Run, writes it, and returns it.
       def create(workflow_class:, payload:)
         run = Run.new(
           id: Nexo.generate_run_id, workflow_class: workflow_class, status: "pending",
@@ -270,7 +272,7 @@ module Nexo
           end
       end
 
-      # Atomically claims a +"suspended"+ run for resume, re-reading from disk so a
+      # Atomically claims a `"suspended"` run for resume, re-reading from disk so a
       # stale in-memory copy cannot win. Within one process only — see the class
       # note.
       def claim_for_resume!(run)

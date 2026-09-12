@@ -97,7 +97,7 @@ Both are class macros with the same reader/writer convention as `model`. `provid
 is passed straight through to `RubyLLM.chat`; `assume_model_exists` defaults to
 `false` (registry validation on). Setting `assume_model_exists` **without** a
 `provider` raises `Nexo::ConfigurationError` — `ruby_llm` can't infer a provider once
-the lookup is skipped. See [`examples/code_reviewer.rb`](../examples/code_reviewer.rb)
+the lookup is skipped. See [`examples/code_reviewer.rb`](https://github.com/maquina-app/nexo/blob/main/examples/code_reviewer.rb)
 for a runnable Ollama example.
 
 ← Back to the [README](../README.md)

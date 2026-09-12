@@ -13,7 +13,7 @@
 # core stays coupling-free (Nexo ships no cable backend).
 if defined?(::ActiveSupport::Notifications)
   module Nexo
-    # Opt-in Turbo mirror: subscribes to the +nexo.workflow.event+ notifications
+    # Opt-in Turbo mirror: subscribes to the `nexo.workflow.event` notifications
     # and re-broadcasts each event to a per-run Turbo stream. A no-op without
     # turbo-rails, so the plain-Ruby core stays coupling-free.
     module TurboBroadcaster

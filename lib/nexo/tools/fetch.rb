@@ -7,19 +7,19 @@ require "resolv"
 
 module Nexo
   module Tools
-    # Read-only HTTP(S) GET, gated by the +:fetch+ capability (denied by default,
-    # like +:shell+) and a host allow-list (SSRF/egress guard). Follows the
-    # +ReadFile+/+WriteFile+ shape exactly: authorize first, act, and rescue
-    # +Permissions::Denied+ into +{ error: ... }+ so the loop never crashes.
+    # Read-only HTTP(S) GET, gated by the `:fetch` capability (denied by default,
+    # like `:shell`) and a host allow-list (SSRF/egress guard). Follows the
+    # `ReadFile`/`WriteFile` shape exactly: authorize first, act, and rescue
+    # `Permissions::Denied` into `{ error: ... }` so the loop never crashes.
     #
     # Deliberately minimal: a single stdlib GET. No POST/PUT/DELETE, no crawler,
     # no cache, no rate limiter, no redirect-following. The only request header the
-    # model influences is a fixed +User-Agent+. Fetched bodies are UNTRUSTED model
+    # model influences is a fixed `User-Agent`. Fetched bodies are UNTRUSTED model
     # input (prompt-injection risk) and are returned raw (truncated), never parsed.
     #
-    # Return shape differs from +ReadFile+ (which returns a bare String): success
-    # is +{ body: <string truncated to MAX_BYTES> }+; any denial or error is
-    # +{ error: <message> }+.
+    # Return shape differs from `ReadFile` (which returns a bare String): success
+    # is `{ body: <string truncated to MAX_BYTES> }`; any denial or error is
+    # `{ error: <message> }`.
     class Fetch < RubyLLM::Tool
       description "Fetch the text of a web page by URL (HTTP/HTTPS GET only)."
       param :url, type: :string, required: true, desc: "Absolute http(s) URL to fetch"
@@ -35,8 +35,8 @@ module Nexo
         IPAddr.new("::/128")         # unspecified IPv6
       ].freeze
 
-      # +allow_hosts+ scopes which hosts the GET may reach (subdomain-aware);
-      # +permissions+ gates the +:fetch+ capability. Both locks must open.
+      # `allow_hosts` scopes which hosts the GET may reach (subdomain-aware);
+      # `permissions` gates the `:fetch` capability. Both locks must open.
       def initialize(sandbox:, permissions:, allow_hosts: [])
         @sandbox = sandbox
         @permissions = permissions
@@ -44,10 +44,10 @@ module Nexo
         super()
       end
 
-      # Order of checks (every denial returns +{ error: }+, never raises into the
+      # Order of checks (every denial returns `{ error: }`, never raises into the
       # loop): capability gate → scheme → host allow-list → private-address guard →
       # perform the GET. The private-address guard runs AFTER the allow-list and is
-      # never bypassed, so an allow-listed +localhost+ is still refused.
+      # never bypassed, so an allow-listed `localhost` is still refused.
       def execute(url:)
         @permissions.authorize!(:fetch, url)
 
@@ -83,10 +83,10 @@ module Nexo
 
       private
 
-      # Subdomain-aware host match (not exact): +host+ matches an allow-list entry
-      # +h+ when it equals +h+ or ends with +"." + h+. So +news.example.com+
-      # permits itself and +www.news.example.com+, but never +notexample.com+ or
-      # +example.com.evil.org+. Case-insensitive on the host.
+      # Subdomain-aware host match (not exact): `host` matches an allow-list entry
+      # `h` when it equals `h` or ends with +"." + h+. So `news.example.com`
+      # permits itself and `www.news.example.com`, but never `notexample.com` or
+      # `example.com.evil.org`. Case-insensitive on the host.
       def host_allowed?(host)
         return false if host.nil?
 
@@ -97,7 +97,7 @@ module Nexo
         end
       end
 
-      # Resolves +host+ to IPAddr objects. Resolution failure yields +[]+ so the
+      # Resolves `host` to IPAddr objects. Resolution failure yields `[]` so the
       # caller fails open to a plain hostname connect (an invalid host then errors
       # naturally as a fetch error) — matching the prior guard's fail-open posture.
       def resolve(host)
@@ -106,7 +106,7 @@ module Nexo
         []
       end
 
-      # Whether +addr+ (an IPAddr) is loopback, private (RFC1918 / ULA), link-local
+      # Whether `addr` (an IPAddr) is loopback, private (RFC1918 / ULA), link-local
       # (incl. the 169.254.169.254 metadata address), or in one of the extra
       # UNSAFE_RANGES the stdlib predicates miss.
       def unsafe_ip?(addr)
@@ -114,9 +114,9 @@ module Nexo
           UNSAFE_RANGES.any? { |range| range.include?(addr) }
       end
 
-      # GETs +uri+, pinned to the pre-vetted +ip+ when one was resolved (so the
+      # GETs `uri`, pinned to the pre-vetted `ip` when one was resolved (so the
       # socket connects to the exact address the guard approved — no re-resolution,
-      # no DNS-rebinding window). +ip+ may be nil for an unresolvable host, in which
+      # no DNS-rebinding window). `ip` may be nil for an unresolvable host, in which
       # case Net::HTTP resolves the hostname itself and fails naturally.
       def get(uri, ip = nil)
         http = Net::HTTP.new(uri.host, uri.port)

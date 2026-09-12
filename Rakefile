@@ -31,7 +31,12 @@ RDoc::Task.new(:doc) do |rd|
   # are not part of the gem's Ruby API, so they belong in neither the generated
   # API site nor the coverage denominator.
   rd.rdoc_files.exclude("lib/generators/**/templates/*.rb")
+  # Local planning notes (gitignored) that happen to live under docs/.
+  rd.rdoc_files.exclude("docs/SITE_DOCS_PLAN.md")
   rd.rdoc_dir = "doc"
+  # Every comment in lib/ (and the docs/ guides) is Markdown, not RDoc markup.
+  # Mirrors `.rdoc_options`, which `gem rdoc`/rubydoc.info read instead of this task.
+  rd.markup = "markdown"
 end
 
 # NOTE: `default` intentionally stays test + standard — `rake doc`/`doc:coverage`
