@@ -29,9 +29,7 @@ module Nexo
     # `{ error: ... }` so the agent loop continues.
     class Denied < StandardError; end
 
-    # The configured Nexo permission mode (one of MODES). Read by the agent to
-    # map onto an opt-in backend's own permission vocabulary (see
-    # `Agent#permission_mode`).
+    # The configured Nexo permission mode (one of MODES).
     attr_reader :mode
 
     # The approval decision under `:approve` (Spec 16): `nil` (undecided ⇒

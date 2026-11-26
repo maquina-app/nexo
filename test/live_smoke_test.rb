@@ -46,7 +46,7 @@ class LiveSmokeTest < Minitest::Test
   # Live MCP smoke: connect the real filesystem MCP server over stdio and assert the
   # gate lets an allowed read tool through while a denied write tool returns { error: }.
   # No live model needed — it exercises Nexo::MCP.build + MCP::GatedTool against the
-  # real ruby_llm-mcp client. Requires npx (the server is an npm package).
+  # real ruby_llm MCP client. Requires npx (the server is an npm package).
   #
   #   NEXO_LIVE=1 bundle exec rake test TEST=test/live_smoke_test.rb
   def test_live_mcp_filesystem_gate_smoke
@@ -82,7 +82,7 @@ class LiveSmokeTest < Minitest::Test
       assert denied_result[:error], "denied write should return { error: }"
       refute_path_exists File.join(dir, "new.txt")
     ensure
-      client&.stop
+      client&.close
     end
   end
 

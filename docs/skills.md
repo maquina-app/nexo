@@ -3,9 +3,8 @@ A skill is a `SKILL.md` package that teaches the model *how you want a task done
 
 A **skill** is a `SKILL.md` package — frontmatter plus instructions — that teaches the
 model *how you want a task done*. Skills guide **reasoning**; the sandbox-backed tools
-above perform **execution**. Nexo does not implement skill loading; it composes the
-[`ruby_llm-skills`](https://github.com/kieranklaassen/ruby_llm-skills) gem so you attach a
-skill with one macro and no loader setup.
+above perform **execution**. You attach a skill with one macro: Nexo reads the `SKILL.md`
+itself, so there is no loader to set up and no extra gem to install.
 
 Drop a package under `app/skills/` (or scaffold one — see below):
 
@@ -52,10 +51,20 @@ rails g nexo:skill triage
 #   create  app/skills/triage/SKILL.md
 ```
 
-`ruby_llm-skills` is an **optional** dependency — required lazily only when you use a skill.
-Without it installed, `require "nexo"` still loads; touching a skill raises a clear
-`Nexo::MissingDependencyError` telling you to add `gem "ruby_llm-skills"`. Referencing a
-skill that does not exist raises `Nexo::Error` naming the missing `SKILL.md` path.
+Referencing a skill that does not exist raises `Nexo::Error` naming the missing
+`SKILL.md` path, as does a `SKILL.md` with no YAML front matter.
+
+> **Upgrading from 0.12:** remove `gem "ruby_llm-skills"` from your Gemfile — it is no
+> longer used (and it pins `ruby_llm` 1.x). The `skills` macro, `Nexo::Skills.find` and
+> `Nexo::Skills.materialize` are unchanged.
+
+### Why not `ruby_llm`'s own skills?
+
+`ruby_llm` 2.2 ships skills too (`chat.with_skills`). Nexo does not use them, for two
+reasons. Its loader enforces the Agent Skills naming rule — lowercase words joined by
+hyphens — and so rejects the underscore names Nexo resolves from a symbol (`skills
+:email_triage`). And it works by giving the model a `load_skill` tool, where Nexo's rule is
+that a skill adds instructions and nothing else.
 
 ## Say what a skill needs with `compatibility:`
 
@@ -82,15 +91,15 @@ exactly their body, unchanged.
 It is **free text, by design** — the spec does not make it machine-checkable, and Nexo does
 not try to. It is documentation aimed at a human or a model, not a dependency manifest:
 provisioning the sandbox (a gem, a library, a config) is the job of whoever wires the agent
-to it, not of the skill file. `license:` and `allowed-tools:` are parsed by
-`ruby_llm-skills` but deliberately **not** surfaced — the first is prompt noise, and the
+to it, not of the skill file. `license:` and `allowed-tools:` are read from the front
+matter but deliberately **not** surfaced — the first is prompt noise, and the
 second would compete with `Nexo::Permissions`, which is the real gate.
 
 ## Skill tools stay gated
 
 A skill contributes **instructions only**. A loaded skill ships no independent tools, and
-Nexo deliberately does not attach `ruby_llm-skills`' progressive-disclosure tool (which
-reads files outside the sandbox) — so **attaching a skill never widens what an agent can
+Nexo deliberately does not attach `ruby_llm`'s `load_skill` tool (which reads skill
+files from the host, outside the sandbox) — so **attaching a skill never widens what an agent can
 do** beyond its configured sandbox/permission mode.
 
 ## Bundled files are not reachable until you stage them

@@ -18,7 +18,6 @@ class LoopsAsyncRegressionTest < Minitest::Test
   def setup
     skip "loop wiring tests use the stubbed provider; skipped in live mode" if ENV["NEXO_LIVE"] == "1"
     Nexo.reset_config!
-    RubyLLM::Test.reset
   end
 
   def teardown
@@ -26,7 +25,7 @@ class LoopsAsyncRegressionTest < Minitest::Test
   end
 
   def test_agent_prompt_inside_a_reactor_returns_the_stubbed_response
-    RubyLLM::Test.stub_response("done inside reactor")
+    stub_replies("done inside reactor")
     response = nil
 
     Async do
@@ -39,7 +38,7 @@ class LoopsAsyncRegressionTest < Minitest::Test
   def test_fanning_out_several_prompts_via_concurrent_returns_all_responses
     # The fake provider serves one queued response per request; stub three for
     # the three fanned-out prompts.
-    RubyLLM::Test.stub_responses("ok", "ok", "ok")
+    stub_replies("ok", "ok", "ok")
 
     results = Nexo.concurrent(max_in_flight: 2) do |c|
       3.times { c.add { VirtualAgent.new.prompt("Go").content } }

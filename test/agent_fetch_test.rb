@@ -29,7 +29,6 @@ class AgentFetchTest < Minitest::Test
   # no Fetch tool rather than one that fails on every call.
   def test_fetch_allow_with_fetch_permitted_attaches_the_tool
     skip "agent wiring test uses the stubbed provider" if ENV["NEXO_LIVE"] == "1"
-    RubyLLM::Test.reset
     klass = Class.new(Nexo::Agent) do
       model "gpt-4o-mini"
       sandbox :virtual
@@ -41,7 +40,6 @@ class AgentFetchTest < Minitest::Test
 
   def test_fetch_allow_under_read_only_does_not_attach_the_tool
     skip "agent wiring test uses the stubbed provider" if ENV["NEXO_LIVE"] == "1"
-    RubyLLM::Test.reset
     klass = Class.new(Nexo::Agent) do
       model "gpt-4o-mini"
       sandbox :virtual

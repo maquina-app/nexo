@@ -114,12 +114,10 @@ end
 # for_gem (called from lib/nexo.rb) roots the loader at lib/ and treats
 # lib/nexo.rb as the gem's main file.
 loader = Zeitwerk::Loader.for_gem
-# Loop-backend filenames carry acronyms Zeitwerk can't infer on its own:
-# lib/nexo/loops/ruby_llm.rb -> Nexo::Loops::RubyLLM and
-# lib/nexo/loops/agent_sdk.rb -> Nexo::Loops::AgentSDK (Spec 4).
+# Filenames carrying acronyms Zeitwerk can't infer on its own:
+# lib/nexo/loops/ruby_llm.rb -> Nexo::Loops::RubyLLM and lib/nexo/mcp.rb -> Nexo::MCP.
 loader.inflector.inflect(
   "ruby_llm" => "RubyLLM",
-  "agent_sdk" => "AgentSDK",
   "mcp" => "MCP"
 )
 # The require-shim is not a managed constant — Zeitwerk must not infer a constant

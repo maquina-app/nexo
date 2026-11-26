@@ -2,8 +2,9 @@
 
 require "test_helper"
 
-# A real Ruby object standing in for a ruby_llm-mcp tool at the external boundary
-# (the WebMock analogue). NOT a mock — it just quacks like a tool and records calls.
+# A real Ruby object standing in for an MCP tool at the external boundary (the
+# WebMock analogue). NOT a mock — it just quacks like a tool and records calls. It
+# takes KEYWORDS, as ruby_llm's chat loop calls every tool (`tool.call(**arguments)`).
 class FakeMcpTool
   attr_reader :name, :calls
 
@@ -14,7 +15,7 @@ class FakeMcpTool
 
   def description = "fake #{@name}"
 
-  def call(args = {})
+  def call(**args)
     @calls << args
     {ok: true, tool: @name, echo: args}
   end
@@ -69,14 +70,5 @@ class McpGatedToolTest < Minitest::Test
     result = gated.execute(q: "invoice")
     assert_equal({ok: true, tool: "search_threads", echo: {q: "invoice"}}, result)
     assert_equal [{q: "invoice"}], tool.calls
-  end
-
-  def test_missing_gem_raises_missing_dependency
-    # When ruby_llm-mcp is not installed, .load! must surface a Nexo error, not a
-    # bare LoadError. Skipped where the gem IS present (it is a dev dep here). The
-    # guard checks installability, not `defined?` — .load! requires lazily, so the
-    # constant is absent until first use even when the gem is installed.
-    skip "runs only where ruby_llm-mcp is absent" if Gem::Specification.find_all_by_name("ruby_llm-mcp").any?
-    assert_raises(Nexo::MissingDependencyError) { Nexo::MCP.load! }
   end
 end

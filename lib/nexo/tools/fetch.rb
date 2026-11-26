@@ -22,7 +22,7 @@ module Nexo
     # `{ error: <message> }`.
     class Fetch < RubyLLM::Tool
       description "Fetch the text of a web page by URL (HTTP/HTTPS GET only)."
-      param :url, type: :string, required: true, desc: "Absolute http(s) URL to fetch"
+      parameter :url, type: :string, required: true, description: "Absolute http(s) URL to fetch"
 
       # Bodies are truncated to this many bytes (byteslice) before returning.
       MAX_BYTES = 200_000

@@ -21,7 +21,7 @@ module Nexo
     # rows); any denial or error is `{ error: <message> }`.
     class WebSearch < RubyLLM::Tool
       description "Search the web for a query; returns titles, URLs, and snippets."
-      param :query, type: :string, required: true, desc: "The search query"
+      parameter :query, type: :string, required: true, description: "The search query"
 
       # At most this many result rows are returned.
       MAX_RESULTS = 8

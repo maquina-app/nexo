@@ -35,7 +35,6 @@ class AgentSearchTest < Minitest::Test
 
   def test_search_backend_set_attaches_web_search_tool
     skip "agent wiring test uses the stubbed provider" if ENV["NEXO_LIVE"] == "1"
-    RubyLLM::Test.reset
     klass = Class.new(Nexo::Agent) {
       model TEST_MODEL
       sandbox :virtual
@@ -53,7 +52,6 @@ class AgentSearchTest < Minitest::Test
   # is not advertised.
   def test_search_backend_without_search_permission_does_not_attach
     skip "agent wiring test uses the stubbed provider" if ENV["NEXO_LIVE"] == "1"
-    RubyLLM::Test.reset
     klass = Class.new(Nexo::Agent) {
       model TEST_MODEL
       sandbox :virtual
@@ -65,7 +63,6 @@ class AgentSearchTest < Minitest::Test
 
   def test_no_search_backend_does_not_attach_web_search_tool
     skip "agent wiring test uses the stubbed provider" if ENV["NEXO_LIVE"] == "1"
-    RubyLLM::Test.reset
     klass = Class.new(Nexo::Agent) {
       model TEST_MODEL
       sandbox :virtual

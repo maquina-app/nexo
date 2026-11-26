@@ -7,7 +7,7 @@
 #   * read tools are on the mcp_allow list  -> the model can use them
 #   * write_file is NOT on the list          -> the gate returns { error: ... } (denied)
 #
-# Requires: ruby_llm-mcp installed, `npx` on PATH, and a model.
+# Requires: `npx` on PATH, and a model. MCP ships with ruby_llm — no extra gem.
 #
 #   NEXO_LIVE=1 NEXO_MODEL=gemma3:12b ruby -Ilib examples/mcp_filesystem.rb /tmp
 #

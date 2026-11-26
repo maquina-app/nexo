@@ -901,7 +901,7 @@ module Nexo
     # and degrades gracefully — a missing field falls back to `to_s` rather than
     # raising, so observability never breaks the run.
     #
-    # Field mapping (VERIFIED Group 0, ruby_llm 1.16.0):
+    # Field mapping (VERIFIED against the real loop, ruby_llm 2.2.3):
     # - `:tool_call`   → `ToolCall#name` + `#arguments` (or a plain `{name:, args:}` Hash).
     # - `:tool_result` → the tool's return value: a String (ok), or a `{error:}`/
     #   `{content:}` Hash from a Nexo gated tool (`ok` derived from `error`).
@@ -926,11 +926,16 @@ module Nexo
       end
     end
 
+    # ruby_llm 2.x hands tool arguments over with Symbol keys. Events are stored
+    # string-keyed (an AR json column round-trips that way anyway), so normalize
+    # here and the Memory and ActiveRecord stores agree.
     def tool_call_args(payload)
-      return payload.arguments if payload.respond_to?(:arguments)
-      return payload.args if payload.respond_to?(:args)
-
-      nil
+      args = if payload.respond_to?(:arguments)
+        payload.arguments
+      elsif payload.respond_to?(:args)
+        payload.args
+      end
+      args.is_a?(Hash) ? args.transform_keys(&:to_s) : args
     end
 
     def reduce_tool_result(payload)

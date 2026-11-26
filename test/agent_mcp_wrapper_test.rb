@@ -11,9 +11,9 @@ class AgentMcpWrapperTest < Minitest::Test
 
     def description = "Get one email"
 
-    def params_schema = {"type" => "object"}
+    def parameters_schema = {"type" => "object"}
 
-    def call(_args = {}) = "x" * 100
+    def call(**_args) = "x" * 100
   end
 
   class FakeClient
@@ -29,7 +29,7 @@ class AgentMcpWrapperTest < Minitest::Test
       @max_chars = max_chars
     end
 
-    def call(args = {}) = @tool.call(args).to_s[0, @max_chars]
+    def call(**args) = @tool.call(**args).to_s[0, @max_chars]
 
     def name = @tool.name
 
@@ -88,12 +88,12 @@ class AgentMcpWrapperTest < Minitest::Test
   def test_the_wrapper_can_change_the_result
     tool = attached(build(WrappingAgent)).first
 
-    assert_equal 10, tool.call({}).length
+    assert_equal 10, tool.call.length
   end
 
   def test_delegation_still_reaches_the_underlying_tool
     tool = attached(build(WrappingAgent)).first
 
-    assert_equal({"type" => "object"}, tool.params_schema)
+    assert_equal({"type" => "object"}, tool.parameters_schema)
   end
 end

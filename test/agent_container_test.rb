@@ -32,7 +32,6 @@ class AgentContainerTest < Minitest::Test
   def setup
     skip "agent wiring tests use the stubbed provider; skipped in live mode" if ENV["NEXO_LIVE"] == "1"
     Nexo.reset_config!
-    RubyLLM::Test.reset
   end
 
   def teardown

@@ -49,7 +49,6 @@ class AgentSkillsTest < Minitest::Test
     skip "agent wiring tests use the stubbed provider; skipped in live mode" if ENV["NEXO_LIVE"] == "1"
     Nexo.reset_config!
     Nexo.config.skills_path = FIXTURES
-    RubyLLM::Test.reset
   end
 
   def teardown
@@ -118,14 +117,5 @@ class AgentSkillsTest < Minitest::Test
     assert_equal "Be careful.", SpecializedTriage.instructions
     # And it builds a working agent (no "no model set" ConfigurationError).
     assert SpecializedTriage.new.chat
-  end
-
-  # Simulate ruby_llm-skills being absent: force the lazy require to raise the
-  # stdlib LoadError and assert the agent path surfaces MissingDependencyError
-  # (a raised library-misuse error, the only kind Nexo raises).
-  def test_missing_gem_surfaces_missing_dependency_error_through_the_agent
-    Nexo::Skills.stub(:require, ->(_path) { raise LoadError, "cannot load such file -- ruby_llm/skills" }) do
-      assert_raises(Nexo::MissingDependencyError) { TriageAgent.new.chat }
-    end
   end
 end

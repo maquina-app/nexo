@@ -21,7 +21,8 @@ File layout that follows from this:
 
 ## What this gem is
 
-An opinionated, drop-in agent harness for [RubyLLM](https://github.com/crmne/ruby_llm).
+An opinionated, drop-in agent harness for [RubyLLM](https://github.com/crmne/ruby_llm)
+(`ruby_llm ~> 2.2.0` since 0.13 — see "Verified APIs" below).
 Nexo composes the RubyLLM ecosystem into one front door, adding a **Sandbox + Permissions
 seam** (pluggable execution env: virtual / local / remote; default `:virtual` + `:read_only`)
 and a **WorkflowRun lifecycle** primitive (runId, status, payload, result, event log).
@@ -92,15 +93,14 @@ Match the agent to the file type touched; skip an agent when no file of its type
   builds a chat. `test/test_helper.rb` sets `Encoding.default_external = Encoding::UTF_8` to make the
   suite environment-independent. Don't force this in library code — it's an env property, not a gem
   concern.
-- **`ruby_llm-test` needs `delegate` + is gated off for live smoke (Spec 1).** `ruby_llm-test`
-  0.2.0's `TestProvider` references `SimpleDelegator` without requiring stdlib `delegate`, so
-  `test_helper` does `require "delegate"` first. It then prepends `ResolveWithTestProvider` (the
-  fake provider) — but only `unless ENV["NEXO_LIVE"] == "1"`, so `test/live_smoke_test.rb` reaches a
-  real provider. A dummy `openai_api_key` is configured so chat resolution never needs credentials.
-- **Verified `ruby_llm` 1.16 APIs (Spec 1).** Tool body method is `#execute` (`#call` dispatches to
-  it); attach tool instances with `chat.with_tools(*instances)` (stored in `chat.tools`, a Hash
-  keyed by tool-name symbol); set system prompt with `chat.with_instructions`. `Open3.capture3` has
-  no `timeout:` kwarg on this Ruby, so `Sandboxes::Local#shell` wraps it in `Timeout.timeout`.
+- **The suite scripts model replies with `ruby_llm`'s own test helper (0.13).** `test_helper`
+  does `require "ruby_llm/test_helper"` + `Minitest::Test.include(RubyLLM::TestHelper)` — but only
+  `unless ENV["NEXO_LIVE"] == "1"`, so `test/live_smoke_test.rb` reaches a real provider.
+  `stub_replies("text")` scripts a reply; `stub_replies tool_call(:"nexo--tools--read_file", path: "x"), "done"`
+  drives a REAL tool call through the real loop (the last reply repeats; the script clears after
+  each test). A dummy `openai_api_key` lets chat resolution proceed. `ruby_llm-test` is gone.
+  Tool names are the underscored class path: `Nexo::Tools::ReadFile` → `nexo--tools--read_file`.
+
 - **`require "nexo"` loads `ruby_llm`.** Spec 1 added `require "ruby_llm"` to `lib/nexo.rb` so the
   `Nexo::Tools::*` files can subclass `RubyLLM::Tool` when Zeitwerk autoloads them. `ruby_llm` is the
   one hard runtime dep, so this is always available and pulls in no Rails.
@@ -108,8 +108,7 @@ Match the agent to the file type touched; skip an agent when no file of its type
   main file `lib/nexo.rb`) and autoloads `lib/nexo/**` into `Nexo`. Two paths under `lib/` are
   NOT managed constants and must stay ignored, or `for_gem`'s extra-file check warns / Zeitwerk
   tries to define a constant from `nexo_ai.rb`: `loader.ignore("#{__dir__}/nexo_ai.rb")` (the
-  require-shim) and `loader.ignore("#{__dir__}/generators")` (Rails loads generators). The
-  `agent_sdk => AgentSDK` inflection is registered up front for later specs. New runtime code
+  require-shim) and `loader.ignore("#{__dir__}/generators")` (Rails loads generators). New runtime code
   just drops into `lib/nexo/<name>.rb` inside `module Nexo` — no `require_relative` needed.
 - **`Nexo::WorkflowRun` is Zeitwerk-ignored, not autoloaded (Spec 2).** Its body subclasses
   `::ActiveRecord::Base`, which the plain-Ruby path must never touch. `lib/nexo.rb` does
@@ -134,47 +133,30 @@ Match the agent to the file type touched; skip an agent when no file of its type
   `RunStore::Memory` per call, so the in-memory runs live in a class-level `Memory.runs` hash (keyed
   by UUID) — otherwise `Workflow.logs(id)` (a later `RunStore.default` call) could never find a run
   created by `Workflow.run`. `Memory.reset!` clears it for test isolation.
-- **Skills inject instructions only — the gem's `SkillTool` is deliberately NOT attached (Spec 3).**
-  Verified against `ruby_llm-skills` 0.3.0: `require "ruby_llm/skills"`; `RubyLLM::Skills.load(dir)`
-  returns a `Skill` exposing `#content` (SKILL.md body, lazy) — its `scripts`/`references`/`assets`
-  are arrays of *file paths*, not `RubyLLM::Tool`s. A loaded skill ships no tools. `Nexo::Agent#chat`
-  appends `skill.content` via `with_instructions(content, append: true)` (after base instructions, in
-  declaration order). It does **not** call `chat.with_skills` / attach `RubyLLM::Skills::SkillTool`,
-  whose `#execute` does ungated `File.read` of skill resources — attaching it would let the agent
-  read files outside the sandbox/permission seam. The model reaches a skill's `references/`/`scripts/`
-  through Nexo's own gated `ReadFile`/`Shell` tools instead. (Longer rationale: Recuerd0 ws 62.)
-- **`Nexo::Skills.load!` keeps a bare `require` (Spec 3).** The lazy `require "ruby_llm/skills"`
-  rescues **stdlib** `LoadError` → `Nexo::MissingDependencyError` (the gem's own
-  `RubyLLM::Skills::LoadError` is a `StandardError`, not stdlib `LoadError`). `find` does its own
-  `File.exist?` check and raises `Nexo::Error` naming the path *before* calling the gem loader. Tests
-  simulate the gem being absent by stubbing `Nexo::Skills.require` to raise `LoadError`, so the call
-  must stay a bare `require` resolving to the module's own (Kernel) method — don't rewrite it to
-  `Kernel.require`/`require_relative`. `ruby_llm-skills` is a dev dep + soft runtime dep (never a
-  gemspec `add_dependency`); `require "nexo"` with it absent must not raise.
+- **Skills inject instructions only, read by Nexo's own `Skills::Skill` (Spec 3, reworked 0.13).**
+  `lib/nexo/skills/skill.rb` reads `SKILL.md` (YAML front matter + body) and lists `scripts/`,
+  `assets/`, `references/`. No gem: `ruby_llm-skills` pins ruby_llm 1.x, and core's
+  `RubyLLM::Skill` REJECTS underscore names (`email_triage`) — it enforces the Agent Skills rule
+  (lowercase, hyphens, equal to the folder name), which would break every host skill resolved from
+  a symbol. `Nexo::Agent#chat` appends `skill.content` via `with_instructions(content, append: true)`
+  and does **not** call `chat.with_skills` (that attaches a `load_skill` tool reading host files
+  outside the sandbox/permission seam). `Skills.load!` and its `MissingDependencyError` are gone.
+
 - **Loop seam Zeitwerk placement + inflections (Spec 4).** The base class is `lib/nexo/loop.rb` →
-  `Nexo::Loop`; the backends live under `lib/nexo/loops/` → `Nexo::Loops`. Do **not** put
+  `Nexo::Loop`; the backend lives under `lib/nexo/loops/` → `Nexo::Loops`. Do **not** put
   `class Loop` in `lib/nexo/loops.rb` (that path resolves to `Nexo::Loops` and breaks autoloading).
-  `lib/nexo.rb` registers **two** inflections — `"ruby_llm" => "RubyLLM"` and
-  `"agent_sdk" => "AgentSDK"` — so `loops/ruby_llm.rb` → `Loops::RubyLLM` and `loops/agent_sdk.rb` →
-  `Loops::AgentSDK`. `Agent#prompt` now just delegates to the injected `@loop` (default
-  `Loops::RubyLLM.new`); the old inline `chat.ask` body lives only in `Loops::RubyLLM`.
-- **`Loops::AgentSDK` keeps a bare `require` + is dep-free (Spec 4).** `#run` does
-  `require "ruby_llm/agent_sdk"` and rescues stdlib `LoadError` → `Nexo::MissingDependencyError`.
-  `ruby_llm-agent_sdk` is **not** a dependency — not runtime, **not even dev** (per the spec), so the
-  offline suite can't reach a real `.query`. Tests stub it two ways: define a recording
-  `::RubyLLM::AgentSDK` module and stub `require` on the **loop instance** (`loop.stub(:require, …)`)
-  to no-op for the happy path / raise `LoadError` for the missing-dep path. Keep it a bare `require`
-  resolving to the instance's own (Kernel) method. `RubyLLM::AgentSDK.query`'s signature + the
-  `:result` terminal message shape remain **VERIFY-on-install** — confirm against the gem's README the
-  moment it's added, then record under "Verified APIs".
-- **Turn-count observability is real but cap-less (Spec 4).** `RubyLLM::Chat#before_tool_call` /
-  `#after_tool_result` **exist** on `ruby_llm` 1.16.0 (legacy aliases of `#on_tool_call`/
-  `#on_tool_result`); `Loops::RubyLLM` wires them guarded by `respond_to?(:before_tool_call)`, so a
-  version lacking them degrades to no observability, not a crash. The `turns` counter is incremented
-  for visibility only — `ruby_llm` runs the whole loop inside `#ask` and exposes **no** public
-  max-turns setting, so `Loops::RubyLLM` has no hard cap (use `Loops::AgentSDK` for that). Nexo→SDK
-  permission map: `:read_only → :default`, `:auto → :bypass_permissions`, `:ask → :default` (ask
-  stays gated in Nexo's own `on_ask`).
+  `lib/nexo.rb` registers two inflections — `"ruby_llm" => "RubyLLM"` and `"mcp" => "MCP"`.
+  `Loops::AgentSDK` was REMOVED in 0.13 (its gem was never published); `Loops::RubyLLM` is the only
+  backend shipped.
+
+- **`max_turns` is a HARD cap since 0.13 (was telemetry).** `Loops::RubyLLM#run` calls
+  `chat.with_tool_options(rounds: max_turns)` before `ask`; at the limit `ruby_llm` raises
+  `RubyLLM::ToolRoundLimitError` (a `StandardError`, not a `RubyLLM::Error`) with every tool call
+  answered, so the conversation stays valid. The loop emits `:turn_limit_exceeded` once and
+  re-raises. `rounds` counts tool-asking model RESPONSES; the older `count_turn` telemetry counts
+  tool CALLS, so its event can fire first under concurrent tool calls. `respond_to?(:with_tool_options)`
+  guards chat doubles. `max_turns: nil` removes the cap.
+
 - **`Sandboxes::Remote` is pure delegation, vendor-free (Spec 4).** It wraps any client responding to
   `read`/`write`/`exec`/`close`; `shell → client.exec(cmd, timeout:)` and `glob` parses
   `exec("ls …")[:stdout]`. The client's `exec` must return `{ stdout:, stderr:, status: }` (the
@@ -205,8 +187,8 @@ Match the agent to the file type touched; skip an agent when no file of its type
   submission order regardless of completion). `barrier.wait` re-raises the first task failure; the
   `ensure barrier&.stop` stops the rest. NEVER rescue-and-ignore inside a `barrier.async` block or
   failures vanish. Tests: `sleep` yields under the reactor so fibers genuinely overlap (peak-counter
-  assertion); `ruby_llm-test`'s `stub_response` is a **queue** (one response per request) — use
-  `stub_responses(*n)` for fan-out or the extra prompts raise `NoResponseProvidedError`.
+  assertion); `stub_replies(*n)` scripts one reply per request for fan-out (the last one
+  repeats, so a short script never raises).
 - **Artifacts mirror the event path exactly (Spec 7).** `stage`/`artifact`/`run.artifacts`
   reuse the sandbox + WorkflowRun seams — no new deps (ERB is stdlib). `Workflow#sandbox` is a
   **lazy memo** (`@sandbox ||= resolve_sandbox(self.class.sandbox)`), so a data-only workflow
@@ -236,8 +218,8 @@ Match the agent to the file type touched; skip an agent when no file of its type
   the `ensure` (guarded so it's safe pre-Spec-6). No new loop — it composes `Loops::RubyLLM`'s
   `before_tool_call`/`after_tool_result` + `:done` seam. The `Workflow.run` lifecycle/failure
   contract is byte-for-byte unchanged; `run_agent` is a plain instance method, no Rails coupling.
-- **Loop event payload shapes → the type-aware `serializable` reducer (Spec 8, VERIFIED ruby_llm
-  1.16.0).** Never `emit` a raw ruby_llm object (won't round-trip through the AR json column). The
+- **Loop event payload shapes → the type-aware `serializable` reducer (Spec 8, re-VERIFIED on the
+  real loop, ruby_llm 2.2.3).** Never `emit` a raw ruby_llm object (won't round-trip through the AR json column). The
   reducer keys off the event **type** (not object shape): `:tool_call` payload is a
   `RubyLLM::ToolCall` (`#name`, `#arguments` — a Hash; `#to_h`); `:tool_result` payload is the tool's
   **return value** — for Nexo gated tools a bare `String` (successful read) or `{error: msg}` Hash, so
@@ -284,8 +266,8 @@ Match the agent to the file type touched; skip an agent when no file of its type
   Corollary: you can't assert `refute defined?(::ActiveRecord::Base)` in the combined suite — assert
   the guard doesn't flip instead (`refute Object.const_defined?(config.session_chat_model)` + memory
   path reused).
-- **Instruction idempotency across resumes is `acts_as_chat`'s, not ours (Spec 10, VERIFIED
-  ruby_llm 1.16.0).** `Agent#chat(base: record)` re-applies `with_instructions(@instructions)` on
+- **Instruction idempotency across resumes is `acts_as_chat`'s, not ours (Spec 10, re-VERIFIED
+  ruby_llm 2.2.3).** `Agent#chat(base: record)` re-applies `with_instructions(@instructions)` on
   EVERY resume; the persisted-chat `#with_instructions` (default `append: false`) calls
   `replace_persisted_system_instructions`, which **collapses all `role: :system` messages to one** and
   updates it — so the stored thread keeps exactly one system copy no matter how many resumes. Skills
@@ -298,17 +280,20 @@ Match the agent to the file type touched; skip an agent when no file of its type
   (`@nexo_observed`) and wires once, stashing the current block in `@nexo_on_event` so a later prompt
   observes with its own block. A fresh chat (the default per-prompt path) wires once → byte-for-byte
   the prior behavior, so the existing `loops_ruby_llm_test` FakeChat still passes.
-- **Session Rails test shells out, like WorkflowRun (Spec 10).** `test/session_test.rb` execs
-  `test/support/session_model_check.rb` via `Bundler.with_unbundled_env` (boots AR + in-memory SQLite
-  + the four `acts_as_chat` host models WITH the addressing columns + a stubbed model) and asserts OK
-  markers. It threads the agent's model onto the persisted chat with `provider :openai` +
-  `assume_model_exists true` (R7) so `#to_llm` bypasses the AR model-registry lookup. The plain-Ruby
-  memory path is covered inline in `test/session_memory_test.rb` + `test/no_rails_test.rb`. `require
-  "ruby_llm/active_record/{model,message,tool_call,chat}_methods"` must precede
-  `require "ruby_llm/active_record/acts_as"` — `acts_as.rb` does not autoload those method modules.
+- **Session Rails test shells out, like WorkflowRun (Spec 10, ported to 2.2 in 0.13).**
+  `test/session_test.rb` execs `test/support/session_model_check.rb` via `Bundler.with_unbundled_env`.
+  ruby_llm 2.x persistence is TWO host models (`Chat` `acts_as_chat`, `Message` `acts_as_message`);
+  `Model`/`ToolCall` are ruby_llm's own (`RubyLLM::ActiveRecord::Model`/`ToolCall`, tables
+  `ruby_llm_models`/`ruby_llm_tool_calls`), and `config.use_new_acts_as` no longer exists. With no
+  railtie the check requires the SAME file list the railtie does, in order (`record … acts_as`), then
+  `ActiveRecord::Base.include RubyLLM::ActiveRecord::ActsAs`. The inline schema is the SQLite shape of
+  `rails g ruby_llm:install` (chats need `ruby_llm_model_id`, `cancelled`, `claim_token`,
+  `claimed_until`; plus `ruby_llm_usages`, `ruby_llm_queued_messages`, `ruby_llm_chat_files`) PLUS
+  Nexo's `agent_name`/`instance_id`. `record.model=`, `provider=`, `assume_model_exists=` still work.
+  A harmless "Active Storage is not loaded" warning is printed.
 
 - **`ActiveSupport::Notifications` becomes defined in the COMBINED offline suite (Spec 11).** A bare
-  `require "nexo_ai"` (or webmock/ruby_llm-test/async/ruby_llm each alone) leaves `::ActiveSupport::
+  `require "nexo_ai"` (or webmock/async/ruby_llm each alone) leaves `::ActiveSupport::
   Notifications` undefined — but running the full `rake test` in one process transitively loads it, so
   `Workflow.execute`/`emit`'s guarded `notify_status`/`notify_event` paths DO fire and read `run.id`.
   Consequence: any run double a test injects (e.g. the Spec 5 `CountingRun` in `workflow_async_test.rb`)
@@ -423,11 +408,12 @@ Match the agent to the file type touched; skip an agent when no file of its type
   Virtual, or when no `tracker:` is passed) — the stale *test* forces a distinguishable mtime with
   `File.utime` since `File.mtime` may not catch a same-second external edit (best-effort, per spec).
 
-- **Durable approval bridges `:approve` → `suspend!` on Branch A (Spec 16, VERIFIED ruby_llm 1.16.0).**
-  Group 0 confirmed a tool `execute` exception PROPAGATES out of `chat.ask`: `Chat#execute_tool`
-  (`chat.rb:389`) → `tool.call` (`tool.rb:105`) → `execute(**args)` has NO rescue in the chain, and
-  `RubyLLM.instrument` (`instrumentation.rb:12,20`) yields without rescuing; `Loops::RubyLLM#run` and
-  `Agent#prompt` don't rescue either. So `Nexo::ApprovalRequired` (top-level, `< StandardError` like
+- **Durable approval bridges `:approve` → `suspend!` on Branch A (Spec 16, re-VERIFIED ruby_llm 2.2.3).**
+  On 2.2.3 a tool `execute` exception still PROPAGATES out of `chat.ask`: `Chat#invoke_tool` wraps
+  the call in `rescuing_tool`, which hands a `StandardError` to `tool.rescue_with_handler`, and that
+  RE-RAISES when no `rescue_from` handler matches (`support/rescuable.rb`). A host registering a
+  catch-all `RubyLLM::Tool.rescue_from StandardError` WOULD swallow it. Proven on the real loop in
+  `test/real_loop_test.rb`. So `Nexo::ApprovalRequired` (top-level, `< StandardError` like
   `Permissions::Denied` — NOT `< Nexo::Error`) raised by the new `:approve` gate travels out to
   `Workflow#run_agent`, which rescues it, records `"__approval__"` (reserved `state` key, sibling of
   `"__suspend__"`), and `suspend!`s. `resume(approved: …)` threads the decision via `Agent.new(decision:)`
@@ -478,70 +464,47 @@ Match the agent to the file type touched; skip an agent when no file of its type
   renders them as literal text. Relative links from `docs/*.md` to `examples/*` are rewritten by RDoc to
   `…_rb.html` pages that don't exist in the site, so guides link examples by GitHub blob URL instead.
 
-- **MCP OAuth header key + construction-only refresh (Spec 18, VERIFIED ruby_llm-mcp 1.0.0).**
-  `MCP.build(name:, transport:, token: nil, **config)` gained a `token:` (static String or callable)
-  that resolves and merges `config[:headers]["Authorization"] = "Bearer <value>"` via private
-  `inject_auth`, then hands off through the new `client_factory` seam (defaults to `::RubyLLM::MCP`,
-  swappable in tests via `stub_client_factory(fake) { … }`). Group 0 findings: the HTTP-family
-  transports (`:http`/`:sse`/`:streamable`, native/`streamable_http.rb` + `sse.rb`) read auth headers
-  from **`config[:headers]` (a Hash)** and **SNAPSHOT** them at construction (`@headers = headers || {}`,
-  `build_common_headers` dups it) — there is NO per-request header callback for a plain `headers` Hash.
-  So a callable `token:` resolves **exactly once per client build**; a rotated token needs `Agent#close`
-  + a fresh prompt (Spec 6 memoizes the client on the agent instance) → that's the documented
-  reconnect-on-rotation caveat, NOT a per-request refresh. `token:` is a dedicated keyword so it never
-  enters `**config` (nothing to strip); absent-`token:`/stdio config passes through byte-for-byte (no
-  `headers` key). The Spec 6 gate (`authorize_mcp!`, `mcp_allow`, `GatedTool`) and the Spec 8 event path
-  are **byte-for-byte unchanged** — no-leak is passive (the reducer carries only tool name/args + return
-  value, never connection config), proven by `test/mcp_token_no_leak_test.rb` (bearer absent from
-  `run.events`). Nexo runs no OAuth flow/refresh/store; it does NOT police `ruby_llm-mcp`'s own header
-  logging (documented host-boundary caveat in `docs/mcp.md`).
+## Verified APIs (ruby_llm 2.2.3 — the 0.13 port)
 
-## Verified APIs (Spec 5)
+Read from the installed gem source and proven through `test/real_loop_test.rb`. The 1.16 facts
+this replaces are gone; do not trust memory of the 1.x API.
 
-- **ruby_llm 1.16.0 HTTP adapter is fiber-friendly.** `RubyLLM::Connection` builds Faraday with
-  `@config.faraday_adapter || :net_http` (default `:net_http`), which yields on socket I/O under the
-  fiber scheduler. No native "async mode" to prefer; `Loops::RubyLLM` needs no change to run in a
-  reactor.
-- **Offload primitive = `Thread.new(&block).value`.** `Async::WorkerPool` is NOT present in the
-  installed `async` 2.41.0 (`require "async/worker_pool"` → LoadError; const undefined). Shipped the
-  always-works `Thread#value` fallback (it re-raises block exceptions in the caller).
-- **SPIKE — parallel tool calls: a clean public seam EXISTS (still out of scope for v1).** ruby_llm
-  1.16.0 already supports concurrent tool execution via a public API: `chat.with_tools(*tools,
-  concurrency:)` / `RubyLLM.config.tool_concurrency` → `Chat#handle_tool_calls` dispatches to
-  `handle_concurrent_tool_calls` → `ToolConcurrency.run`. No monkeypatch needed. Left unbuilt per the
-  spec; a future spec can wire `concurrency:` through `Agent`/`Loops::RubyLLM` cleanly.
+- **Tool DSL.** `parameter :name, type:, required:, description:` and `description "…"`.
+  `param`/`desc:`/`params` are REMOVED (NoMethodError at class load). Body is `#execute(**kw)`.
+- **The loop calls tools with keywords:** `tool.call(**arguments, tool_call:)`. `Tool#call` strips
+  `tool_call:` unless `execute` declares it. A wrapper must define `call(**arguments)`.
+- **`chat.tools`** is a Hash keyed by tool-name Symbol — but it is DERIVED on each call
+  (`@tools.reject…` plus built-ins and MCP tools), so mutating it (`transform_values!`) changes
+  nothing. Use `Agent#wrap_mcp_tool` to decorate.
+- **`with_tools` does not type-check.** It needs `qualified_name`, `namespace`, `name`,
+  `deferred?`; rendering needs `description`/`parameters_schema`. A `method_missing` delegator
+  (`MCP::GatedTool`) is accepted. Execution settings moved off it: `with_tool_options(choice:,
+  calls:, concurrency:, workers:, rounds:)`; `chat.concurrency` is still a reader.
+- **Callbacks are additive.** `before_tool_call { |tool_call| }` gets a `RubyLLM::ToolCall`
+  (`name`, `arguments` — a Hash with SYMBOL keys now); `after_tool_result { |result| }` gets the
+  tool's raw return value. `on_tool_call`/`on_tool_result` are gone. `around_tool_call { |call, &run| }`
+  exists and skips the tool when `run` is never called — the natural single choke point for
+  permissions (0.14 backlog; today the check lives inside each tool body).
+- **MCP is core.** `RubyLLM.mcp(name:, url: | command: [argv], env:, directory:, headers:,
+  bearer_token:, timeout:)` returns a `RubyLLM::MCP` instance; unknown settings raise
+  `ArgumentError`. Nothing connects until the first request. `server.tools` → Array of
+  `RubyLLM::MCP::Tool` (a `RubyLLM::Tool` subclass, `call(**arguments)`); teardown is `#close`
+  (not `#stop`). A Proc `bearer_token`/header is resolved per request via `instance_exec`. A stdio
+  process inherits only `Stdio::INHERITED_ENV` and its stderr is the parent's. The community
+  `ruby_llm-mcp` gem defines the same constant and must not be bundled.
+- **Nexo attaches MCP tools with `with_tools`, NOT `chat.with_mcp(server)`** — `with_mcp` offers the
+  server's tools straight from `mcp.reachable_tools`, with no place to insert the gate. Core's own
+  `only`/`requires_approval` class macros are not used yet (0.14 backlog).
+- **Tool results.** A Hash/Array return reaches the model as JSON text (was Ruby `inspect`).
+  Malformed arguments and unknown tool names become `{error:}` results without running anything.
+- **`with_instructions(text, append: true)`** still appends; default replaces.
+- **Not re-verified on 2.2:** the "Faraday `:net_http` yields under the fiber scheduler" claim from
+  Spec 5 (the connection class moved to `RubyLLM::Transport::Connection`). `nexo-mail` runs its
+  source agents under an Async reactor on 2.2.3 without change, which is the practical evidence.
+- **Offload primitive = `Thread.new(&block).value`** (Spec 5, unchanged — an `async` fact, not a
+  ruby_llm one).
 
-## Verified APIs (Spec 6 — ruby_llm-mcp 1.0.0)
-
-Group-0 probes against the installed `ruby_llm-mcp` 1.0.0 (soft dev-only dep; unversioned in
-the Gemfile, NOT a gemspec `add_dependency` — `require "nexo"` with it absent must not raise;
-`Nexo::MCP.load!` bare-`require`s `ruby_llm/mcp` and rescues stdlib `LoadError` →
-`MissingDependencyError`, mirroring `Skills.load!`):
-
-- **Client constructor:** `RubyLLM::MCP.client(name:, transport_type:, config: {})`. Nexo's
-  `MCP.build(name:, transport:, **config)` maps `name→name`, `transport→transport_type`, and
-  collects **every other kwarg into `config:`** verbatim (stdio: `command:`/`args:`; sse:
-  `url:`). Client **connects on construction** (`start: true` default) and is reusable across
-  prompts until torn down.
-- **Tools + tool shape:** `client.tools` → Array of `RubyLLM::MCP::Tool` (which **subclasses
-  `RubyLLM::Tool`**). `#name`, `#description`, `#params_schema`; the tool body is `#execute(**params)`
-  but the chat loop invokes `tool.call(args)` with a **positional Hash** (`RubyLLM::Tool#call`
-  normalizes + dispatches to `#execute`).
-- **Attach = duck-typed, no subclass required.** `RubyLLM::Chat#with_tool` does NOT type-check —
-  it stores any object responding to `#name` and the loop calls `tool.call(args)`. So
-  `MCP::GatedTool` is a **plain delegating wrapper** (explicit `#name`/`#call`, `method_missing`
-  forwards `description`/`params_schema`/`to_h`), NOT a `RubyLLM::Tool` subclass. `#call`
-  authorizes via `authorize_mcp!` then delegates; `rescue Denied → {error:}` (never raised into
-  the loop), mirroring `tools/write_file.rb`.
-- **Teardown = `#stop`, not `close`.** `RubyLLM::MCP::Client` exposes `start`/`stop`/`restart!`
-  (no `close`). `Agent#close` calls `client.stop` (guarded, falls back to `close` for other
-  client shapes) and clears the instance memo (`@mcp_clients`).
-- **Gate is a second axis.** `authorize_mcp!(name, args)` is a sibling of `authorize!` — the
-  sandbox `authorize!`/`@allow` path is byte-for-byte unchanged. `mcp_allow` (exact-match, no
-  globs) defaults to `[]` ⇒ under `:read_only` every MCP tool is denied (fail closed). The
-  `test_missing_gem` guard must check `Gem::Specification.find_all_by_name` (installability),
-  NOT `defined?(RubyLLM::MCP)` — the constant is absent until first lazy `require` even when the
-  gem is installed.
+## More gotchas
 
 - **Spec 21 scheduling tests load ActiveJob IN-PROCESS (not a subprocess).** Unlike the Spec 11/13
   Rails-runtime tests (which shell out via `Bundler.with_unbundled_env` because they need

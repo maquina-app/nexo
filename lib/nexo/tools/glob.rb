@@ -6,7 +6,7 @@ module Nexo
     # a denial is returned as `{ error: ... }`.
     class Glob < RubyLLM::Tool
       description "List files in the workspace matching a glob pattern."
-      param :pattern, type: :string, required: true, desc: "Glob pattern, e.g. **/*.rb"
+      parameter :pattern, type: :string, required: true, description: "Glob pattern, e.g. **/*.rb"
 
       # `sandbox` performs the match; `permissions` gates the `:glob` capability.
       def initialize(sandbox:, permissions:)

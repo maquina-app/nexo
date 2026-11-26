@@ -3,26 +3,24 @@
 module Nexo
   # The loop seam: the engine that drives one prompt to completion. Swapping the
   # loop swaps *how* the agent's turns are run — the plain provider-neutral
-  # `ruby_llm` tool loop, or an opt-in vendor-tuned backend — by constructor
-  # injection, with no change to the agent class.
+  # `ruby_llm` tool loop, or a backend of your own — by constructor injection,
+  # with no change to the agent class.
   #
   # A loop implements the contract below. The base class raises so an incomplete
   # subclass fails loudly. The optional `&on_event` block, when given, is called
   # with `(type, payload)` as the run progresses (e.g. `:tool_call`,
   # `:tool_result`, `:done`) — observability only; it never steers the run.
   #
-  # See Loops::RubyLLM (default, provider-neutral) and Loops::AgentSDK
-  # (opt-in, Anthropic-oriented).
+  # See Loops::RubyLLM, the default and only backend Nexo ships.
   class Loop
     # Runs `prompt` through `agent` and returns the final response. `max_turns`
-    # is a hint a backend may enforce as a hard cap (AgentSDK) or expose only as
-    # observability (RubyLLM — see the turn-cap caveat in the README).
+    # caps how many tool rounds one prompt may run; Loops::RubyLLM enforces it.
     #
     # `chat:` (default `nil`) lets a Nexo::Session inject a hydrated, continuing
     # chat so the loop runs over the persisted thread. It is part of the base
-    # contract so every backend accepts it: Loops::RubyLLM uses it; a backend
-    # that runs its own in-process loop (Loops::AgentSDK) rejects a non-nil chat
-    # rather than silently dropping the session's memory.
+    # contract so every backend accepts it; a backend that cannot continue a
+    # chat should reject a non-nil one rather than silently drop the session's
+    # memory.
     def run(agent:, prompt:, max_turns: 25, chat: nil, &on_event)
       raise NotImplementedError
     end

@@ -7,7 +7,7 @@ module Nexo
     # returned as `{ error: ... }` rather than raised into the loop.
     class Shell < RubyLLM::Tool
       description "Run a shell command in the agent's workspace."
-      param :command, type: :string, required: true, desc: "The command to execute"
+      parameter :command, type: :string, required: true, description: "The command to execute"
 
       # `sandbox` runs the command; `permissions` gates the `:shell` capability.
       def initialize(sandbox:, permissions:)

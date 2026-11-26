@@ -18,7 +18,6 @@ class SessionMemoryTest < Minitest::Test
   def setup
     skip "session tests use the stubbed provider; skipped in live mode" if ENV["NEXO_LIVE"] == "1"
     Nexo::Session::MemoryStore.reset!
-    RubyLLM::Test.reset
   end
 
   def test_without_a_host_chat_model_the_session_uses_the_in_memory_backend
@@ -45,7 +44,7 @@ class SessionMemoryTest < Minitest::Test
   end
 
   def test_prompt_returns_the_response_and_appends_to_the_in_memory_thread
-    RubyLLM::Test.stub_response("Nice to meet you, Mac!")
+    stub_replies("Nice to meet you, Mac!")
 
     response = Nexo::Session.resume(Assistant, "user-42").prompt("My name is Mac.")
 
@@ -53,7 +52,7 @@ class SessionMemoryTest < Minitest::Test
   end
 
   def test_a_resumed_session_continues_the_same_live_thread
-    RubyLLM::Test.stub_responses("first reply", "second reply")
+    stub_replies("first reply", "second reply")
 
     Nexo::Session.resume(Assistant, "user-42").prompt("My name is Mac.")
     # A later resume of the SAME pair reuses the one live chat held in MemoryStore,
@@ -71,7 +70,7 @@ class SessionMemoryTest < Minitest::Test
   end
 
   def test_distinct_instance_ids_get_distinct_threads
-    RubyLLM::Test.stub_responses("a", "b")
+    stub_replies("a", "b")
 
     one = Nexo::Session.resume(Assistant, "user-1")
     two = Nexo::Session.resume(Assistant, "user-2")
