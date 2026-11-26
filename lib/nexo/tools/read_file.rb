@@ -11,7 +11,7 @@ module Nexo
     # the model can adapt instead of the loop crashing.
     class ReadFile < RubyLLM::Tool
       description "Read a file from the workspace."
-      param :path, type: :string, required: true, desc: "Path to the file to read"
+      parameter :path, type: :string, required: true, description: "Path to the file to read"
 
       # Returned content is capped to this many bytes (head), matching Tools::Fetch,
       # so a single huge file can't blow a small context window. The read-before-write

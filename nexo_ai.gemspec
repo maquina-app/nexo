@@ -41,27 +41,22 @@ Gem::Specification.new do |spec|
 
   # Runtime dependencies. Provider neutrality is a hard rule: the only vendor-facing
   # dependency is ruby_llm, which reaches every LLM provider through one interface.
-  # Soft deps (ruby_llm-skills / ruby_llm-mcp / ruby_llm-agent_sdk) are intentionally
-  # NOT declared here — they are lazily required in their own specs.
+  # MCP and skills come from ruby_llm core since 2.1 / 2.2, so the community
+  # ruby_llm-mcp and ruby_llm-skills gems are no longer used (ruby_llm-mcp defines
+  # the same RubyLLM::MCP constant as core and must not be installed alongside it).
   #
-  # Pinned to the 1.16 line: every ruby_llm API Nexo composes (Chat#with_tools,
-  # #with_instructions, the before_tool_call/after_tool_result callbacks, the
-  # acts_as_chat persistence layer) was verified against 1.16.0. The upcoming
-  # ruby_llm 2.0 is NOT supported yet — the pessimistic constraint keeps it out.
-  spec.add_dependency "ruby_llm", "~> 1.16"
+  # Pinned to the 2.2 line: every ruby_llm API Nexo composes (Chat#with_tools,
+  # #with_tool_options, #with_instructions, the before_tool_call/after_tool_result
+  # callbacks, RubyLLM::MCP, the acts_as_chat persistence layer) was verified
+  # against 2.2.3. ruby_llm ships its upgrades one minor at a time, so the
+  # pessimistic constraint keeps an unverified 2.3 out.
+  spec.add_dependency "ruby_llm", "~> 2.2.0"
   spec.add_dependency "zeitwerk", "~> 2.6"
 
-  # Dev dependencies. ruby_llm-test stubs models so the suite runs offline (first
-  # exercised in Spec 1). minitest and rake remain declared in the Gemfile.
-  spec.add_development_dependency "ruby_llm-test"
+  # Dev dependencies. The offline suite stubs model replies with ruby_llm's own
+  # test helper, so no stubbing gem is needed. minitest and rake remain declared
+  # in the Gemfile.
   spec.add_development_dependency "standard"
-
-  # ruby_llm-skills is a SOFT/optional runtime dependency (Spec 3): Nexo::Skills.load!
-  # requires it lazily behind a rescue that raises Nexo::MissingDependencyError, so it
-  # is intentionally NOT a runtime add_dependency — `require "nexo"` with the gem absent
-  # must not raise. It is a DEV dependency so the offline suite exercises real skill
-  # loading against an on-disk fixture.
-  spec.add_development_dependency "ruby_llm-skills"
 
   # Rails path (Spec 2): the engine, generator, WorkflowRun model, and the
   # test/dummy app. These are never runtime deps — the core runs in plain Ruby

@@ -64,7 +64,6 @@ class AgentTest < Minitest::Test
     # RubyLLM::Test reference) so a live run of the whole suite doesn't crash here.
     skip "agent wiring tests use the stubbed provider; skipped in live mode" if ENV["NEXO_LIVE"] == "1"
     Nexo.reset_config!
-    RubyLLM::Test.reset
   end
 
   def teardown
@@ -213,7 +212,7 @@ class AgentTest < Minitest::Test
   end
 
   def test_prompt_runs_chat_ask_with_stubbed_response
-    RubyLLM::Test.stub_response("review complete")
+    stub_replies("review complete")
 
     response = VirtualAgent.new.prompt("Review it")
 

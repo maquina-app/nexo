@@ -1,53 +1,55 @@
 # frozen_string_literal: true
 
 module Nexo
-  # Namespace for the pluggable loop backends that drive one prompt to
-  # completion: Loops::RubyLLM (the default, provider-neutral) and
-  # Loops::AgentSDK (opt-in, Anthropic-oriented). Selected per agent via the
-  # `loop:` constructor injection; the base contract is Nexo::Loop.
+  # Namespace for the loop backends that drive one prompt to completion.
+  # Loops::RubyLLM is the default and the only one Nexo ships; a custom backend
+  # subclasses Nexo::Loop and is selected per agent via the `loop:` constructor
+  # injection.
   module Loops
-    # The default, provider-neutral loop. It is the Spec 1 `Agent#prompt` body
-    # extracted verbatim: build the agent's chat (with its four sandbox-backed
-    # tools) and let `ruby_llm` run the whole tool loop inside `#ask`. It works
-    # identically on any `ruby_llm`-supported model — Anthropic, OpenAI, Gemini,
-    # Ollama/Gemma — because file/shell capability comes entirely from the
-    # agent's own sandbox-backed tools, not from anything vendor-specific here.
+    # The default, provider-neutral loop: build the agent's chat (with its
+    # sandbox-backed tools) and let `ruby_llm` run the whole tool loop inside
+    # `#ask`. It works identically on any `ruby_llm`-supported model — Anthropic,
+    # OpenAI, Gemini, Ollama/Gemma — because file/shell capability comes entirely
+    # from the agent's own sandbox-backed tools, not from anything vendor-specific
+    # here.
     #
-    # Tool-call *observability* (not a hard cap — see the turn-cap caveat in the
-    # README) is wired through `ruby_llm`'s `before_tool_call`/`after_tool_result`
-    # callbacks when the installed version exposes them, and is silently omitted
-    # otherwise so an older/newer `ruby_llm` degrades to no observability rather
-    # than crashing.
+    # Tool activity is reported through `ruby_llm`'s `before_tool_call` /
+    # `after_tool_result` callbacks, and the turn cap is `ruby_llm`'s own
+    # `with_tool_options(rounds:)`.
     class RubyLLM < Nexo::Loop
       # `chat:` lets a Nexo::Session inject the hydrated, continuing chat so the
       # loop runs over the persisted thread; left nil it builds the agent's own
-      # fresh chat exactly as before — the default (no-session) path is unchanged.
-      # `max_turns` is a BUDGET, not a hard stop. ruby_llm runs the whole tool loop
-      # inside #ask and its callbacks cannot halt it, so this loop cannot cut a run
-      # short. What it can do is COUNT the tool calls and say so: exceeding the budget
-      # emits a `:turn_limit_exceeded` event (once) carrying the count and the limit.
+      # fresh chat.
       #
-      # Previously the parameter was accepted and never read, which made it look like
-      # a safety bound it has never been. Treat it as telemetry: if you need a hard
-      # ceiling, bound the work inside your tools, or use Loops::AgentSDK whose engine
-      # enforces its own max_turns natively.
+      # `max_turns` is a HARD CAP on tool rounds: the number of model responses
+      # that ask for tools within this one prompt, however many calls each holds.
+      # When the cap is reached `ruby_llm` raises `RubyLLM::ToolRoundLimitError`
+      # instead of asking the model again. Every tool call that ran has its
+      # result, so the conversation stays valid. This loop emits a
+      # `:turn_limit_exceeded` event and lets the error propagate — a run that
+      # blows its budget fails loudly rather than continuing unbounded. Pass
+      # `max_turns: nil` to run uncapped.
       def run(agent:, prompt:, max_turns: 25, chat: nil, &on_event)
         chat ||= agent.chat
 
         wire_observability(chat, max_turns: max_turns, &on_event)
+        chat.with_tool_options(rounds: max_turns) if chat.respond_to?(:with_tool_options)
 
         response = chat.ask(prompt)
         on_event&.call(:done, response)
         response
+      rescue ::RubyLLM::ToolRoundLimitError
+        report_turn_limit(chat, max_turns)
+        raise
       end
 
       private
 
-      # Tool-call OBSERVABILITY only: ruby_llm runs the whole tool loop inside
-      # #ask, so these callbacks report tool activity but cannot halt the loop.
-      # BOTH callbacks must be present to wire — confirmed on ruby_llm 1.16.0
-      # (legacy aliases of #on_tool_call/#on_tool_result); a chat missing either
-      # degrades to no observability rather than crashing on the one it has.
+      # Tool-call OBSERVABILITY: these callbacks report tool activity; the cap
+      # itself is `with_tool_options(rounds:)` in #run. BOTH callbacks must be
+      # present to wire (verified on ruby_llm 2.2.3, where they are additive); a
+      # chat double missing either degrades to no observability rather than
+      # crashing on the one it has.
       #
       # A continuing Nexo::Session runs the loop repeatedly over the SAME chat, so
       # the wiring is done once per chat (flagged with an ivar) — otherwise ruby_llm
@@ -77,16 +79,23 @@ module Nexo
         end
       end
 
-      # Counts one tool call and reports the first time the budget is passed. Reported
-      # once per prompt, not per call, so a long run does not drown its own event log.
+      # Counts one tool call. A round may hold several calls, so the count can pass
+      # `max_turns` before the round cap trips; the first time it does, that is
+      # reported once per prompt so a long run does not drown its own event log.
       def count_turn(chat)
         limit = chat.instance_variable_get(:@nexo_max_turns)
         turns = chat.instance_variable_get(:@nexo_turns).to_i + 1
         chat.instance_variable_set(:@nexo_turns, turns)
-        return unless limit && turns > limit
+        report_turn_limit(chat, limit) if limit && turns > limit
+      end
+
+      # Emits `:turn_limit_exceeded` at most once per prompt, carrying the tool-call
+      # count so far and the limit.
+      def report_turn_limit(chat, limit)
         return if chat.instance_variable_get(:@nexo_turns_reported)
 
         chat.instance_variable_set(:@nexo_turns_reported, true)
+        turns = chat.instance_variable_get(:@nexo_turns).to_i
         chat.instance_variable_get(:@nexo_on_event)&.call(:turn_limit_exceeded, {turns: turns, max_turns: limit})
       end
     end

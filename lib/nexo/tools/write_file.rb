@@ -6,8 +6,8 @@ module Nexo
     # a denial is returned as `{ error: ... }` (and nothing is written).
     class WriteFile < RubyLLM::Tool
       description "Write content to a file in the workspace."
-      param :path, type: :string, required: true, desc: "Path to the file to write"
-      param :content, type: :string, required: true, desc: "Content to write"
+      parameter :path, type: :string, required: true, description: "Path to the file to write"
+      parameter :content, type: :string, required: true, description: "Content to write"
 
       # `tracker:` is an optional ReadTracker shared with Tools::ReadFile.
       # Default `nil` ⇒ the read-before-write + stale guard is off, preserving

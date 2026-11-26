@@ -2,9 +2,9 @@
 
 require "test_helper"
 
-# Spec 18 — no-leak guarantee (passive). A bearer token injected by Nexo::MCP.build
-# lives only in the in-memory header Hash handed to ruby_llm-mcp; it must never reach
-# the event path. This drives a Workflow whose (stubbed) MCP tool is exercised via the
+# No-leak guarantee (passive). A bearer token handed to Nexo::MCP.build lives only
+# in the in-memory settings of the ruby_llm MCP server; it must never reach the
+# event path. This drives a Workflow whose (stubbed) MCP tool is exercised via the
 # Spec 8 run_agent glue and asserts the bearer value appears NOWHERE in run.events.
 #
 # The reducer (Workflow#reduce_tool_call/#reduce_tool_result) carries only tool
@@ -15,32 +15,33 @@ class McpTokenNoLeakTest < Minitest::Test
 
   def setup = Nexo::RunStore::Memory.reset!
 
-  # Records the config ruby_llm-mcp would receive, and exposes the wrapped MCP tool
+  # Records the settings ruby_llm would receive, and exposes the wrapped MCP tool
   # so the spy agent can exercise it through the real Nexo::MCP::GatedTool.
   class FakeClientFactory
-    attr_reader :config
+    attr_reader :settings
 
-    def client(name:, transport_type:, config:)
-      @config = config
+    def mcp(**settings)
+      @settings = settings
       FakeClient.new
     end
 
-    # A minimal ruby_llm-mcp-shaped client exposing one read tool.
+    # A minimal MCP-server-shaped object exposing one read tool.
     class FakeClient
       def tools = [FakeTool.new]
 
-      def stop = nil
+      def close = nil
     end
 
-    # A ruby_llm-mcp tool whose call returns a normal read result — no token.
+    # An MCP tool whose call returns a normal read result — no token. Called with
+    # keywords, as the ruby_llm chat loop does.
     class FakeTool
       def name = "search_threads"
 
       def description = "search Gmail threads"
 
-      def params_schema = {}
+      def parameters_schema = {}
 
-      def call(_args = {}) = "3 threads matched"
+      def call(**_arguments) = "3 threads matched"
     end
   end
 
@@ -59,7 +60,7 @@ class McpTokenNoLeakTest < Minitest::Test
       perms = Nexo::Permissions.new(mode: :read_only, mcp_allow: %w[search_threads])
       tool = Nexo::MCP::GatedTool.new(tool: client.tools.first, permissions: perms)
       args = {"query" => "in:inbox"}
-      result = tool.call(args)
+      result = tool.call(**args.transform_keys(&:to_sym))
 
       if block_given?
         yield(:tool_call, {name: tool.name, args: args})

@@ -2,9 +2,9 @@
 
 require "test_helper"
 
-# Skill discovery is pure filesystem logic over a real on-disk fixture loaded by
-# the (dev-dependency) ruby_llm-skills gem — no model, no network. The fixture
-# lives at test/fixtures/skills/triage/SKILL.md.
+# Skill discovery is pure filesystem logic over a real on-disk fixture read by
+# Nexo::Skills::Skill — no model, no network, no extra gem. The fixture lives at
+# test/fixtures/skills/triage/SKILL.md.
 class SkillsTest < Minitest::Test
   FIXTURES = File.expand_path("fixtures/skills", __dir__)
 
@@ -34,17 +34,5 @@ class SkillsTest < Minitest::Test
     error = assert_raises(Nexo::Error) { Nexo::Skills.find(:nope) }
 
     assert_equal "skill not found: #{File.join(FIXTURES, "nope", "SKILL.md")}", error.message
-  end
-
-  # Simulate ruby_llm-skills being absent: force the lazy require to raise the
-  # stdlib LoadError and assert load! converts it to the actionable
-  # MissingDependencyError (naming the gem + remedy), rather than leaking LoadError.
-  def test_load_bang_converts_missing_gem_into_missing_dependency_error
-    Nexo::Skills.stub(:require, ->(_path) { raise LoadError, "cannot load such file -- ruby_llm/skills" }) do
-      error = assert_raises(Nexo::MissingDependencyError) { Nexo::Skills.load! }
-
-      assert_match(/ruby_llm-skills/, error.message)
-      assert_match(/Gemfile/, error.message)
-    end
   end
 end

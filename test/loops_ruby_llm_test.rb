@@ -2,10 +2,10 @@
 
 require "test_helper"
 
-# The default, provider-neutral loop. Wiring is asserted against the
-# ruby_llm-test fake provider (no network, deterministic), plus a hand-built
-# fake chat for the tool-callback observability which the fake provider does not
-# itself drive.
+# The default, provider-neutral loop. Wiring is asserted with scripted replies
+# (no network, deterministic), plus a hand-built fake chat for the callback
+# plumbing in isolation. The same behaviour through ruby_llm's real loop is in
+# test/real_loop_test.rb.
 class LoopsRubyLLMTest < Minitest::Test
   TEST_MODEL = "gpt-4o-mini"
 
@@ -47,7 +47,6 @@ class LoopsRubyLLMTest < Minitest::Test
   def setup
     skip "loop wiring tests use the stubbed provider; skipped in live mode" if ENV["NEXO_LIVE"] == "1"
     Nexo.reset_config!
-    RubyLLM::Test.reset
   end
 
   def teardown
@@ -59,7 +58,7 @@ class LoopsRubyLLMTest < Minitest::Test
   # gated out (Spec 14 R2); the other three attach because the fixture grants
   # :write on top of the read/glob default.
   def test_default_loop_agent_attaches_tools_and_prompt_returns
-    RubyLLM::Test.stub_response("review complete")
+    stub_replies("review complete")
     agent = VirtualAgent.new
 
     assert_instance_of Nexo::Loops::RubyLLM, agent.loop
@@ -75,7 +74,7 @@ class LoopsRubyLLMTest < Minitest::Test
   end
 
   def test_on_event_receives_done_with_the_response
-    RubyLLM::Test.stub_response("all done")
+    stub_replies("all done")
     events = []
 
     response = VirtualAgent.new.prompt("Go") { |type, payload| events << [type, payload] }
@@ -83,9 +82,8 @@ class LoopsRubyLLMTest < Minitest::Test
     assert_includes events, [:done, response]
   end
 
-  # before_tool_call/after_tool_result are observability-only (confirmed present
-  # on ruby_llm 1.16.0). Drive them through a fake chat to assert the loop
-  # forwards :tool_call/:tool_result.
+  # Drive before_tool_call/after_tool_result through a fake chat to assert the
+  # loop forwards :tool_call/:tool_result.
   def test_on_event_forwards_tool_call_and_tool_result_when_tools_fire
     chat = FakeChat.new
     events = []
@@ -119,9 +117,9 @@ class LoopsRubyLLMTest < Minitest::Test
     assert_equal [[:done, "ok"]], events
   end
 
-  # max_turns cannot HALT this loop — ruby_llm runs the whole tool loop inside #ask
-  # and its callbacks are observation-only. It was previously accepted and never read,
-  # which read as a safety bound it has never been. It is now counted and reported.
+  # The hard cap is ruby_llm's `rounds:` (see test/real_loop_test.rb). Separately,
+  # the loop counts tool CALLS and reports the first time they pass max_turns —
+  # a round can hold several calls, so this can fire before the cap trips.
   def test_exceeding_max_turns_emits_a_single_event
     chat = FakeChat.new
     events = []

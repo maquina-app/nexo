@@ -11,18 +11,13 @@ require "nexo_ai"
 
 require "minitest/autorun"
 
-# Stub the model with ruby_llm-test so the core suite is offline and
-# deterministic — no API keys, no network, no flaky tool-calling. The optional
-# live smoke (NEXO_LIVE=1) talks to a real provider, so the fake provider is NOT
-# installed in that mode.
+# ruby_llm's own test helper scripts what the model replies, with no provider and
+# no API key, while the real conversation loop (tools, callbacks, round limits)
+# still runs. `stub_replies` is available in every test; the script is cleared
+# after each one. Gated off for live smoke so test/live_smoke_test.rb reaches a
+# real provider. A dummy key lets chat resolution proceed before a stub is set.
 unless ENV["NEXO_LIVE"] == "1"
-  # ruby_llm-test 0.2.0 references SimpleDelegator without requiring stdlib delegate.
-  require "delegate"
-  require "ruby_llm/test"
-  RubyLLM::Models.singleton_class.prepend(RubyLLM::Test::ResolveWithTestProvider)
-
-  # Building a chat resolves a model + provider; give the default provider a dummy
-  # key so resolution never reaches out for credentials. The fake provider above
-  # intercepts the actual request.
+  require "ruby_llm/test_helper"
+  Minitest::Test.include(RubyLLM::TestHelper)
   RubyLLM.configure { |config| config.openai_api_key = "test" }
 end

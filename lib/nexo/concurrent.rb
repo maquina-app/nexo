@@ -65,7 +65,7 @@ module Nexo
     private
 
     # Lazily loads `async` and its coordination primitives, mirroring the
-    # soft-dependency precedent in Skills.load! / Loops::AgentSDK: a bare
+    # soft-dependency pattern: a bare
     # `require` (so tests can stub it on the instance) rescuing stdlib `LoadError`
     # into a MissingDependencyError that names the gem and the exact remedy.
     def require_async!

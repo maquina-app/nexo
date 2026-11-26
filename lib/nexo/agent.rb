@@ -217,20 +217,6 @@ module Nexo
       end
     end
 
-    # The set of tool names handed to an opt-in backend that ships its own tools
-    # (e.g. Loops::AgentSDK). The default Loops::RubyLLM ignores this — it
-    # uses the agent's own sandbox-backed tools instead.
-    ALLOWED_TOOLS = %w[Read Write Edit Bash Glob Grep].freeze
-
-    # Maps Nexo's permission modes onto AgentSDK's own permission vocabulary,
-    # consumed by Loops::AgentSDK. `:ask` maps to `:default` on purpose: human
-    # gating stays in Nexo's own `on_ask` path and is not delegated to the SDK.
-    PERMISSION_MODE_MAP = {
-      read_only: :default,
-      auto: :bypass_permissions,
-      ask: :default
-    }.freeze
-
     # The resolved per-instance configuration (arg → class macro → config): the
     # working directory, model, provider, `assume_model_exists` flag, the resolved
     # Sandbox and Permissions, the system instructions, and the injected Loop.
@@ -287,7 +273,7 @@ module Nexo
     # Re-applying `@instructions` on every resume stays idempotent because the
     # persisted-chat `#with_instructions` (default `append: false`) *replaces* the
     # stored `role: :system` messages rather than appending, so the thread keeps
-    # exactly one copy across resumes (VERIFIED, ruby_llm 1.16.0).
+    # exactly one copy across resumes (VERIFIED, ruby_llm 2.2.3).
     def chat(base: nil)
       c = base || RubyLLM.chat(**chat_model_options)
       c = apply_instructions(c)
@@ -404,33 +390,16 @@ module Nexo
 
     public
 
-    # The agent's Nexo permission mode mapped onto an opt-in backend's own
-    # permission vocabulary (see PERMISSION_MODE_MAP). Consumed by
-    # Loops::AgentSDK; the default Loops::RubyLLM does its gating inside the
-    # sandbox-backed tools and ignores this.
-    def permission_mode
-      PERMISSION_MODE_MAP.fetch(@permissions.mode, :default)
-    end
-
-    # The tool names handed to an opt-in backend that ships its own tools.
-    def allowed_tools
-      ALLOWED_TOOLS
-    end
-
     # Releases any MCP server connections held by this agent instance. Clients are
     # memoized on the instance and reused across prompts (Spec 6 lifecycle default),
     # so a long-lived agent holding stdio/SSE servers should call `#close` when
     # done. Idempotent: safe to call with no MCP servers attached or more than once.
     #
-    # VERIFY (Group 0, ruby_llm-mcp 1.0.0): the client teardown method is `#stop`
-    # (guarded by `respond_to?`, falling back to `#close` for other client shapes).
+    # VERIFIED (ruby_llm 2.2.3): a `RubyLLM::MCP` server is torn down with `#close`,
+    # which stops a stdio process and ends an HTTP session.
     def close
       @mcp_clients&.each do |client|
-        if client.respond_to?(:stop)
-          client.stop
-        elsif client.respond_to?(:close)
-          client.close
-        end
+        client.close if client.respond_to?(:close)
       rescue
         # Best-effort teardown: a failing stop on one client must not strand the
         # remaining clients or leave @mcp_clients set (breaking idempotency).
@@ -524,29 +493,38 @@ module Nexo
     # callbacks (wired in Loops::RubyLLM) and appear in the run's event log with
     # no extra wiring. Returns early when no server is declared.
     #
-    # Clients are built once and memoized on the instance (Spec 6 lifecycle
-    # default): the `ruby_llm-mcp` client connects on construction and is reusable
-    # across prompts, so subsequent `#chat` calls reuse the live connections until
-    # #close. VERIFY (Group 0): tools accessor is `client.tools` (an Array).
+    # Servers are built once and memoized on the instance: a `RubyLLM::MCP` server
+    # connects on its first request and is reusable across prompts, so subsequent
+    # `#chat` calls reuse the live connections until #close.
+    #
+    # The tools are attached with `with_tools` — NOT `chat.with_mcp(server)` — so
+    # each one can be wrapped in the permission gate first. VERIFIED (ruby_llm
+    # 2.2.3): `server.tools` is an Array of `RubyLLM::MCP::Tool`. Tools an MCP App
+    # reserves for its own UI are left out, as `with_mcp` would.
     def apply_mcp(chat)
       return if self.class.mcp.empty?
 
       @mcp_clients ||= self.class.mcp.map { |cfg| Nexo::MCP.build(**cfg) }
-      gated = @mcp_clients.flat_map(&:tools).map do |tool|
+      gated = @mcp_clients.flat_map(&:tools).select { |tool| model_callable?(tool) }.map do |tool|
         wrap_mcp_tool(Nexo::MCP::GatedTool.new(tool: tool, permissions: @permissions))
       end
       chat.with_tools(*gated) unless gated.empty?
     end
 
-    # Applies Nexo.config.tool_concurrency to the chat, LAST — every `with_tools` call
-    # resets the chat's concurrency to its current value, so setting it before the
-    # tools are attached would be undone. `nil` leaves RubyLLM's own setting alone.
+    # Whether the model may call this MCP tool. Only MCP App tools restrict it.
+    def model_callable?(tool)
+      !tool.respond_to?(:visibility) || tool.visibility.include?(:model)
+    end
+
+    # Applies Nexo.config.tool_concurrency to the chat through
+    # `with_tool_options(concurrency:)` (ruby_llm 2.x moved tool execution settings
+    # off `with_tools`). `nil` leaves RubyLLM's own setting alone.
     def apply_tool_concurrency(chat)
       mode = Nexo.config.tool_concurrency
       return if mode.nil?
-      return unless chat.respond_to?(:with_tools)
+      return unless chat.respond_to?(:with_tool_options)
 
-      chat.with_tools(concurrency: mode)
+      chat.with_tool_options(concurrency: mode)
     end
 
     # Hook: called once per MCP tool, AFTER it is wrapped in a permission-gating
@@ -570,7 +548,7 @@ module Nexo
     #   end
     #
     # A wrapper must keep the duck type the chat relies on — `#name`, `#description`,
-    # `#params_schema` and `#call`. GatedTool delegates the rest through
+    # `#parameters_schema` and `#call`. GatedTool delegates the rest through
     # `method_missing`, so wrappers compose. Gating happens underneath, so a wrapper
     # only ever sees an already-authorized call: wrapping cannot widen what the agent
     # may do.
