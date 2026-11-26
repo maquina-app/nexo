@@ -9,10 +9,10 @@ build a working agent in five lines without wiring anything.
 
 ## Compose, don't reimplement
 
-Nexo does not rebuild skill loading, the tool-call loop, MCP, or structured output — those
-already live in the RubyLLM ecosystem (`ruby_llm` core, `ruby_llm-skills`, `ruby_llm-mcp`,
-`ruby_llm-schema`). Nexo **composes** them behind one front door and adds only the two pieces
-the ecosystem is missing:
+Nexo does not rebuild the tool-call loop, the MCP client, tool approval plumbing, or
+structured output — those live in [`ruby_llm`](https://github.com/crmne/ruby_llm) itself.
+Nexo **composes** them behind one front door and adds only the two pieces `ruby_llm`
+leaves to the application:
 
 - **Sandbox + Permissions seam** — pluggable execution environment (virtual / local /
   remote) with explicit authorization gating. Default: `:virtual` + `:read_only`.
@@ -81,7 +81,7 @@ access until you explicitly opt in.
 | [Sandboxes](docs/sandboxes.md) | Virtual / Local / Remote / Container + hardened defaults |
 | [Permissions](docs/permissions.md) | modes, the gate, MCP gate, :ask |
 | [Tools](docs/tools.md) | ReadFile / WriteFile / Shell / Glob |
-| [Loop backends](docs/loops.md) | RubyLLM vs AgentSDK, turn-cap caveat |
+| [The loop](docs/loops.md) | the default loop, `max_turns` as a hard cap |
 | [Workflows](docs/workflows.md) | lifecycle, staging, artifacts, run_agent |
 | [Durable workflows](docs/durable-workflows.md) | checkpoint / suspend / resume |
 | [Skills](docs/skills.md) | SKILL.md packages, gated tools |
@@ -94,16 +94,14 @@ access until you explicitly opt in.
 ## Requirements
 
 - Ruby 3.3+
-- [ruby_llm](https://github.com/crmne/ruby_llm) 1.16.x (`~> 1.16`) — the supported version is
-  **1.16.0**; the upcoming ruby_llm 2.0 is not supported yet
-- [ruby_llm-skills](https://github.com/kieranklaassen/ruby_llm-skills) — optional, only
-  when you use the `skills` macro
-- [ruby_llm-mcp](https://github.com/patvice/ruby_llm-mcp) — optional, only when you attach
-  an MCP server with the `mcp` macro
-- `ruby_llm-agent_sdk` — optional (not yet published), only when you choose the
-  Anthropic-oriented `Loops::AgentSDK` backend. Its exact API is verified-on-install
-  (see [Loops](docs/loops.md)); until it ships, `Loops::AgentSDK` raises a clear
-  `Nexo::MissingDependencyError`.
+- [ruby_llm](https://github.com/crmne/ruby_llm) 2.2.x (`~> 2.2.0`) — verified against
+  **2.2.3**. It is the only runtime dependency besides `zeitwerk`: MCP and the test helper
+  ship with it, and Nexo reads `SKILL.md` packages itself.
+
+Coming from `nexo_ai` 0.12 (on `ruby_llm` 1.16)? Remove `ruby_llm-mcp` and
+`ruby_llm-skills` from your Gemfile — `ruby_llm-mcp` defines the same `RubyLLM::MCP`
+constant as `ruby_llm` 2.x and cannot be bundled alongside it — and read the 0.13.0
+entry in the [changelog](CHANGELOG.md).
 
 ## Status
 

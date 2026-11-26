@@ -114,8 +114,7 @@ Nexo.configure { |c| c.tool_concurrency = :fibers }   # :fibers | :threads | fal
 - `nil` (**default**) — leave RubyLLM's own setting alone, so behaviour is unchanged
   until you opt in.
 
-It is applied to the chat after every tool is attached, because each `with_tools` call
-resets the chat's concurrency.
+It is applied to the chat with `with_tool_options(concurrency:)`.
 
 This only matters when a model returns several tool calls in one turn. Tools that batch
 their own work — one call that reads twenty messages rather than twenty calls — make it

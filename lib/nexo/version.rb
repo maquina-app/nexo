@@ -2,5 +2,5 @@
 
 module Nexo
   # The gem version (also used as `spec.version` in the gemspec).
-  VERSION = "0.12.0"
+  VERSION = "0.13.0"
 end

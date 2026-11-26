@@ -17,7 +17,7 @@ module Nexo
     attr_reader instructions: String?
 
     def initialize: (?cwd: String, ?model: untyped, ?sandbox: untyped, ?permissions: untyped) -> void
-    def chat: () -> RubyLLM::Chat
+    def chat: (?base: untyped) -> RubyLLM::Chat
     def prompt: (String text) ?{ (untyped) -> void } -> untyped
   end
 end

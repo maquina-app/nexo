@@ -183,7 +183,9 @@ resumed.status                                 # => "done" (the gate allowed the
 - **Cross-process approval needs the ActiveRecord store + ActiveJob** (like all durable resume).
   In-process `resume` works with the Memory store; a Memory run does not survive the process.
 - **Branch depends on upstream `ruby_llm`.** This works because `ruby_llm`'s tool loop lets a
-  tool `execute` exception propagate out of `chat.ask` (verified, 1.16.0). If a future
+  tool `execute` exception propagate out of `chat.ask` (verified on 2.2.3 through the real
+  loop, `test/real_loop_test.rb`). A host that registers a catch-all
+  `RubyLLM::Tool.rescue_from StandardError` would swallow the approval signal. If a future
   `ruby_llm` swallows tool exceptions, tool-triggered approval would be constrained — a
   genuine upstream dependency, stated plainly.
 

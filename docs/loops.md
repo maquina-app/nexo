@@ -1,87 +1,86 @@
-# Loop backends — swap the engine, not the agent
-The loop is the engine that drives one prompt to completion; swap it by constructor injection without touching the agent class.
+# The loop — one engine, a real turn cap
+The loop is the engine that drives one prompt to completion; `max_turns` is a hard cap on its tool rounds.
 
-The **loop** is the engine that drives one prompt to completion. Swapping it is constructor
-injection (`loop:`) — the agent class never changes. Two backends ship:
-
-|                    | `Loops::RubyLLM` (default)         | `Loops::AgentSDK` (opt-in)            |
-| ------------------ | ---------------------------------- | ------------------------------------- |
-| Provider neutral   | ✅ any `ruby_llm` model            | ❌ Anthropic-oriented                 |
-| Tool source        | your sandbox-backed tools          | the SDK's own built-in/host tools     |
-| Turn cap           | observability only (see caveat)    | native `max_turns` hard cap           |
-| Execution location | your sandbox (virtual/local/remote)| the host process                      |
-
-The whole point: **same agent code, swapped backends**. Both examples are model-agnostic
-(`ENV.fetch("NEXO_MODEL")` — never a hardcoded `"claude-…"`):
+The **loop** is the engine that drives one prompt to completion. Nexo ships one,
+`Nexo::Loops::RubyLLM`, and it is the default: it builds the agent's chat with its
+sandbox-backed tools and lets `ruby_llm` run the tool loop. It works identically on any
+`ruby_llm`-supported model — Anthropic, OpenAI, Gemini, a local model through Ollama —
+because every capability comes from the agent's own gated tools, not from anything
+vendor-specific.
 
 ```ruby
-# Claude fast path — AgentSDK's own loop + host tools + native max_turns
-claude = Nexo::Agent.new(
-  model: ENV.fetch("NEXO_MODEL"),
-  sandbox: Nexo::Sandboxes::Local.new(cwd: "/srv/checkout"),
-  permissions: Nexo::Permissions.new(mode: :auto),
-  loop: Nexo::Loops::AgentSDK.new
-)
-
-# Any-provider path — your sandbox, your tools, human-in-the-loop
-gpt = Nexo::Agent.new(
+agent = Nexo::Agent.new(
   model: ENV.fetch("NEXO_MODEL"),                # gpt-5.5, gemini, gemma3:12b via Ollama…
   sandbox: Nexo::Sandboxes::Remote.new(client: my_container_client),
   permissions: Nexo::Permissions.new(mode: :ask, on_ask: ->(cap, detail) {
     SlackApproval.request!(capability: cap, detail: detail)
-  }),
-  loop: Nexo::Loops::RubyLLM.new
+  })
 )
 ```
 
-`Loops::AgentSDK` wraps `RubyLLM::AgentSDK.query` and requires the **optional**
-`ruby_llm-agent_sdk` gem (lazy `require`; a clear `Nexo::MissingDependencyError` if it's
-absent). It maps Nexo's permission modes onto the SDK's own vocabulary:
+The loop is still a seam. A backend of your own subclasses `Nexo::Loop`, implements
+`run(agent:, prompt:, max_turns:, chat:, &on_event)`, and is injected with `loop:` — the
+agent class never changes.
 
-| Nexo mode    | AgentSDK `permission_mode` |
-| ------------ | -------------------------- |
-| `:read_only` | `:default`                 |
-| `:auto`      | `:bypass_permissions`      |
-| `:ask`       | `:default` (human gating stays in Nexo's own `on_ask` path, not delegated to the SDK) |
-| `:approve`   | `:default` (durable approval stays in Nexo's own gate; any unmapped mode also falls back to `:default`) |
+> `Loops::AgentSDK` was removed in 0.13. It wrapped a `ruby_llm-agent_sdk` gem that was
+> never published, and its one purpose — a hard turn cap — is now native (below).
 
-## The turn-cap caveat (read before running untrusted/expensive workloads)
+## `max_turns` is a hard cap
 
-`ruby_llm` runs the whole tool loop inside `ask`, so `Loops::RubyLLM` has **no clean public
-hard "stop after N turns" halt** — `before_tool_call` gives turn-count *observability*, not a
-hard stop. (Confirmed: `ruby_llm` 1.16.0's `Chat` exposes no public max-turns/max-iterations
-setting.) Your three real options:
+`Agent#prompt`, `Session#prompt` and `Workflow#run_agent` all take `max_turns:` (default
+`25`). It caps **tool rounds**: the number of model responses that ask for tools within
+one prompt, however many calls each response holds. Nexo passes it to `ruby_llm` as
+`with_tool_options(rounds:)`.
 
-(a) use `Loops::AgentSDK` (native `max_turns`) for untrusted/expensive workloads;
-(b) have a tool return `{ error: "turn limit reached, stop and summarize" }` once a turn
-    counter trips;
-(c) check whether the installed `ruby_llm` exposes a max-iterations config (in 1.16.0 it
-    does not).
+When the cap is reached, `ruby_llm` raises `RubyLLM::ToolRoundLimitError` instead of
+asking the model again. Every tool call that ran has its result, so the conversation
+stays valid. Nexo emits a `:turn_limit_exceeded` event and lets the error propagate:
 
-Do **not** ship `Loops::RubyLLM` for untrusted workloads claiming a hard cap that isn't
-proven.
+```ruby
+begin
+  agent.prompt("Triage the inbox", max_turns: 10) do |type, payload|
+    warn "over budget: #{payload}" if type == :turn_limit_exceeded
+  end
+rescue RubyLLM::ToolRoundLimitError
+  # the run used its 10 rounds — decide whether to retry with a larger budget
+end
+```
 
-## Verified vs assumed
+Inside a workflow the error fails the run like any other (`status: "failed"`, re-raised),
+so a runaway agent cannot keep spending.
 
-Built against **`ruby_llm` 1.16.0** (the supported line — the gemspec pins `~> 1.16`, and the
-upcoming `ruby_llm` 2.0 is not supported yet) and **`ruby_llm-test` 0.2**. The tool body method is
-`#execute`, tools attach with `chat.with_tools(*instances)`, and instructions set with
-`chat.with_instructions`. `Open3.capture3` has no `timeout:` keyword on the target Ruby, so
-`Local#shell` bounds the command with `Timeout.timeout`. These may differ on other
-`ruby_llm` versions.
+Things to know:
 
-`Loops::RubyLLM`'s turn-count observability uses `RubyLLM::Chat#before_tool_call` /
-`#after_tool_result`, confirmed present on `ruby_llm` 1.16.0 and guarded with `respond_to?`
-so a version lacking them degrades to no observability rather than crashing.
-`Loops::AgentSDK` targets `RubyLLM::AgentSDK.query`; `ruby_llm-agent_sdk` is **not** a
-dependency of this release, so that signature is **assumed** (per the gem's README) and
-verified-on-install — confirm it the moment you add the gem.
+- **Upgrading from 0.12:** `max_turns` used to be telemetry only — a run that passed it
+  kept going. It now stops. If a legitimate run needs more rounds, raise the number.
+- `max_turns: nil` runs uncapped. Use it only for trusted workloads.
+- The event also fires, once per prompt, the first time the count of tool **calls** passes
+  `max_turns`. A round can hold several calls, so with concurrent tool calls this can
+  arrive before the round cap trips. It is a warning; the raise is the stop.
+- The cap counts rounds, not time or tokens. Bound those inside your own tools (a read
+  tool that accepts at most N ids) or with your provider's limits.
+
+## Verified against
+
+Built and tested against **`ruby_llm` 2.2.3** (the gemspec pins `~> 2.2.0`). The tool body
+method is `#execute`; the chat calls a tool as `tool.call(**arguments)`; tools attach with
+`chat.with_tools(*instances)`; execution settings go through `chat.with_tool_options`;
+instructions set with `chat.with_instructions`. Tool activity is observed with
+`Chat#before_tool_call` / `#after_tool_result`, which are additive.
+
+These facts are not taken on trust: `test/real_loop_test.rb` drives `ruby_llm`'s real
+conversation loop with scripted model replies and asserts the permission gate, the MCP
+gate, the turn cap, and approval suspension end to end.
+
+`Open3.capture3` has no `timeout:` keyword on the target Ruby, so `Local#shell` bounds the
+command with `Timeout.timeout`.
 
 ## Live smoke (optional)
 
-The core suite is fully offline and deterministic (models stubbed with `ruby_llm-test`).
-A real end-to-end check is opt-in and env-gated — small local models like Gemma have weak
-tool-calling, so it may be flaky and is never a gating test:
+The core suite is fully offline and deterministic (model replies are scripted with
+`ruby_llm`'s own `RubyLLM::TestHelper`). A real end-to-end check is opt-in and env-gated —
+small local models like Gemma have weak tool-calling, so it may be flaky and is never a
+gating test:
 
 ```sh
 ollama serve &
@@ -90,32 +89,5 @@ NEXO_LIVE=1 NEXO_MODEL=gemma3:12b bundle exec rake test TEST=test/live_smoke_tes
 
 If Gemma's tool-calling proves too weak, point `NEXO_MODEL` at a stronger model — the gem
 stays provider-neutral; only the smoke target changes.
-
-
-## `max_turns` is a budget, not a hard stop
-
-`Agent#prompt`, `Session#prompt` and `Workflow#run_agent` all take `max_turns:`. On the
-default `Loops::RubyLLM` it **cannot halt a run**: ruby_llm executes the entire tool loop
-inside `Chat#ask`, and the callbacks Nexo wires are observation-only.
-
-What it does do is count tool calls and tell you when the budget is passed:
-
-```ruby
-agent.prompt("Triage the inbox", max_turns: 10) do |type, payload|
-  warn "over budget: #{payload}" if type == :turn_limit_exceeded
-end
-# => :turn_limit_exceeded, { turns: 11, max_turns: 10 }
-```
-
-Emitted once per prompt, not per call.
-
-If you need a **hard** ceiling, the options are:
-
-- bound the work inside your own tools (a read tool that accepts at most N ids);
-- use `Loops::AgentSDK`, whose engine enforces `max_turns` natively;
-- stop the run yourself from the event block.
-
-Treat `max_turns` on the default loop as telemetry. It was previously accepted and never
-read, which made it look like a safety bound it has never been.
 
 ← Back to the [README](../README.md)

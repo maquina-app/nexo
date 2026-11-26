@@ -1,5 +1,86 @@
 ## [Unreleased]
 
+## [0.13.0] - unreleased
+
+Nexo now runs on ruby_llm 2.2. MCP comes from ruby_llm itself, skills need no extra gem,
+and `max_turns` is a real cap.
+
+### Changed
+
+- **`ruby_llm` is now pinned to the 2.2 line (`~> 2.2.0`, was `~> 1.16`).** Verified against
+  2.2.3. ruby_llm 1.x is no longer supported; it ended at 1.16.0 and carries ReDoS
+  advisories that are fixed only in 2.0.
+
+  **Upgrading:** this is a breaking release for the host app's Gemfile and for any
+  `RubyLLM::Tool` you wrote yourself.
+
+  1. Remove `gem "ruby_llm-mcp"` and `gem "ruby_llm-skills"`. `ruby_llm-mcp` defines the
+     same `RubyLLM::MCP` constant as ruby_llm 2.x and cannot be bundled with it; both gems
+     pin ruby_llm 1.x. Anything you were getting from them transitively (for example
+     `bigdecimal`) must now be declared by you.
+  2. In your own tools, rename `param` to `parameter` and `desc:` to `description:`
+     (`params do` becomes `parameters do`). ruby_llm 2.0 removed the old names.
+  3. A tool wrapper you wrote (for `wrap_mcp_tool`) must accept keywords:
+     `def call(**arguments)`. ruby_llm 2.x calls tools as `tool.call(**arguments)`, and the
+     schema reader is `parameters_schema`, not `params_schema`.
+  4. If you use `Nexo::Session` on ActiveRecord, run ruby_llm's own schema upgrade
+     (`rails g ruby_llm:upgrade`, one minor at a time). ruby_llm 2.x keeps tool calls and
+     the model registry in its own `ruby_llm_*` tables; the host owns only `Chat` and
+     `Message`.
+  5. Read ruby_llm's [upgrade guide](https://rubyllm.com/upgrading/) for everything outside
+     Nexo — notably that OpenAI now defaults to the Responses API.
+
+- **`max_turns` is a hard cap.** `Agent#prompt`, `Session#prompt` and
+  `Workflow#run_agent` pass it to ruby_llm as `with_tool_options(rounds:)`. When a prompt
+  uses up its tool rounds, `RubyLLM::ToolRoundLimitError` is raised instead of the model
+  being asked again; inside a workflow that fails the run. It was telemetry only before.
+
+  **Upgrading:** a run that used to pass `max_turns` and keep going now stops. Raise the
+  number for runs that legitimately need more rounds, or pass `max_turns: nil` to run
+  uncapped. The `:turn_limit_exceeded` event is still emitted, once per prompt.
+
+- **MCP uses ruby_llm's built-in client.** The `mcp` macro, `mcp_allow`, the fail-closed
+  gate, `wrap_mcp_tool` and `Nexo::MCP.build` are unchanged for callers. Three behaviours
+  differ, all inherited from ruby_llm:
+  - a callable `token:` is read again for **every request**, so a rotated token no longer
+    needs `agent.close` and a reconnect;
+  - a `:stdio` server starts with a short, safe environment — pass what it needs with
+    `env:`;
+  - a `:stdio` server's stderr is your process's stderr.
+
+  An unknown transport or a `:stdio` server with no `command:` now raises
+  `Nexo::ConfigurationError` when the server is built.
+
+- **Skills are read by Nexo itself** (`Nexo::Skills::Skill`). `skills`, `Nexo::Skills.find`
+  and `Nexo::Skills.materialize` are unchanged. A `SKILL.md` without YAML front matter now
+  raises `Nexo::Error` naming the file. ruby_llm's own skills are not used: they reject
+  underscore names (`email_triage`) and work through a `load_skill` tool, where Nexo's rule
+  is that a skill adds instructions and nothing else.
+
+- **Workflow events store tool arguments string-keyed** in both run stores. ruby_llm 2.x
+  hands them over with Symbol keys; the Memory store would otherwise have disagreed with
+  the ActiveRecord one.
+
+### Removed
+
+- **`Nexo::Loops::AgentSDK`**, with `Agent#permission_mode`, `Agent#allowed_tools`,
+  `Agent::ALLOWED_TOOLS` and `Agent::PERMISSION_MODE_MAP`. The `ruby_llm-agent_sdk` gem it
+  wrapped was never published, so this path never ran against real code. Its one purpose,
+  a hard turn cap, is now `max_turns` on the default loop. `Nexo::Loop` remains as the seam
+  for a backend of your own.
+- **`Nexo::MCP.load!` and `Nexo::Skills.load!`.** There is no optional gem left to load.
+- The `ruby_llm-test`, `ruby_llm-skills` and `ruby_llm-mcp` development dependencies. The
+  suite scripts model replies with ruby_llm's own `RubyLLM::TestHelper`.
+
+### Added
+
+- `test/real_loop_test.rb` drives ruby_llm's real conversation loop with scripted replies
+  and proves, end to end: a `:read_only` agent cannot reach the write tool, the MCP gate
+  denies a tool before it runs, `max_turns` stops a runaway loop, and an `:approve` gate
+  suspends a workflow and resumes it.
+- `mcp` accepts `env:` and `directory:` for `:stdio` servers, and `command:` as an argv
+  Array.
+
 ## [0.12.0] - 2026-09-12
 
 The gem now says exactly which ruby_llm it supports, and its API docs are written in Markdown.
