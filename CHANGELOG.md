@@ -1,6 +1,6 @@
 ## [Unreleased]
 
-## [0.13.0] - unreleased
+## [0.13.0] - 2026-11-26
 
 Nexo now runs on ruby_llm 2.2. MCP comes from ruby_llm itself, skills need no extra gem,
 and `max_turns` is a real cap.
