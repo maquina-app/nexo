@@ -160,3 +160,39 @@ abort "FAIL: artifact hash (#{persisted.artifact("digest.md").inspect})" unless
   persisted.artifact("digest.md")["name"] == "digest.md"
 abort "FAIL: missing artifact returns nil" unless persisted.artifact_content("absent.md").nil?
 puts "ARTIFACTS_OK"
+
+# --- Workflow.retry on the ActiveRecord store (0.16): a failed run is claimed
+# with one conditional UPDATE and re-entered; its finished checkpoint is kept.
+class FlakyDigest < Nexo::Workflow
+  class << self
+    attr_accessor :reads, :broken
+  end
+  self.reads = 0
+  self.broken = true
+
+  def call(_payload)
+    checkpoint("read") { self.class.reads += 1 }
+    raise "digest failed" if self.class.broken
+
+    {ok: true}
+  end
+end
+
+begin
+  FlakyDigest.run
+rescue RuntimeError
+  nil
+end
+failed = Nexo::WorkflowRun.where(workflow_class: "FlakyDigest").last
+abort "FAIL: expected a failed run (#{failed.status})" unless failed.status == "failed" && failed.error == "digest failed"
+FlakyDigest.broken = false
+retried = FlakyDigest.retry(failed.id)
+abort "FAIL: retry did not finish (#{retried.status})" unless retried.reload.status == "done" && retried.error.nil?
+abort "FAIL: retry repeated a finished checkpoint (#{FlakyDigest.reads})" unless FlakyDigest.reads == 1
+begin
+  FlakyDigest.retry(failed.id)
+  abort "FAIL: a done run was retried"
+rescue Nexo::Error
+  nil
+end
+puts "RETRY_OK"

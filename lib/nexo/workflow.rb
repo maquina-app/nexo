@@ -246,6 +246,40 @@ module Nexo
         klass.execute(run, payload: symbolize(run.payload), resume_input: input, buffer_events: buffered)
       end
 
+      # The statuses ::retry accepts: a run that raised, and one whose process
+      # died (see ::reconcile_interrupted!).
+      RETRYABLE = %w[failed interrupted].freeze
+
+      # Runs a `"failed"` or `"interrupted"` run again (0.16), re-entering `#call`
+      # from the top with the run's original payload — the same re-entry as
+      # ::resume, for a run that stopped by accident instead of on purpose.
+      #
+      # Every #checkpoint (and every finished step of a #checkpoint_all) the run
+      # completed before it stopped is still in its state, so that work is not
+      # repeated: a workflow that read three inboxes and then failed to build the
+      # digest reads no inbox on the retry. Everything outside a checkpoint runs
+      # again, exactly as on a resume.
+      #
+      # The run keeps its id, its event log and its recorded artifacts; its
+      # `error` is cleared when the retry starts. A retry that fails again leaves
+      # the run `"failed"` and re-raises, like ::run. Raises Nexo::Error for a run
+      # in any other status, or one another caller is already retrying.
+      def retry(run_id)
+        store = Nexo::RunStore.default
+        run = store.find(run_id)
+        unless RETRYABLE.include?(run.status)
+          raise Nexo::Error, "run #{run_id} cannot be retried (#{run.status}); only #{RETRYABLE.join(" or ")} runs can"
+        end
+        unless store.claim_for_resume!(run, from: RETRYABLE)
+          raise Nexo::Error, "run #{run_id} is already being retried"
+        end
+
+        run.update!(error: nil)
+        klass = Object.const_get(run.workflow_class)
+        buffered = (run.state || {}).fetch("__buffer_events__", Nexo.config.buffer_workflow_events)
+        klass.execute(run, payload: symbolize(run.payload), buffer_events: buffered)
+      end
+
       # Enqueues a durable, cross-process resume of a `"suspended"` run (Spec 13 Q4),
       # mirroring ::run_later: the job carries the run id **plus** the resume `input`
       # (the payload still lives on the run — only the input travels). `input` must be
