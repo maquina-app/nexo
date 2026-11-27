@@ -102,8 +102,10 @@ module Nexo
       # One-shot boot/deploy sweep (Spec 7 R6) that rewrites runs orphaned in
       # `"running"` to `"interrupted"` so a crashed worker doesn't leave zombie
       # runs. Touches *only* `"running"` rows — `"done"` and `"failed"` are never
-      # rewritten. Under Rails it is a single `update_all`; offline it iterates the
-      # Memory store. NEVER auto-invoked — call it from a boot hook or the shipped
+      # rewritten. Under Rails it is a single `update_all`; otherwise it goes
+      # through the configured run store — the Disk store's documents (since 0.16;
+      # it used to skip them, leaving a killed CLI's run `"running"` for good) or
+      # the Memory store's table. NEVER auto-invoked — call it from a boot hook or the shipped
       # `nexo:reconcile` rake task.
       #
       # This is not a liveness check: it cannot distinguish an orphaned run from
@@ -111,13 +113,17 @@ module Nexo
       # worker starts new runs. Returns the number of runs rewritten and fires a
       # `nexo.workflow.status` notification per swept run so a dashboard learns of it.
       def reconcile_interrupted!
-        if defined?(::ActiveRecord::Base) && defined?(Nexo::WorkflowRun)
+        store = Nexo::RunStore.default
+        if store.is_a?(Nexo::RunStore::ActiveRecord)
           ids = Nexo::WorkflowRun.where(status: "running").pluck(:id)
           Nexo::WorkflowRun.where(id: ids).update_all(status: "interrupted")
           ids.each { |id| instrument_status(id, "interrupted") }
           ids.size
         else
-          running = Nexo::RunStore::Memory.runs.each_value.select { |run| run.status == "running" }
+          # A store that can list its runs (Disk) is swept through that; the
+          # in-memory store keeps them in a class-level table.
+          listed = store.respond_to?(:all) ? store.all : Nexo::RunStore::Memory.runs.values
+          running = listed.select { |run| run.status == "running" }
           running.each do |run|
             run.update!(status: "interrupted")
             notify_status(run)
