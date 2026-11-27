@@ -13,7 +13,7 @@ ever allow:
   2. *The permission gate does not deny it statically* (`Permissions#never_allows?`). Under
      `:read_only`, `:write` and `:shell` can never be authorized unless listed in `allow:`, so
      neither the writing tools (`write_file`, `edit_file`) nor `Shell` are attached. `:auto`, `:ask` and `:approve` decide per call
-     and always attach — `:approve` in particular *must* reach the gate so it can suspend the run.
+     and always attach.
 
   The same rule covers a host tool declared with `capability:` and, since 0.14, an MCP tool:
   under `:read_only` one that is not in `mcp_allow` is not attached.
@@ -22,13 +22,16 @@ ever allow:
   a security boundary: `Permissions#authorize!` remains the gate and still denies at call time.
 
 To bound what **any** tool returns — an MCP tool, one of your own — declare a context
-budget. It is `ruby_llm`'s `with_context_budget`, per agent:
+budget. It is `ruby_llm`'s own, one of the model options in the `llm` block:
 
 ```ruby
 class Researcher < Nexo::Agent
-  context_budget per_result: 0.25, per_request: 0.7
+  llm { context_budget per_result: 0.25, per_request: 0.7 }
 end
 ```
+
+(Before 0.16 this was a `context_budget` macro on the agent. It was a pass-through and was
+removed; the macro now raises `Nexo::ConfigurationError` pointing here.)
 
 `per_result:` cuts a single result longer than that share of the model's context window;
 `per_request:` leaves the oldest results out of a request that would exceed its share. Both
@@ -82,7 +85,6 @@ The `file_tools` macro chooses the set per agent, and `Nexo.config.file_tools` f
 |---|---|
 | `:core` (default) | `list_files`, `read_file`, `search_files`, `write_file`, `edit_file` |
 | `:none` | No file tools. For an agent whose files come from somewhere else, such as a filesystem MCP server. |
-| `:nexo` | Nexo's own `ReadFile`, `WriteFile` and `Glob`. **Deprecated**: prints a notice once per agent class and is removed in 1.0. |
 
 ### An MCP server with the same tool names
 
@@ -109,7 +111,14 @@ Or keep Nexo's and leave the clashing names out of `mcp_allow`.
 | `nexo--tools--glob` | `list_files` (with `pattern:`), or `search_files` for contents |
 
 A skill or prompt that names an old tool, and a host that reads tool events by name, need the
-new names. To move later, set `Nexo.config.file_tools = :nexo`; it keeps working until 1.0.
+new names. Nexo's own three (`Tools::ReadFile`, `Tools::WriteFile`, `Tools::Glob`) and
+`file_tools :nexo` were removed in 0.16; `:nexo` raises `Nexo::ConfigurationError`.
+
+A path may be relative to the sandbox's working directory or absolute inside it:
+`/workspace/notes.md` in a container whose working directory is `/workspace` is `notes.md`.
+`ruby_llm` treats every path as relative, so Nexo makes that translation before the gate and
+the tool see the call. The `:glob` capability is still accepted in `allow:`, but nothing asks
+for it any more: listing and searching are `:read`.
 
 ## Tools of your own — the `tools` macro
 

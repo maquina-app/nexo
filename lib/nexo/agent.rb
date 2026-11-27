@@ -144,14 +144,15 @@ module Nexo
       end
 
       # Removed in 0.16: the budget is one of the model options, declared in the
-      # `llm` block, where it reaches `ruby_llm`'s own `context_budget`.
+      # `llm` block, where it reaches `ruby_llm`'s own `context_budget`. Whatever
+      # is passed (`_budget`, `_shares`) raises ConfigurationError saying so.
       #
       # ```ruby
       # class Researcher < Nexo::Agent
       #   llm { context_budget per_result: 0.25, per_request: 0.7 }
       # end
       # ```
-      def context_budget(*, **)
+      def context_budget(_budget = nil, **_shares)
         raise ConfigurationError, "the `context_budget` macro was removed in 0.16 — declare it in the `llm` block: " \
           "`llm { context_budget per_result: 0.25 }`"
       end
@@ -968,6 +969,8 @@ module Nexo
     # by `:local`; container tiers keep their own `/workspace` default).
     def resolve_sandbox(value) = Sandboxes.resolve(value, cwd: @cwd)
 
+    # Resolves the agent's permissions declaration (a mode Symbol or a
+    # Permissions) into a Permissions carrying this run's approval `decisions`.
     def resolve_permissions(value, decisions: nil)
       # A user-supplied Permissions sets its own mcp_allow: — leave it untouched.
       # Thread the run's approval answers through a non-mutating copy (Spec 16)

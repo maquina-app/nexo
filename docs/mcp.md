@@ -185,9 +185,34 @@ rescue Nexo::AuthorizationRequired => e
 **A server with many tools.** `mcp :name, …, defer: true` keeps its tool definitions out of
 the model's context until the provider's tool search asks for them.
 
-**Not wrapped by Nexo:** a server's prompts and its long-running tasks. The `ruby_llm` server
-object is reachable (`agent.mcp_server(:name).prompts`), but Nexo adds nothing around them and
-has not tested them.
+**A server's prompts.** A server can offer prompts it wrote — a code review, a triage — that
+take arguments. You pick one; the model does not, so no permission applies to the prompt
+itself (the tools the model then calls are gated as always):
+
+```ruby
+agent.mcp_prompts(:github).map(&:name)         # => ["code_review", …]
+agent.prompt(agent.mcp_prompt(:github, :code_review, code: diff))
+```
+
+In a workflow the agent is built inside `run_agent`, so pass a callable:
+
+```ruby
+run_agent(->(agent) { agent.mcp_prompt(:github, :code_review, code: diff) }, mcp_owner: user_id)
+```
+
+**A call the server finishes later (tasks).** A server may answer a tool call with a task
+and do the work in the background. Say the agent accepts that:
+
+```ruby
+mcp :builds, transport: :http, url: "https://mcp.example.com/mcp", tasks: true
+```
+
+The prompt then waits for the task, checking at the interval the server asks for; the
+server's status messages arrive as `:tool_progress` events. After
+`Nexo.config.mcp_task_timeout` seconds (default `300`) the task is cancelled and the prompt
+raises `Nexo::Error`. `Workflow.cancel` cancels the task too. The task is held in memory: if
+the process dies while it waits, a retry makes the call again and the server starts a new
+task. Without `tasks: true` the extension is not declared and a server answers in one go.
 
 ## Every MCP tool call is gated — and fails closed
 

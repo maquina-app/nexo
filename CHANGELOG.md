@@ -4,22 +4,31 @@
 
 Fixes and verification left over from 0.13–0.15; the three changes that were parked for 1.0
 (ruby_llm's file tools by default, undeclared tools refused by default, ruby_llm's agent
-options on `Nexo::Agent`); and ten more pieces of ruby_llm 2.2 for observing and controlling
-a run and for MCP servers that do more than answer a tool call.
+options on `Nexo::Agent`); more pieces of ruby_llm 2.2 for observing and controlling a run
+and for MCP servers that do more than answer a tool call; and the removal of what ruby_llm
+now provides, approvals included.
 
-**Upgrading — three defaults changed:**
+**Upgrading — defaults changed, and code was removed:**
 
-1. **File tools are ruby_llm's.** A default agent now gets `list_files`, `read_file`,
-   `search_files`, `write_file` and `edit_file` in place of `nexo--tools--read_file`,
-   `nexo--tools--write_file` and `nexo--tools--glob`. Update any skill, prompt or event
-   consumer that names the old tools. To move later, set `Nexo.config.file_tools = :nexo`
-   (or `file_tools :nexo` on an agent); it prints a notice and is removed in 1.0. A custom
-   sandbox class needs `#files`.
+1. **File tools are ruby_llm's, and Nexo's own are gone.** An agent gets `list_files`,
+   `read_file`, `search_files`, `write_file` and `edit_file` in place of
+   `nexo--tools--read_file`, `nexo--tools--write_file` and `nexo--tools--glob`. Update any
+   skill, prompt or event consumer that names the old tools. `file_tools :nexo` raises
+   `Nexo::ConfigurationError`. A custom sandbox class needs `#files`.
 2. **An MCP server whose tools are named `read_file`, `write_file`… now clashes** with those
    file tools, and building the chat raises `Nexo::ConfigurationError`. Declare
    `file_tools :none` on that agent, or leave the clashing names out of `mcp_allow`.
 3. **`Nexo.config.strict_tools` is `true`.** A tool put on the chat outside the `tools` macro
    is refused. Declare it with `tools`, or set `strict_tools = false`.
+4. **`context_budget` moved into the `llm` block:** `llm { context_budget per_result: 0.25 }`.
+   The macro raises `Nexo::ConfigurationError` saying so.
+5. **`Permissions.new(approve_when:)` is `ask_when:`**, and `Permissions.new(decision:)`,
+   `#decision`, `#with_decision` and `Agent.new(decision:)` are gone: use `decisions:` (per
+   call, since 0.14).
+6. **The `:turn_limit_exceeded` loop event is gone.** Rescue `RubyLLM::ToolRoundLimitError`.
+7. **A call declined under `:approve`** gets ruby_llm's refusal (`"The user denied the … tool
+   call."`) where it got Nexo's `"… not approved"`, and emits no `:tool_call` / `:tool_result`
+   event, because the tool is never entered.
 
 Also:
 
@@ -34,8 +43,33 @@ Also:
   and `cancel:` only when its `#prompt` accepts it.
 - Nexo's notices are now written to standard error even under `ruby -W0`.
 
+### Removed
+
+- **`Nexo::Tools::ReadFile`, `WriteFile`, `Glob`, `Nexo::ReadTracker` and `Sandbox#mtime`.**
+  ruby_llm's file tools over `SandboxFileStore` do the same work, with a read-before-write
+  guard that compares content and so works on every sandbox. (0.14 recorded that
+  `ReadTracker` had no ruby_llm equivalent; with the file store it has one.)
+- **`Permissions` `decision:` / `#decision` / `#with_decision`, `Agent.new(decision:)`** —
+  the one-answer-for-every-call form deprecated in 0.14 — **and the `approve_when:` alias**.
+- **The `context_budget` macro**, a pass-through to an option the `llm` block already takes.
+- **The loop's tool-call count and `:turn_limit_exceeded` event.** ruby_llm's `rounds:` has
+  been the cap since 0.13.
+
 ### Added
 
+- **A server's prompts.** `Agent#mcp_prompts(:server)` lists them and
+  `Agent#mcp_prompt(:server, :name, **arguments)` fills one in; `Agent#prompt` takes it in
+  place of a text. In a workflow, `run_agent(->(agent) { agent.mcp_prompt(…) })`.
+- **MCP tasks.** `mcp …, tasks: true` declares the MCP tasks extension. A call the server
+  answers with a task is polled at the server's interval until it finishes; its status
+  messages arrive as `:tool_progress`. After `Nexo.config.mcp_task_timeout` (300 s) the task
+  is cancelled and the prompt raises `Nexo::Error`. A task is held in memory: a process that
+  dies mid-task runs the call again on retry.
+- **Several approvals at once.** `Nexo::ApprovalRequired#pending` and
+  `run.state["__approvals_pending__"]` list every call of a response that waits for a
+  decision; `resume(id, approvals: {key => true|false})` answers them by key.
+- **A host tool declared with ruby_llm's `requires_approval`** is decided from the same
+  `decisions`, under the capability `tool`.
 - **`llm do ... end` on `Nexo::Agent`.** The block is written in `RubyLLM::Agent`'s own DSL
   (`thinking`, `temperature`, `schema`, `fallbacks`, `compaction`, `caching`, `headers`…) and
   applied to every chat the agent builds, a session's persisted chat included. It is
@@ -77,8 +111,18 @@ Also:
 
 ### Changed
 
+- **`:approve` pauses through ruby_llm's approval mechanism.** A gated tool answers
+  ruby_llm's `requires_approval?` and its approval resolver from `Permissions`
+  (`Nexo::Approvable`), so an undecided call is held before the tool is entered, where it
+  used to be an exception raised from inside the tool. The public API is the same
+  (`permissions :approve`, `decisions:`, `resume(id, approved:)`, `run.state["__approval__"]`),
+  and decisions are still keyed by what the call does, so they work on every run store
+  without `acts_as_chat` — the reason 0.14 gave for not doing this. The gate inside each
+  tool is unchanged and still refuses an undecided call that reaches it another way.
+- **An absolute path inside the sandbox works with the file tools.** ruby_llm takes every
+  path as relative, so `/workspace/a.md` was looked up as `workspace/a.md`.
 - `Nexo.config.file_tools` defaults to `:core` and `Nexo.config.strict_tools` to `true` (see
-  Upgrading). `:nexo` file tools are deprecated.
+  Upgrading).
 - A tool name that is not on the chat at all is left to ruby_llm, which answers "There is no
   tool named…"; the backstop refuses only a tool that exists and was never declared.
 - A read-only root filesystem is no longer reported as a hardening gap on `:apple`: its
@@ -98,6 +142,10 @@ Also:
 - **`ContainerRunner#supported?` was always false on `:apple`** (`container version` is not a
   subcommand); it asks `container system status`. Its runs pass `--progress none`.
 - Nexo's notices used `Kernel#warn`, which prints nothing under `ruby -W0`.
+- **A catch-all `rescue_from StandardError` on a tool swallowed an approval**, turning
+  "pause and ask" into an error result. The pause no longer travels as an exception.
+- `examples/mcp_filesystem.rb` clashed with the default file tools; it declares
+  `file_tools :none`.
 
 ### Verified
 
@@ -114,10 +162,28 @@ Also:
 - **MCP resources, a server's question, a missing scope and deferred tools**, through
   ruby_llm's real MCP client against the same local server (`test/mcp_beyond_tools_test.rb`).
 - A gated tool can end the turn with `halt`, and a tool's `progress` reaches the run log.
+- **A server's prompts and tasks**, against the same local server.
+- **Against a real model** (Ollama, `glm-5.3-flash:cloud`; `test/live_smoke_test.rb`): a
+  request falling back to another model with the `:fallback` event; deferred tools found
+  through ruby_llm's `tool_search`; manual compaction through Ollama's Responses protocol
+  (one message appended, nothing removed); an `:approve` workflow that suspends, resumes and
+  writes its file; and a review using the file tools.
+- An absolute path in a Docker container (`/workspace/…`) through the file tools.
 
-Not exercised: a fallback against a real provider (the event is wired and its reducer
-tested), compaction's effect on stored messages, tool search on a real provider, and a
-server's prompts and tasks.
+Not exercised: Anthropic's and OpenAI's own tool search and automatic compaction (no key
+for either was available), compaction on a persisted chat, and a sign-in against a
+third-party OAuth MCP server.
+
+### Kept on purpose
+
+- **Nexo's skill parser.** ruby_llm's skills attach a `load_skill` tool that reads files
+  outside the permission gate, and reject names Nexo accepts. Nexo's skills inject
+  instructions only.
+- **MCP tools attached with `with_tools`**, not `with_mcp`, so each one is gated.
+- **The `:glob` capability** is still accepted in `allow:`. Nothing asks for it any more
+  (listing and searching are `:read`); removing it would break every host's allow list.
+- **A resume runs the prompt again.** Carrying on a paused, persisted chat with
+  `chat.complete` instead is a later step.
 
 ### Declined, again
 

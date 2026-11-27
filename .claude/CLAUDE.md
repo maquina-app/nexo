@@ -82,8 +82,14 @@ if a view or Stimulus file changes (rare here).
   never bypassed. `fetch.rb` and `web_search.rb` have a broad `rescue`; both re-raise
   `ApprovalRequired` first — keep that.
 - `Nexo::ApprovalRequired` and `Permissions::Denied` are `StandardError`, not `Nexo::Error`.
-  Approval reaches `Workflow#run_agent` only because ruby_llm re-raises a tool exception when no
-  `rescue_from` matches. A host's catch-all `RubyLLM::Tool.rescue_from StandardError` breaks it.
+- **`:approve` pauses through ruby_llm (0.16), and the gate in the tool stays.** Every gated
+  tool includes `Nexo::Approvable`: `requires_approval?(tool_call)` and `approval_resolver`
+  answer from `Permissions#needs_approval?` / `#decision_for`, so ruby_llm holds an undecided
+  call before the tool is entered and `Loops::RubyLLM#require_approvals` raises
+  `ApprovalRequired`. Do not remove the `:approve` branch of `authorize!` / `authorize_mcp!`:
+  it is what refuses a call that reaches the tool another way. A new gated tool must include
+  `Approvable` and define `approval_subject(arguments)`, returning exactly what it passes to
+  `authorize!` — otherwise the two paths decide under different keys.
 - Approvals are per call: `Permissions.approval_key`, reserved state key `"__approvals__"`.
   A custom agent class used with `run_agent` must accept `decisions:` (and `mcp_owner:` if used).
 - MCP OAuth credentials: `CredentialStore.new(dir:, key:)` encrypts; without `key:` they are
@@ -124,13 +130,20 @@ Do not trust memory of the 1.x API.
   `client_id`, or `RubyLLM.config.mcp_client_id` (a Client ID Metadata Document URL) — a server
   with neither registration nor that config fails with "does not register clients". Loopback
   `http` is allowed only when the server itself is loopback.
-- Core approvals (`requires_approval`, `pending_questions`) are durable only with
-  `acts_as_chat`; Nexo keeps `:approve` on `ApprovalRequired` → `suspend!`. Do not port it.
+- Core approvals: the chat calls `requires_approval?(tool_call)` and `approval_resolver` on
+  the object given to `with_tools` (a non-`RubyLLM::Tool` wrapper works). A resolver replaces
+  the chat's recorded decision, so `chat.approve` has no effect on a Nexo tool; decisions come
+  from `Agent.new(decisions:)`. A declined call gets ruby_llm's refusal and fires NO
+  `before_tool_call` / `after_tool_result`. Decisions stay keyed by content
+  (`Permissions.approval_key`), not tool-call id, because a resume asks the model again.
+- A chat with an unanswered tool call refuses a new `ask` (`PendingToolCallsError`); a resume
+  therefore runs on a fresh chat. Carrying on a persisted chat with `complete` is not built.
 - `RubyLLM.workflow(name, id:)` is instrumentation only; an empty name raises.
 - Sandbox contract: `supported?` + `run(*command, timeout:, readable:, writable:, denied:,
   directory:, env:, network:)` → `stdout`/`stderr`/`exit_code`/`timed_out?`. `ContainerRunner`
   answers it; it is not a `Nexo::Sandbox`.
-- `with_context_budget` needs a known context window, so the macro has no default.
+- `with_context_budget` needs a known context window. It is declared in the `llm` block; an
+  `llm` block is evaluated when the class is defined, so a bad option raises there.
 - Loop events: `:tool_call`, `:tool_progress` (`after_tool_progress { |tool_call, progress| }`),
   `:tool_result`, `:fallback` (`after_fallback`), `:done`, `:usage` (emitted in `ensure`).
   `chat.tokens.to_h` is `{input_tokens:, output_tokens:, …}`; `chat.cost.total` is nil without
@@ -144,9 +157,17 @@ Do not trust memory of the 1.x API.
   `GatedTool` unchanged; the final message then has role `:tool`.
 - `with_tools(*tools, defer: true)`; `chat.deferred_tools`. `RubyLLM::MCP::InsufficientScopeError`
   (`#scopes`) comes from a 403 with `WWW-Authenticate: … error="insufficient_scope"`.
-- MCP server object: `resources`, `resource(uri)`, `prompts`, `prompt(name, **args)`. Nexo wraps
-  resources only (`MCP::ListResources`, `MCP::ReadResource`); `defer:` and `resources:` are
-  `MCP::NEXO_OPTIONS`, stripped before `RubyLLM.mcp`.
+- MCP server object: `resources`, `resource(uri)`, `prompts`, `prompt(name, **args)` (an
+  `MCP::Prompt`, which `chat.ask` takes in place of a text). `defer:`, `resources:` and `tasks:`
+  are `MCP::NEXO_OPTIONS`, stripped before `RubyLLM.mcp`; `tasks: true` becomes
+  `extensions: :tasks`.
+- MCP tasks: a `tools/call` answered with `resultType: "task"` pauses the call
+  (`chat.pending_tasks`, `task.poll_interval`, `task.cancel`); `chat.complete` checks each task
+  once. ruby_llm does not sleep: `Loops::RubyLLM#await_tasks` does, up to
+  `Nexo.config.mcp_task_timeout`.
+- ruby_llm's file tools normalize a path BEFORE the store sees it (a leading `/` is dropped),
+  so `Agent#sandbox_relative` rewrites an absolute path inside the sandbox's `cwd` in
+  `GatedTool`'s `prepare:` step, ahead of both the gate and the tool.
 - `FileStore::Tools.classes([...])` and the tools' `new(store: -> { store })` are `:nodoc:`
   internals; one `SandboxFileStore` per chat (the read-before-write guard is in memory).
 - Persistence is two host models (`Chat` `acts_as_chat`, `Message` `acts_as_message`);
@@ -166,8 +187,8 @@ Do not trust memory of the 1.x API.
 
 - `Workflow.run(payload = nil, buffer_events:, **kwargs)` then `payload ||= kwargs`: keep both
   call forms working when adding a keyword.
-- State keys are Strings. Reserved: `__suspend__`, `__approval__`, `__approvals__`,
-  `__input__`, `__answers__`, `__buffer_events__`. Checkpoints and artifacts persist immediately; events may be buffered.
+- State keys are Strings. Reserved: `__suspend__`, `__approval__`, `__approvals_pending__`,
+  `__approvals__`, `__input__`, `__answers__`, `__buffer_events__`. Checkpoints and artifacts persist immediately; events may be buffered.
 - `rescue Workflow::Suspended` sits above the generic rescue and never re-raises.
 - `resume` (suspended) and `retry` (failed, interrupted) re-enter `#call` from the top; only
   checkpointed work is skipped. Both use `Object.const_get`, not `constantize`.
@@ -225,6 +246,8 @@ Do not trust memory of the 1.x API.
 - A sign-in against a third-party OAuth MCP server (the flow is verified over real HTTP
   against a local server; discovery against `getliminal.app/mcp` works). Not pursued: that
   server takes only a Client ID Metadata Document, which the host application serves, not Nexo.
-- A fallback against a real provider, compaction's effect on stored messages, tool search on a
-  real provider, and an MCP server's prompts and tasks.
+- Anthropic's and OpenAI's own tool search and automatic compaction, and compaction on a
+  persisted chat. (Fallback, ruby_llm's `tool_search`, manual compaction and an `:approve`
+  workflow were run live on Ollama in 0.16: `NEXO_LIVE=1 NEXO_MODEL=glm-5.3-flash:cloud`,
+  `test/live_smoke_test.rb`. The `deepseek-v4-flash` model installed here was retired.)
 - "Faraday yields under the fiber scheduler" on 2.2 (practical evidence only: `nexo-mail`).

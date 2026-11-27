@@ -146,10 +146,10 @@ scope; none widens authority silently.
      four; `Virtual` supports everything but `:shell`, so a `:virtual` agent has no `Shell`.
   2. *The permission gate does not deny it statically* (`Permissions#never_allows?`). Under
      `:read_only`, `:write` and `:shell` can never be authorized unless listed in `allow:`, so
-     neither `WriteFile` nor `Shell` is attached. `:auto`, `:ask` and `:approve` decide per call
-     and always attach — `:approve` in particular *must* reach the gate so it can suspend the run.
+     neither the writing tools (`write_file`, `edit_file`) nor `Shell` are attached. `:auto`,
+     `:ask` and `:approve` decide per call and always attach.
 
-  `ReadFile` and `Glob` are always attached. This is a cost and description-accuracy measure, not
+  The reading tools (`list_files`, `read_file`, `search_files`) are always attached. This is a cost and description-accuracy measure, not
   a security boundary: `Permissions#authorize!` remains the gate and still denies at call time.
 
 - **Shell output truncation (`Nexo::OutputTruncator`).** Unbounded command output (`npm install`,
@@ -160,16 +160,11 @@ scope; none widens authority silently.
   The integer `status` passes through untouched. Pure line/char truncation — **no tokenizer**;
   configurable via the kwargs only (no global config, no per-agent macro).
 
-- **Read-before-write + stale guard (real-FS only).** Within a session, the agent is blocked from
-  overwriting a file it never read, or one that changed underneath it. `Agent#chat` builds one
-  `Nexo::ReadTracker` per chat and threads it into `ReadFile` (records `(path, mtime)` on a
-  successful read) and `WriteFile` (enforces): overwriting an existing, un-read file returns
-  `{error: "read <path> before overwriting it"}`; a file whose mtime changed since the read returns
-  `{error: "stale: <path> changed since you read it"}`; a new file writes freely. The guard is
-  **real-FS only** — skipped entirely on `Virtual` (nil `mtime`) and when no tracker is passed
-  (direct tool construction). Best-effort: mtime-based, so a sub-second external edit may slip past
-  the stale check (read-before-write is the primary guard). Clobber-safety within a session only —
-  no versioning, locking, or VCS semantics.
+- **Read-before-write guard, on every sandbox.** The file tools are `ruby_llm`'s, over
+  `Nexo::SandboxFileStore`. `write_file` and `edit_file` refuse a file the agent has not read in
+  this chat, or one whose content changed since it was read. The check compares content
+  digests, so it works on `Virtual` too. A new file is written freely. (Nexo's own
+  modification-time guard, `ReadTracker`, and `Sandbox#mtime` were removed in 0.16.)
 
 - **Scoped `:ask` predicate (`ask_when`).** Under `:ask`, `Permissions.new(ask_when: ->(cap, detail)
   { … })` scopes *which* actions actually prompt a human. When the predicate returns falsey the

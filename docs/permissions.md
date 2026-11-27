@@ -21,7 +21,7 @@ and the agent loop continues — it does not raise. A path that escapes the work
 `:write`/`:shell`/`:fetch`/`:search` reach the gate.
 
 **‡** Under `:read_only` these four capabilities can *never* be authorized, so their tools are
-not attached at all — the model never sees `WriteFile`, `Shell`, `Fetch` or `WebSearch` in its
+not attached at all — the model never sees `write_file`, `edit_file`, `Shell`, `Fetch` or `WebSearch` in its
 schema. Anything named in `allow:` is exempt and attaches normally, and `:auto`/`:ask`/`:approve`
 always attach because they decide per call. Leaving a guaranteed failure in the schema is not
 free: a model that reads the schema tries the tool, and each attempt costs a full round trip.

@@ -239,21 +239,32 @@ resumed = ApprovedWrite.resume(run.id, approved: true)
 resumed.status                                 # => "done" (the gate allowed the write)
 ```
 
+- **The pause is `ruby_llm`'s own (0.16).** Before a tool runs, `ruby_llm` asks it whether
+  the call needs approval and what was decided; Nexo's tools answer both from the agent's
+  `Permissions` (`Nexo::Approvable`). An undecided call is held **before the tool is entered**,
+  and `Agent#prompt` raises `Nexo::ApprovalRequired`, which `run_agent` turns into the suspend.
+  Before 0.16 the signal was an exception raised inside the tool, so a host's catch-all
+  `rescue_from StandardError` on a tool swallowed it. That can no longer happen.
 - **`Nexo::ApprovalRequired`** is a signal, **distinct from `Permissions::Denied`**:
-  `Denied` means "no, adapt" (tools rescue it into `{error:}`); `ApprovalRequired` means
-  "pause and ask a human", so tools must **not** rescue it — it propagates out of the
-  tool loop and out of `Agent#prompt`, where `run_agent` catches it.
+  `Denied` means "no, adapt"; `ApprovalRequired` means "pause and ask a human".
+- **Every waiting call is listed.** A model response can ask for several gated calls at
+  once. `run.state["__approvals_pending__"]` lists each one (`"capability"`, `"tool"`,
+  `"args"`, `"key"`); `"__approval__"` is still the first. Answer several in one resume with
+  `resume(run.id, approvals: {key => true, other_key => false})`; `approved: true` answers
+  the first, as before. A key that was not pending is ignored.
+- **A tool of your own that declares `requires_approval`** (the `ruby_llm` macro) is decided
+  the same way, under the capability `tool`.
 - **Undecided ⇒ suspend, `approved: false` ⇒ deny.** The default stays safe: an
-  unresolved approval never silently allows, and a denial on resume makes the tool return
-  `{error:}` (the model adapts) — the run still finishes `"done"`, **without** the gated
+  unresolved approval never silently allows, and a denial on resume has `ruby_llm` answer the
+  call with a refusal (the model adapts) — the run still finishes `"done"`, **without** the gated
   effect, never `"failed"`.
-- **Scope which actions need approval** with the same `ask_when` predicate as `:ask`
-  (aliased `approve_when:` for readability) — unset means every gated action needs a
-  decision; a falsey predicate auto-allows without one:
+- **Scope which actions need approval** with the same `ask_when` predicate as `:ask` —
+  unset means every gated action needs a decision; a falsey predicate auto-allows without
+  one. (The `approve_when:` alias was removed in 0.16.)
 
   ```ruby
   Nexo::Permissions.new(mode: :approve,
-    approve_when: ->(cap, detail) { cap == :write && detail.to_s.start_with?("/protected") })
+    ask_when: ->(cap, detail) { cap == :write && detail.to_s.start_with?("/protected") })
   ```
 - **Synchronous `:ask` is untouched.** `:ask` (in-process `on_ask`) is still the right
   choice with a human at the keyboard during a synchronous `run`; `:approve` is its
@@ -275,17 +286,14 @@ resumed.status                                 # => "done" (the gate allowed the
   `a.txt`, that is a new call and the run suspends for it. This is the safe direction.
 - **`approved:` with nothing pending approves nothing.** An answer is recorded only when a call
   is waiting.
-- **A catch-all tool handler breaks it.** `RubyLLM::Tool.rescue_from StandardError` in the host
-  swallows the approval signal, and the call is reported to the model as an error instead of
-  suspending the run. Rescue specific classes.
 - **Cross-process approval needs the ActiveRecord store + ActiveJob** (like all durable resume).
   In-process `resume` works with the Memory store; a Memory run does not survive the process.
-- **Branch depends on upstream `ruby_llm`.** This works because `ruby_llm`'s tool loop lets a
-  tool `execute` exception propagate out of `chat.ask` (verified on 2.2.3 through the real
-  loop, `test/real_loop_test.rb`). A host that registers a catch-all
-  `RubyLLM::Tool.rescue_from StandardError` would swallow the approval signal. If a future
-  `ruby_llm` swallows tool exceptions, tool-triggered approval would be constrained — a
-  genuine upstream dependency, stated plainly.
+- **It depends on `ruby_llm`'s approval hooks.** The chat asks the registered tool
+  `requires_approval?(tool_call)` and reads its `approval_resolver` (verified on 2.2.3 through
+  the real loop, `test/approval_pause_test.rb`). Nexo's wrapper around a tool is not a
+  `RubyLLM::Tool`, so this relies on `ruby_llm` calling those two methods on whatever was
+  attached — a genuine upstream dependency, stated plainly. The gate inside each tool is the
+  net under it: a call that got through undecided is still refused there.
 
 See [`examples/approval_agent.rb`](https://github.com/maquina-app/nexo/blob/main/examples/approval_agent.rb) for the live flow
 (`NEXO_LIVE=1 NEXO_MODEL=… ruby -Ilib examples/approval_agent.rb`).

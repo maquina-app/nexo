@@ -167,6 +167,7 @@ module Nexo
         nil
       end
 
+      # A monotonic clock reading, in seconds.
       def now = Process.clock_gettime(Process::CLOCK_MONOTONIC)
 
       # Raises Nexo::ApprovalRequired for the approvals still undecided. An
