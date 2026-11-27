@@ -118,6 +118,16 @@ module Nexo
         full
       end
 
+      # Deletes the file at `path` (guarded) inside the container. The path is an
+      # argument, never part of a script.
+      def delete(path)
+        full = guard_path(path)
+        out = exec!("rm", "--", full)
+        raise Errno::ENOENT, path.to_s unless out[:status].zero?
+
+        full
+      end
+
       # Returns the container paths matching the glob `pattern` (guarded). Empty
       # output yields `[]`.
       #

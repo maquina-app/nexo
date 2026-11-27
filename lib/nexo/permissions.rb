@@ -146,6 +146,14 @@ module Nexo
       end
     end
 
+    # Whether `capability` is allowed for EVERY call without asking anyone:
+    # under `:auto`, or when it is listed in `allow:`. This is what a tool that
+    # runs on the provider's servers needs (see the `provider_tools` macro):
+    # Nexo never sees its calls, so it cannot ask about one or refuse one.
+    def always_allows?(capability)
+      @mode == :auto || @allow.include?(capability)
+    end
+
     # Whether `capability` can NEVER be authorized by this gate, for any call.
     #
     # True only under `:read_only`, for a PRIVILEGED capability absent from

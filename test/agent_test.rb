@@ -74,7 +74,7 @@ class AgentTest < Minitest::Test
     chat = PermissiveVirtualAgent.new.chat
     tool_classes = chat.tools.values.map(&:class)
 
-    assert_equal %i[edit_file list_files read_file search_files write_file], chat.tools.keys.sort
+    assert_equal %i[delete_file edit_file list_files read_file search_files write_file], chat.tools.keys.sort
     assert(chat.tools.values.all?(Nexo::GatedTool), "every file tool is behind the gate")
     # The :virtual sandbox has no shell, so Shell is not attached (Spec 14 R2)
     # even though this agent's gate would permit it.

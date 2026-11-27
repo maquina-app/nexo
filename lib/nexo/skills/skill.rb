@@ -66,6 +66,7 @@ module Nexo
 
       private
 
+      # Reads the skill through `ruby_llm`'s parser.
       def read(file)
         parsed = ::RubyLLM::Skill.new(@path)
         @name = parsed.name
@@ -85,6 +86,7 @@ module Nexo
         File.foreach(file).first(20).any? { |line| line.match?(/\Aname:\s*['"]?[^'"\s]*_/) }
       end
 
+      # Reads an underscore-named skill the way Nexo did before 0.17, and says so once.
       def read_legacy(file)
         front_matter, @content = legacy_parse(File.read(file, encoding: "UTF-8"), file)
         @name = front_matter["name"]
@@ -99,6 +101,7 @@ module Nexo
           "`skills :#{File.basename(@path)}` keeps working. Underscore names stop loading in 0.18."
       end
 
+      # The front matter (String keys) and the body of a legacy skill file.
       def legacy_parse(text, file)
         match = FRONT_MATTER.match(text.delete_prefix("\u{FEFF}"))
         raise Error, "#{file} must start with YAML front matter between --- lines" unless match
@@ -111,6 +114,7 @@ module Nexo
         raise Error, "#{file} has invalid YAML front matter: #{e.message}"
       end
 
+      # The files under the skill's `kind` folder, as sorted absolute paths.
       def files(kind)
         dir = File.join(path, kind)
         return [] unless File.directory?(dir)

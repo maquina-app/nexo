@@ -237,7 +237,7 @@ puts "DISTINCT_THREAD_OK"
 session = Nexo::Session.resume(Assistant, "user-42")
 hydrated = session.instance_variable_get(:@chat)
 tool_names = hydrated.to_llm.tools.keys.sort
-expected = %i[edit_file list_files read_file search_files write_file]
+expected = %i[delete_file edit_file list_files read_file search_files write_file]
 abort "FAIL: hydrated chat tools are #{tool_names.inspect}, expected #{expected.inspect}" unless tool_names == expected
 abort "FAIL: a file tool is not behind the gate" unless hydrated.to_llm.tools.values.all?(Nexo::GatedTool)
 puts "TOOLS_REATTACHED_OK"

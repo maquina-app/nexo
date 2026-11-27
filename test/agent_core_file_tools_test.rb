@@ -41,10 +41,10 @@ class AgentCoreFileToolsTest < Minitest::Test
     results
   end
 
-  def test_an_editing_agent_gets_the_five_core_tools
+  def test_an_editing_agent_gets_every_file_tool
     names = Editor.new.chat.tools.keys
 
-    assert_equal %i[edit_file list_files read_file search_files write_file], names.sort
+    assert_equal %i[delete_file edit_file list_files read_file search_files write_file], names.sort
   end
 
   def test_the_core_tools_are_the_default
@@ -254,7 +254,8 @@ class AgentCoreFileToolsTest < Minitest::Test
     assert_equal Digest::SHA256.hexdigest("hello"), store["a/b.md"].digest
     assert_nil store["missing.md"]
     assert_raises(RubyLLM::FileNotFoundError) { store.read("missing.md") }
-    assert_raises(NotImplementedError) { store.delete("a/b.md") }
+    assert_equal "a/b.md", store.delete("a/b.md").path
+    assert_nil store.delete("a/b.md"), "nothing left to delete"
     assert_empty store.list("other")
   end
 

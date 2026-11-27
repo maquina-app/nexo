@@ -210,7 +210,7 @@ class OauthMcpServer
   def result_for(message, client_id)
     case message["method"]
     when "initialize"
-      {protocolVersion: message.dig("params", "protocolVersion"), capabilities: {tools: {}, resources: {}, prompts: {}},
+      {protocolVersion: message.dig("params", "protocolVersion"), capabilities: {tools: {}, resources: {}, prompts: {}, completions: {}},
        serverInfo: {name: "nexo-test", version: "1"}}
     when "tools/list"
       {tools: [
@@ -234,6 +234,11 @@ class OauthMcpServer
       {description: "Reviews a change", messages: [
         {role: "user", content: {type: "text", text: "Review this change carefully:\n#{code}"}}
       ]}
+    when "resources/templates/list"
+      {resourceTemplates: [{uriTemplate: "note://{name}", name: "note", mimeType: "text/plain"}]}
+    when "completion/complete"
+      typed = message.dig("params", "argument", "value").to_s
+      {completion: {values: %w[ruby rust python].select { |word| word.start_with?(typed) }}}
     when "tasks/get" then task_state(message.dig("params", "taskId"))
     when "tasks/cancel"
       id = message.dig("params", "taskId")

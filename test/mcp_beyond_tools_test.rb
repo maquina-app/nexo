@@ -218,6 +218,14 @@ class McpBeyondToolsTest < Minitest::Test
     assert_equal({"said" => "Reviewed."}, run.result)
   end
 
+  def test_a_prompts_arguments_can_be_completed_and_templates_listed
+    agent = signed_in(agent_class)
+
+    assert_equal %w[ruby rust], agent.mcp_prompt_suggestions(:local, :review, code: "ru")
+    assert_equal ["note://{name}"], agent.mcp_resource_templates(:local).map(&:uri)
+    assert_raises(Nexo::ConfigurationError) { agent.mcp_prompt_suggestions(:local, :nope, code: "x") }
+  end
+
   # --- tasks -------------------------------------------------------------------
 
   def test_a_call_answered_with_a_task_is_waited_for
