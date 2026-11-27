@@ -47,6 +47,22 @@ module Nexo
   # library-misuse error. Carries the pending call's `capability`, `detail` (the
   # tool/path), and `args` so a host can render the approval prompt from
   # `run.state["__approval__"]`.
+  # Raised when an agent is about to use an MCP server that a person has not
+  # authorized yet (an `oauth:` server on the authorization-code grant). Carries
+  # the `server` so a host can send the user to
+  # `agent.mcp_server(server).authorization_url(redirect_uri:)`.
+  class AuthorizationRequired < Error
+    # The `mcp` macro name of the server that needs authorizing.
+    attr_reader :server
+
+    # Builds the error for the MCP server declared as `server`.
+    def initialize(server)
+      @server = server.to_sym
+      super("MCP server :#{server} is not authorized — send the user to " \
+        "agent.mcp_server(:#{server}).authorization_url(redirect_uri:) first")
+    end
+  end
+
   class ApprovalRequired < StandardError
     # The pending call's capability (e.g. `:write`), its `detail` (the tool/path),
     # and the tool `args` — enough for a host to render the approval prompt.

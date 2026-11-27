@@ -293,8 +293,12 @@ module Nexo
     # gate — they never widen capability. Workflow#run_agent passes the approvals
     # recorded on the run. `decision:` is the deprecated global form (one
     # `{approved:}` answer for every gated call).
+    #
+    # `mcp_owner:` (0.15) is whose OAuth credentials this agent's `oauth:` MCP
+    # servers use — a user record, or a stable String/Integer id.
     def initialize(cwd: Dir.pwd, model: nil, sandbox: nil, permissions: nil, decision: nil, decisions: nil,
-      loop: Loops::RubyLLM.new)
+      mcp_owner: nil, loop: Loops::RubyLLM.new)
+      @mcp_owner = mcp_owner
       @cwd = cwd
       @model = model || self.class.model || Nexo.config.default_model
       if @model.nil?
@@ -455,6 +459,26 @@ module Nexo
 
     public
 
+    # The `ruby_llm` MCP server declared as `name` with the `mcp` macro, built
+    # with this agent's `mcp_owner`. For an `oauth:` server this is where a host
+    # drives the authorization (0.15):
+    #
+    # ```ruby
+    # agent  = Assistant.new(mcp_owner: current_user)
+    # linear = agent.mcp_server(:linear)
+    # redirect_to linear.authorization_url(redirect_uri: callback_url) unless linear.authorized?
+    # # ...and in the callback action:
+    # agent.mcp_server(:linear).authorize(params)
+    # ```
+    #
+    # `#deauthorize` forgets the owner's credentials. Raises ConfigurationError
+    # for a name that was never declared.
+    def mcp_server(name)
+      index = self.class.mcp.index { |cfg| cfg[:name].to_s == name.to_s } or
+        raise ConfigurationError, "#{self.class} declares no mcp :#{name}"
+      mcp_clients[index]
+    end
+
     # Releases any MCP server connections held by this agent instance. Clients are
     # memoized on the instance and reused across prompts (Spec 6 lifecycle default),
     # so a long-lived agent holding stdio/SSE servers should call `#close` when
@@ -569,11 +593,29 @@ module Nexo
     def apply_mcp(chat)
       return if self.class.mcp.empty?
 
-      @mcp_clients ||= self.class.mcp.map { |cfg| Nexo::MCP.build(**cfg) }
-      gated = @mcp_clients.flat_map(&:tools).select { |tool| attachable_mcp_tool?(tool) }.map do |tool|
+      require_mcp_authorization!
+      gated = mcp_clients.flat_map(&:tools).select { |tool| attachable_mcp_tool?(tool) }.map do |tool|
         wrap_mcp_tool(Nexo::MCP::GatedTool.new(tool: tool, permissions: @permissions))
       end
       chat.with_tools(*gated) unless gated.empty?
+    end
+
+    # The agent's MCP servers, built once from the `mcp` declarations (with this
+    # agent's `mcp_owner`) and reused until #close.
+    def mcp_clients
+      @mcp_clients ||= self.class.mcp.map { |cfg| Nexo::MCP.build(**cfg, owner: @mcp_owner) }
+    end
+
+    # Raises Nexo::AuthorizationRequired for the first server a person still has
+    # to authorize. Checked before any tool is listed, so the host gets one clear
+    # error to act on in place of a 401 from somewhere inside the first request.
+    # Reads the credential store only — no network.
+    def require_mcp_authorization!
+      self.class.mcp.zip(mcp_clients).each do |cfg, client|
+        next unless Nexo::MCP.user_authorized?(cfg)
+
+        raise Nexo::AuthorizationRequired.new(cfg[:name]) unless client.authorized?
+      end
     end
 
     # Whether an MCP tool is worth attaching: the model may call it, and the gate
