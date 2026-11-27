@@ -104,31 +104,43 @@ module Nexo
     end
   end
 
-  # Control-flow signal raised by the `:approve` permission gate (Spec 16) when a
-  # capability needs a human decision and none has been threaded in yet. Unlike
-  # Permissions::Denied ("no, adapt" — tools rescue it into `{error:}`),
-  # `ApprovalRequired` means "pause and ask a human": tools must **not** rescue
-  # it, so it propagates out of the `ruby_llm` tool loop and out of
-  # Agent#prompt, where Workflow#run_agent catches it and turns it into a
-  # durable Workflow#suspend!. It subclasses `StandardError` directly (not
-  # Error), mirroring Permissions::Denied's base — it is a signal, not a
-  # library-misuse error. Carries the pending call's `capability`, `detail` (the
-  # tool/path), and `args` so a host can render the approval prompt from
-  # `run.state["__approval__"]`.
+  # Raised from Agent#prompt when a call under an `:approve` gate needs a
+  # person's decision and none is recorded. Unlike Permissions::Denied ("no,
+  # adapt"), it means "pause and ask a human": Workflow#run_agent turns it into
+  # a durable Workflow#suspend!, and a direct caller can rescue it, ask, and
+  # prompt again with `Agent.new(decisions:)`.
+  #
+  # Since 0.16 the pause itself is `ruby_llm`'s (see Approvable): the model's
+  # tool calls are held before any of them runs, and the loop raises this for
+  # the first undecided one, with every undecided call of that response in
+  # #pending. The gate inside a tool still raises it for a call that reached the
+  # tool undecided some other way. It subclasses `StandardError` directly (not
+  # Error), like Permissions::Denied — it is a signal, not a library-misuse
+  # error.
   class ApprovalRequired < StandardError
     # The pending call's capability (e.g. `:write`), its `detail` (the tool/path),
     # and the tool `args` — enough for a host to render the approval prompt.
     attr_reader :capability, :detail, :args
 
+    # Every call waiting for a decision, this one first: an Array of
+    # String-keyed Hashes with `"capability"`, `"tool"` (the detail), `"args"`
+    # and the `"key"` to record a decision under.
+    attr_reader :pending
+
     # The key this call is decided under — see Permissions::approval_key.
     def key = Permissions.approval_key(capability, detail, args)
 
+    # This call as a String-keyed Hash, the shape of one #pending entry.
+    def to_h = {"capability" => capability.to_s, "tool" => detail.to_s, "args" => args, "key" => key}
+
     # Builds the signal for `capability` acting on `detail` with `args`; the
-    # message reads "approval required for <capability> (<detail>)".
-    def initialize(capability, detail = nil, args = nil)
+    # message reads "approval required for <capability> (<detail>)". `pending:`
+    # lists every waiting call when there are several (see #pending).
+    def initialize(capability, detail = nil, args = nil, pending: nil)
       @capability = capability
       @detail = detail
       @args = args
+      @pending = pending || [to_h]
       super("approval required for #{capability} (#{detail})")
     end
   end

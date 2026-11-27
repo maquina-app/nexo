@@ -92,8 +92,6 @@ class RealLoopTest < Minitest::Test
     end
 
     assert_equal 3, events.count { |type, _| type == :tool_call }, "exactly max_turns rounds ran"
-    exceeded = events.filter_map { |type, payload| payload if type == :turn_limit_exceeded }
-    assert_equal [{turns: 3, max_turns: 3}], exceeded, "reported once"
     refute_includes events.map(&:first), :done
   end
 

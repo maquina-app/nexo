@@ -21,6 +21,8 @@ module Nexo
     # is `{ body: <string truncated to MAX_BYTES> }`; any denial or error is
     # `{ error: <message> }`.
     class Fetch < RubyLLM::Tool
+      include Approvable
+
       description "Fetch the text of a web page by URL (HTTP/HTTPS GET only)."
       parameter :url, type: :string, required: true, description: "Absolute http(s) URL to fetch"
 
@@ -43,6 +45,9 @@ module Nexo
         @allow_hosts = allow_hosts.map(&:to_s)
         super()
       end
+
+      # A fetch is decided under its URL.
+      def approval_subject(arguments) = [:fetch, arguments[:url]]
 
       # Order of checks (every denial returns `{ error: }`, never raises into the
       # loop): capability gate → scheme → host allow-list → private-address guard →
@@ -72,10 +77,9 @@ module Nexo
       rescue Permissions::Denied => e
         {error: e.message}
       rescue Nexo::ApprovalRequired
-        # Durable approval (Spec 16): the :approve gate on authorize!(:fetch, url)
-        # must PAUSE the run, not become a tool error. Re-raise past the broad
-        # rescue below so run_agent can catch it and suspend. (Denied above still
-        # becomes {error:} — that is the intended deny contract.)
+        # An undecided call normally pauses before it gets here (see Approvable).
+        # One that reaches the gate anyway must not become a tool error: re-raise
+        # past the broad rescue below.
         raise
       rescue => e
         {error: "fetch failed: #{e.message}"}

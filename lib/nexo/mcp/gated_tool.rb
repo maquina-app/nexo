@@ -31,6 +31,11 @@ module Nexo
         raise Nexo::AuthorizationRequired.new(@server, scopes: e.scopes)
       end
 
+      # An MCP call is decided under its tool name and its arguments.
+      def approval_subject(arguments)
+        [:mcp, name, arguments]
+      end
+
       private
 
       # The MCP gate authorizes on the tool's name, with the arguments as detail.

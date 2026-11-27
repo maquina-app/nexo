@@ -20,6 +20,8 @@ module Nexo
     # Return shape: success is `{ results: [{title:, url:, snippet:}, …] }` (≤8
     # rows); any denial or error is `{ error: <message> }`.
     class WebSearch < RubyLLM::Tool
+      include Approvable
+
       description "Search the web for a query; returns titles, URLs, and snippets."
       parameter :query, type: :string, required: true, description: "The search query"
 
@@ -37,6 +39,9 @@ module Nexo
         super()
       end
 
+      # A search is decided under its query.
+      def approval_subject(arguments) = [:search, arguments[:query]]
+
       # Order of operations (every denial/error returns `{ error: }`, never raises
       # into the loop): capability gate → delegate to the backend (query-only) →
       # normalize and cap. The gate runs before the backend, so a denied search
@@ -48,10 +53,9 @@ module Nexo
       rescue Permissions::Denied => e
         {error: e.message}
       rescue Nexo::ApprovalRequired
-        # Durable approval (Spec 16): the :approve gate on authorize!(:search, query)
-        # must PAUSE the run, not become a tool error. Re-raise past the broad
-        # rescue below so run_agent can catch it and suspend. (Denied above still
-        # becomes {error:} — that is the intended deny contract.)
+        # An undecided call normally pauses before it gets here (see Approvable).
+        # One that reaches the gate anyway must not become a tool error: re-raise
+        # past the broad rescue below.
         raise
       rescue => e
         {error: "search failed: #{e.message}"}

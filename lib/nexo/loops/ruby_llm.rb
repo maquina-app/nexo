@@ -25,10 +25,9 @@ module Nexo
       # that ask for tools within this one prompt, however many calls each holds.
       # When the cap is reached `ruby_llm` raises `RubyLLM::ToolRoundLimitError`
       # instead of asking the model again. Every tool call that ran has its
-      # result, so the conversation stays valid. This loop emits a
-      # `:turn_limit_exceeded` event and lets the error propagate — a run that
-      # blows its budget fails loudly rather than continuing unbounded. Pass
-      # `max_turns: nil` to run uncapped.
+      # result, so the conversation stays valid. The error propagates — a run
+      # that blows its budget fails loudly rather than continuing unbounded.
+      # Pass `max_turns: nil` to run uncapped.
       #
       # `cancel:` (0.16) is a callable asked before and after every tool call;
       # when it answers true the chat is cancelled and `ruby_llm` raises
@@ -42,16 +41,13 @@ module Nexo
       def run(agent:, prompt:, max_turns: 25, chat: nil, cancel: nil, &on_event)
         chat ||= agent.chat
 
-        wire_observability(chat, max_turns: max_turns, cancel: cancel, &on_event)
+        wire_observability(chat, cancel: cancel, &on_event)
         chat.with_tool_options(rounds: max_turns) if chat.respond_to?(:with_tool_options)
         before = usage_of(chat)
 
         response = settle_questions(agent, chat, chat.ask(prompt))
         on_event&.call(:done, response)
         response
-      rescue ::RubyLLM::ToolRoundLimitError
-        report_turn_limit(chat, max_turns)
-        raise
       ensure
         report_usage(chat, before, &on_event) if chat && before
       end
@@ -71,21 +67,15 @@ module Nexo
       # prompt observes with its own block rather than the first one. A fresh chat
       # (the default per-prompt path) simply wires once — byte-for-byte the prior
       # behavior.
-      def wire_observability(chat, max_turns: nil, cancel: nil, &on_event)
+      def wire_observability(chat, cancel: nil, &on_event)
         return unless chat.respond_to?(:before_tool_call) && chat.respond_to?(:after_tool_result)
 
         chat.instance_variable_set(:@nexo_on_event, on_event)
         chat.instance_variable_set(:@nexo_cancel, cancel)
-        chat.instance_variable_set(:@nexo_max_turns, max_turns)
-        # The count belongs to the PROMPT, not the chat: a continuing Session runs the
-        # loop repeatedly over one chat, and each prompt gets its own budget.
-        chat.instance_variable_set(:@nexo_turns, 0)
-        chat.instance_variable_set(:@nexo_turns_reported, false)
         return if chat.instance_variable_get(:@nexo_observed)
 
         chat.instance_variable_set(:@nexo_observed, true)
         chat.before_tool_call do |tc|
-          count_turn(chat)
           chat.instance_variable_get(:@nexo_on_event)&.call(:tool_call, tc)
           cancel_if_requested(chat)
         end
@@ -121,18 +111,24 @@ module Nexo
         nil
       end
 
-      # A tool that asks the person something pauses its call and `ask` returns
-      # with the chat waiting. Answers the agent was given (`Agent.new(answers:)`)
-      # are applied and the turn carried on; a question with no answer raises
-      # Nexo::InputRequired. Approvals `ruby_llm` itself asks for are not
-      # Nexo's (its gate is Permissions) and count as unanswered.
+      # `ruby_llm` pauses a tool call that waits on a person, and `ask` returns
+      # with the chat waiting. Two things wait on a person:
+      #
+      # * an approval — a call under an `:approve` gate with no recorded decision
+      #   (see Approvable). It raises Nexo::ApprovalRequired carrying every such
+      #   call. Recorded decisions never reach here: the tool's resolver reads
+      #   them and `ruby_llm` runs or refuses the call itself.
+      # * a question a tool asked. Answers the agent was given
+      #   (`Agent.new(answers:)`) are applied and the turn carried on; a question
+      #   with no answer raises Nexo::InputRequired.
       def settle_questions(agent, chat, response)
         return response unless chat.respond_to?(:waiting?) && chat.respond_to?(:pending_questions)
 
         answers = agent.respond_to?(:answers) ? agent.answers.to_h : {}
         while chat.waiting?
-          questions = chat.pending_questions
-          break if questions.empty?
+          approvals, questions = chat.pending_questions.partition(&:approval?)
+          require_approvals(agent, chat, approvals)
+          break if questions.empty? && approvals.empty?
 
           unanswered = questions.reject { |question| answer(question, answers) }
           raise Nexo::InputRequired.new(unanswered.map { |q| Nexo::InputRequired.reduce(q) }) unless unanswered.empty?
@@ -142,10 +138,38 @@ module Nexo
         response
       end
 
+      # Raises Nexo::ApprovalRequired for the approvals still undecided. An
+      # approval a host's own tool asks for (`requires_approval` on a
+      # `RubyLLM::Tool`) is decided from the agent's decisions too, under
+      # `tool:<name>` and its arguments.
+      def require_approvals(agent, chat, approvals)
+        decisions = agent.respond_to?(:permissions) ? agent.permissions.decisions.to_h : {}
+        waiting = approvals.filter_map do |question|
+          subject = approval_subject(chat, question.tool_call)
+          decided = decisions[Nexo::Permissions.approval_key(*subject)]
+          next subject if decided.nil?
+
+          decided ? question.approve : question.decline
+          nil
+        end
+        return if waiting.empty?
+
+        pending = waiting.map { |subject| Nexo::ApprovalRequired.new(*subject).to_h }
+        raise Nexo::ApprovalRequired.new(*waiting.first, pending: pending)
+      end
+
+      # What `tool_call` is decided under: the tool's own subject when it is one
+      # of Nexo's gated tools, `:tool`, its name and arguments otherwise.
+      def approval_subject(chat, tool_call)
+        arguments = (tool_call.arguments || {}).to_h.transform_keys(&:to_sym)
+        tool = chat.tools[tool_call.qualified_name.to_sym] if chat.respond_to?(:tools)
+        return tool.approval_subject(arguments) if tool.is_a?(Nexo::Approvable)
+
+        [:tool, tool_call.name.to_s, arguments]
+      end
+
       # Answers `question` from `answers` when it holds one. `false` declines it.
       def answer(question, answers)
-        return false if question.approval?
-
         key = Nexo::InputRequired.key_for(question)
         return false unless answers.key?(key)
 
@@ -179,26 +203,6 @@ module Nexo
         on_event.call(:usage, {tokens: tokens, cost: cost})
       rescue
         nil
-      end
-
-      # Counts one tool call. A round may hold several calls, so the count can pass
-      # `max_turns` before the round cap trips; the first time it does, that is
-      # reported once per prompt so a long run does not drown its own event log.
-      def count_turn(chat)
-        limit = chat.instance_variable_get(:@nexo_max_turns)
-        turns = chat.instance_variable_get(:@nexo_turns).to_i + 1
-        chat.instance_variable_set(:@nexo_turns, turns)
-        report_turn_limit(chat, limit) if limit && turns > limit
-      end
-
-      # Emits `:turn_limit_exceeded` at most once per prompt, carrying the tool-call
-      # count so far and the limit.
-      def report_turn_limit(chat, limit)
-        return if chat.instance_variable_get(:@nexo_turns_reported)
-
-        chat.instance_variable_set(:@nexo_turns_reported, true)
-        turns = chat.instance_variable_get(:@nexo_turns).to_i
-        chat.instance_variable_get(:@nexo_on_event)&.call(:turn_limit_exceeded, {turns: turns, max_turns: limit})
       end
     end
   end

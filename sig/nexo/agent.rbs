@@ -21,7 +21,7 @@ module Nexo
     attr_reader instructions: String?
 
     def initialize: (?cwd: String, ?model: untyped, ?sandbox: untyped, ?permissions: untyped,
-                     ?decision: Hash[Symbol, bool]?, ?decisions: Hash[String, bool]?, ?mcp_owner: untyped, ?answers: Hash[untyped, untyped]?, ?loop: untyped) -> void
+                     ?decisions: Hash[String, bool]?, ?mcp_owner: untyped, ?answers: Hash[untyped, untyped]?, ?loop: untyped) -> void
     def mcp_server: (untyped name) -> untyped
     def chat: (?base: untyped) -> RubyLLM::Chat
     attr_reader answers: Hash[String, untyped]

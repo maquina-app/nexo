@@ -13,6 +13,8 @@ module Nexo
     # A denial, or a sandbox with no shell (e.g. Sandboxes::Virtual), is
     # returned as `{ error: ... }` rather than raised into the loop.
     class Shell < RubyLLM::Tool
+      include Approvable
+
       description "Run a shell command in the agent's workspace."
       parameter :command, type: :string, required: true, description: "The command to execute"
 
@@ -22,6 +24,9 @@ module Nexo
         @permissions = permissions
         super()
       end
+
+      # A shell call is decided under its command.
+      def approval_subject(arguments) = [:shell, arguments[:command]]
 
       # Authorizes `:shell`, runs `command`, and returns
       # `{ stdout:, stderr:, status: }` (stdout/stderr truncated via OutputTruncator) — or

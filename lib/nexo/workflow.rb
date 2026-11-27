@@ -47,7 +47,8 @@ module Nexo
     # (pending approval call — Spec 16), and `"__buffer_events__"` (the persisted
     # buffering choice — Spec 5). ::cleared_state strips these when a run reaches
     # `"done"`; #checkpoint_all refuses a step named after any of them (Spec 21).
-    RESERVED_STATE_KEYS = %w[__suspend__ __approval__ __approvals__ __input__ __answers__ __buffer_events__].freeze
+    RESERVED_STATE_KEYS = %w[__suspend__ __approval__ __approvals_pending__ __approvals__ __input__ __answers__
+      __buffer_events__].freeze
 
     # Control-flow signal raised by #suspend! and caught by ::execute to pause
     # a run durably — NOT a failure. It transitions the run to `"suspended"`
@@ -915,12 +916,13 @@ module Nexo
     # an agent never widens its authority; its safe default (`:read_only`) is
     # untouched. Raises ConfigurationError when no `agent` is declared.
     # Durable approval (Spec 16, per call since 0.14): when the driven agent runs
-    # under an `:approve` permission gate and reaches a gated call nobody has
-    # decided, the gate raises Nexo::ApprovalRequired, which propagates out of the
-    # `ruby_llm` tool loop (the loop does not rescue tool exceptions) and out of
-    # Agent#prompt. `run_agent` rescues it, records the pending call under the
-    # reserved `"__approval__"` state key, and #suspend!s the run — so the worker
-    # returns and a host renders "approval pending" from `run.state`.
+    # under an `:approve` permission gate and the model asks for a gated call
+    # nobody has decided, `ruby_llm` holds the call (see Approvable) and
+    # Agent#prompt raises Nexo::ApprovalRequired. `run_agent` rescues it, records
+    # the pending call under the reserved `"__approval__"` state key — and every
+    # call waiting in that response under `"__approvals_pending__"` — and
+    # #suspend!s the run, so the worker returns and a host renders "approval
+    # pending" from `run.state`.
     #
     # ::resume/::resume_later with `{approved: …}` answers THAT call: the answer
     # is filed under the call's key in the reserved `"__approvals__"` state key,
@@ -959,11 +961,8 @@ module Nexo
       # render the approval prompt, then suspend — the existing Workflow.execute
       # `rescue Suspended` path marks the run "suspended" and returns it.
       @run.state = (@run.state || {}).merge(
-        "__approval__" => {
-          "capability" => a.capability.to_s,
-          "tool" => a.detail.to_s,
-          "args" => a.args
-        }
+        "__approval__" => a.to_h.except("key"),
+        "__approvals_pending__" => a.pending
       )
       @run.save_state! if @run.respond_to?(:save_state!)
       suspend!(reason: "approval: #{a.detail}", resume_key: a.detail.to_s)
@@ -1047,13 +1046,26 @@ module Nexo
       state = @run.state || {}
       approvals = state["__approvals__"] || {}
       pending = state["__approval__"]
-      return approvals unless pending && resume_input.key?(:approved)
+      answered = approval_answers(pending, state["__approvals_pending__"])
+      return approvals if answered.empty?
 
-      key = Permissions.approval_key(pending["capability"], pending["tool"], pending["args"])
-      approvals = approvals.merge(key => !!resume_input[:approved])
-      @run.state = state.except("__approval__").merge("__approvals__" => approvals)
+      approvals = approvals.merge(answered)
+      @run.state = state.except("__approval__", "__approvals_pending__").merge("__approvals__" => approvals)
       @run.save_state! if @run.respond_to?(:save_state!)
       approvals
+    end
+
+    # The decisions a resume carries for the calls that were pending: `approved:`
+    # answers the first one, `approvals: {key => true|false}` any of them by key.
+    # A key that was not pending is ignored.
+    def approval_answers(first, pending)
+      return {} unless first
+
+      first_key = Permissions.approval_key(first["capability"], first["tool"], first["args"])
+      keys = [first_key, *Array(pending).map { |call| call["key"] }].uniq
+      answers = resume_input[:approvals].to_h.transform_keys(&:to_s).slice(*keys).transform_values { |v| !!v }
+      answers[first_key] = !!resume_input[:approved] if resume_input.key?(:approved)
+      answers
     end
 
     # Persists ONE completed #checkpoint_all step (Spec 21) — json_normalizes the
