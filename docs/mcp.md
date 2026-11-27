@@ -227,8 +227,27 @@ end
   }
   ```
 
-  A server that supports only this and gets no `mcp_client_id` fails with
-  "does not register clients".
+  The application that signs users in is the one that serves this file — it is that
+  application's identity, and its `redirect_uris` are that application's callback URLs. In
+  Rails it is one route:
+
+  ```ruby
+  # config/routes.rb
+  get "oauth/client.json", to: "oauth_clients#show"
+
+  # app/controllers/oauth_clients_controller.rb
+  def show
+    render json: {
+      client_id: oauth_client_url(format: :json), client_name: "My App",
+      redirect_uris: [mcp_callback_url], grant_types: %w[authorization_code refresh_token],
+      response_types: %w[code], token_endpoint_auth_method: "none"
+    }
+  end
+  ```
+
+  The server fetches it itself, so it must be reachable over `https`, answer with a JSON
+  content type, and carry a `client_id` equal to its own URL. A server that supports only
+  this and gets no `mcp_client_id` fails with "does not register clients".
 
 **Before it is authorized.** Building the chat raises `Nexo::AuthorizationRequired`, whose
 `#server` names the one to authorize. It is raised before any request is made, from the
@@ -268,7 +287,9 @@ unless `mcp_allow` lists them, and under `:approve` each call still asks.
 > discovery, dynamic registration and a Client ID Metadata Document, PKCE, bearer requests,
 > token refresh, per-owner reuse from the encrypted store, a forged callback, and
 > `deauthorize`. [`examples/mcp_oauth.rb`](https://github.com/maquina-app/nexo/blob/main/examples/mcp_oauth.rb)
-> signs in to a real server from a terminal.
+> signs in to a real server from a terminal. A sign-in against a third-party server has not
+> been run from Nexo: the one tried takes only a Client ID Metadata Document, which is the
+> host application's to serve.
 > store are tested against `ruby_llm`'s real MCP class; a full sign-in against a live
 > authorization server has not been run from Nexo.
 

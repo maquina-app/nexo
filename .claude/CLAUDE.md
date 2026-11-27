@@ -197,6 +197,6 @@ Do not trust memory of the 1.x API.
 ## Not verified
 
 - A sign-in against a third-party OAuth MCP server (the flow is verified over real HTTP
-  against a local server; discovery against `getliminal.app/mcp` works, sign-in needs a hosted
-  client metadata document).
+  against a local server; discovery against `getliminal.app/mcp` works). Not pursued: that
+  server takes only a Client ID Metadata Document, which the host application serves, not Nexo.
 - "Faraday yields under the fiber scheduler" on 2.2 (practical evidence only: `nexo-mail`).
