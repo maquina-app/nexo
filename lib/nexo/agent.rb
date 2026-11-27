@@ -25,7 +25,7 @@ module Nexo
     CONFIG_IVARS = %i[
       @model @assume_model_exists @provider @sandbox @permissions @instructions
       @skills @mcp @mcp_allow @fetch_allow @search_backend @requires @produces @tools
-      @context_budget @file_tools
+      @file_tools
     ].freeze
 
     class << self
@@ -143,29 +143,17 @@ module Nexo
         value.nil? ? (@file_tools || Nexo.config.file_tools) : (@file_tools = value)
       end
 
-      # Keeps tool results within shares of the model's context window — a
-      # pass-through to `ruby_llm`'s `Chat#with_context_budget`. With no argument
-      # it reads the declared budget (default `nil`: `ruby_llm`'s own
-      # `config.context_budget`, which is off unless you set it).
+      # Removed in 0.16: the budget is one of the model options, declared in the
+      # `llm` block, where it reaches `ruby_llm`'s own `context_budget`.
       #
       # ```ruby
       # class Researcher < Nexo::Agent
-      #   context_budget per_result: 0.25, per_request: 0.7
+      #   llm { context_budget per_result: 0.25, per_request: 0.7 }
       # end
       # ```
-      #
-      # `per_result:` cuts a single tool result longer than that share and tells
-      # the model to ask for less; `per_request:` leaves the oldest tool results
-      # out of a request that would exceed that share. Both need the model's
-      # context window, which `ruby_llm` knows only for models in its registry —
-      # for a local or unregistered model pass `window:` (tokens), or the budget
-      # does nothing and `ruby_llm` warns once. This bounds what ANY tool returns,
-      # including MCP tools and tools of your own; OutputTruncator still bounds
-      # shell output by lines, with or without a known window.
-      def context_budget(budget = nil, **shares)
-        return @context_budget if budget.nil? && shares.empty?
-
-        @context_budget = (budget || {}).to_h.merge(shares)
+      def context_budget(*, **)
+        raise ConfigurationError, "the `context_budget` macro was removed in 0.16 — declare it in the `llm` block: " \
+          "`llm { context_budget per_result: 0.25 }`"
       end
 
       # Declares the skills attached to this agent. With no args it returns the
@@ -426,7 +414,6 @@ module Nexo
       apply_fetch(c)
       apply_search(c)
       apply_tool_options(c)
-      apply_context_budget(c)
       apply_tool_backstop(c)
       c
     end
@@ -892,12 +879,6 @@ module Nexo
 
       options = {concurrency: Nexo.config.tool_concurrency, calls: Nexo.config.tool_calls_per_round}.compact
       chat.with_tool_options(**options) unless options.empty?
-    end
-
-    # Applies the agent's `context_budget` declaration, when there is one.
-    def apply_context_budget(chat)
-      budget = self.class.context_budget
-      chat.with_context_budget(budget) if budget && chat.respond_to?(:with_context_budget)
     end
 
     # Hook: called once per MCP tool, AFTER it is wrapped in a permission-gating
