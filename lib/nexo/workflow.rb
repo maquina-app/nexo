@@ -47,7 +47,7 @@ module Nexo
     # (pending approval call — Spec 16), and `"__buffer_events__"` (the persisted
     # buffering choice — Spec 5). ::cleared_state strips these when a run reaches
     # `"done"`; #checkpoint_all refuses a step named after any of them (Spec 21).
-    RESERVED_STATE_KEYS = %w[__suspend__ __approval__ __buffer_events__].freeze
+    RESERVED_STATE_KEYS = %w[__suspend__ __approval__ __approvals__ __buffer_events__].freeze
 
     # Control-flow signal raised by #suspend! and caught by ::execute to pause
     # a run durably — NOT a failure. It transitions the run to `"suspended"`
@@ -793,20 +793,24 @@ module Nexo
     # (sandbox), the agent owns the *what* (permissions) and *how* (skills). Driving
     # an agent never widens its authority; its safe default (`:read_only`) is
     # untouched. Raises ConfigurationError when no `agent` is declared.
-    # Durable approval (Spec 16): when the driven agent runs under an `:approve`
-    # permission gate and hits a sensitive capability with no decision yet, the
-    # gate raises Nexo::ApprovalRequired, which propagates out of the `ruby_llm`
-    # tool loop (Group 0: the loop does not rescue tool exceptions) and out of
+    # Durable approval (Spec 16, per call since 0.14): when the driven agent runs
+    # under an `:approve` permission gate and reaches a gated call nobody has
+    # decided, the gate raises Nexo::ApprovalRequired, which propagates out of the
+    # `ruby_llm` tool loop (the loop does not rescue tool exceptions) and out of
     # Agent#prompt. `run_agent` rescues it, records the pending call under the
     # reserved `"__approval__"` state key, and #suspend!s the run — so the worker
-    # returns and a host renders "approval pending" from `run.state`. On
-    # ::resume/::resume_later with `{approved: …}` the decision is threaded into
-    # the agent (via `decision:`), so the same gate now allows (→ run completes) or
-    # denies (→ the tool returns `{error:}`, the model adapts, run still completes).
+    # returns and a host renders "approval pending" from `run.state`.
+    #
+    # ::resume/::resume_later with `{approved: …}` answers THAT call: the answer
+    # is filed under the call's key in the reserved `"__approvals__"` state key,
+    # and every answer recorded so far is handed to the agent. The re-driven agent
+    # then runs the approved call, gets `{error:}` for a declined one, and
+    # suspends again at any gated call that has no answer yet — approving one
+    # write never approves the next.
     def run_agent(prompt, max_turns: 25)
       klass = self.class.agent or raise Nexo::ConfigurationError,
         "#{self.class} has no `agent` declared; add `agent MyAgent`"
-      agent = klass.new(sandbox: sandbox, **agent_decision_kwargs)
+      agent = klass.new(sandbox: sandbox, decisions: record_approval!)
       agent.prompt(prompt, max_turns: max_turns) do |type, payload|
         emit(:"agent_#{type}", serializable(type, payload))
       end
@@ -839,16 +843,28 @@ module Nexo
 
     private
 
-    # The `decision:` kwargs handed to the agent built in #run_agent (Spec 16).
-    # A decision is produced ONLY when the resume input actually carries an
-    # `:approved` key — so a data-only resume (e.g. `resume(id, doc_id: 42)` for
-    # a `suspend!` that was waiting on data, not approval) does NOT fabricate an
-    # `{approved: false}` denial that would silently refuse a later `:approve`
-    # gate. Undecided ⇒ `{}` ⇒ the gate suspends and asks a human. Never widens
-    # authority — it only answers an already-`:approve` gate.
-    def agent_decision_kwargs
-      d = resume_input
-      d.key?(:approved) ? {decision: {approved: !!d[:approved]}} : {}
+    # Files the resume input's `:approved` answer under the pending call's key and
+    # returns every approval recorded on this run (a Hash of
+    # Permissions::approval_key → `true`/`false`).
+    #
+    # An answer is recorded ONLY when the resume input carries an `:approved` key
+    # AND a call is actually pending — so a data-only resume
+    # (`resume(id, doc_id: 42)` for a `suspend!` that was waiting on data) records
+    # nothing, and an `approved:` with no pending call approves nothing. The
+    # pending entry is cleared once answered, so re-entering #run_agent in the
+    # same pass cannot file the answer twice. Never widens authority — it only
+    # answers an already-`:approve` gate, one call at a time.
+    def record_approval!
+      state = @run.state || {}
+      approvals = state["__approvals__"] || {}
+      pending = state["__approval__"]
+      return approvals unless pending && resume_input.key?(:approved)
+
+      key = Permissions.approval_key(pending["capability"], pending["tool"], pending["args"])
+      approvals = approvals.merge(key => !!resume_input[:approved])
+      @run.state = state.except("__approval__").merge("__approvals__" => approvals)
+      @run.save_state! if @run.respond_to?(:save_state!)
+      approvals
     end
 
     # Persists ONE completed #checkpoint_all step (Spec 21) — json_normalizes the

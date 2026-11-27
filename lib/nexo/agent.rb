@@ -257,14 +257,17 @@ module Nexo
     # Symbol shorthands (:virtual/:local, :read_only/:auto/:ask/:approve) and
     # pre-built Sandbox/Permissions instances are both accepted. `loop:` injects
     # the engine that drives a prompt — the provider-neutral Loops::RubyLLM by
-    # default, or an opt-in backend like Loops::AgentSDK.
+    # default, or a backend of your own.
     #
-    # `decision:` (Spec 16, default `nil`) is a per-run approval answer
-    # (`{approved: true|false}`) threaded into the resolved Permissions so an
-    # `:approve` gate allows/denies instead of raising Nexo::ApprovalRequired.
-    # It only supplies the *answer* to an already-`:approve` gate — it never
-    # widens capability. Workflow#run_agent passes it on the resume pass.
-    def initialize(cwd: Dir.pwd, model: nil, sandbox: nil, permissions: nil, decision: nil, loop: Loops::RubyLLM.new)
+    # `decisions:` (0.14, default `nil`) are the per-call approval answers for an
+    # `:approve` gate — a Hash of Permissions::approval_key → `true`/`false`. A
+    # call found there runs or is denied; any other call raises
+    # Nexo::ApprovalRequired. They only supply *answers* to an already-`:approve`
+    # gate — they never widen capability. Workflow#run_agent passes the approvals
+    # recorded on the run. `decision:` is the deprecated global form (one
+    # `{approved:}` answer for every gated call).
+    def initialize(cwd: Dir.pwd, model: nil, sandbox: nil, permissions: nil, decision: nil, decisions: nil,
+      loop: Loops::RubyLLM.new)
       @cwd = cwd
       @model = model || self.class.model || Nexo.config.default_model
       if @model.nil?
@@ -284,7 +287,8 @@ module Nexo
       # sharing the run's sandbox) is BORROWED — closing it would strand the owner.
       @owns_sandbox = sandbox.nil?
       @sandbox = resolve_sandbox(sandbox || self.class.sandbox)
-      @permissions = resolve_permissions(permissions || self.class.permissions, decision: decision)
+      @permissions = resolve_permissions(permissions || self.class.permissions, decision: decision,
+        decisions: decisions)
       @instructions = self.class.instructions
       @loop = loop
     end
@@ -692,12 +696,14 @@ module Nexo
     # by `:local`; container tiers keep their own `/workspace` default).
     def resolve_sandbox(value) = Sandboxes.resolve(value, cwd: @cwd)
 
-    def resolve_permissions(value, decision: nil)
+    def resolve_permissions(value, decision: nil, decisions: nil)
       # A user-supplied Permissions sets its own mcp_allow: — leave it untouched.
-      # Thread a per-run approval decision through a non-mutating copy (Spec 16)
+      # Thread the run's approval answers through a non-mutating copy (Spec 16)
       # so a shared, class-level :approve instance is never clobbered.
       if value.is_a?(Permissions)
-        return decision ? value.with_decision(decision) : value
+        value = value.with_decision(decision) if decision
+        value = value.with_decisions(decisions) if decisions
+        return value
       end
 
       # Thread the class-level mcp_allow into each symbol branch (Spec 6) so the
@@ -707,7 +713,7 @@ module Nexo
       when :read_only then Permissions.new(mode: :read_only, mcp_allow: allow)
       when :auto then Permissions.new(mode: :auto, allow: %i[read glob write shell fetch search], mcp_allow: allow)
       when :ask then Permissions.new(mode: :ask, mcp_allow: allow) # pass a Permissions with on_ask for a real gate
-      when :approve then Permissions.new(mode: :approve, mcp_allow: allow, decision: decision)
+      when :approve then Permissions.new(mode: :approve, mcp_allow: allow, decision: decision, decisions: decisions)
       else raise ConfigurationError, "unknown permissions: #{value.inspect}"
       end
     end

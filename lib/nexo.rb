@@ -52,6 +52,9 @@ module Nexo
     # and the tool `args` — enough for a host to render the approval prompt.
     attr_reader :capability, :detail, :args
 
+    # The key this call is decided under — see Permissions::approval_key.
+    def key = Permissions.approval_key(capability, detail, args)
+
     # Builds the signal for `capability` acting on `detail` with `args`; the
     # message reads "approval required for <capability> (<detail>)".
     def initialize(capability, detail = nil, args = nil)

@@ -1,5 +1,8 @@
 # frozen_string_literal: true
 
+require "digest"
+require "json"
+
 module Nexo
   # The authorization gate for a sandbox's capabilities. Each tool asks
   # `authorize!` before it touches the sandbox, so gating is provider-independent
@@ -9,10 +12,11 @@ module Nexo
   # * `:auto`      — allow everything.
   # * `:read_only` — allow `:read`/`:glob`, deny `:write`/`:shell`/`:fetch`/`:search` (the default).
   # * `:ask`       — defer to `on_ask`; a truthy return allows, anything else denies.
-  # * `:approve`   — durable, cross-process sibling of `:ask` (Spec 16): with no
-  #   `decision` it raises Nexo::ApprovalRequired (→ Workflow#run_agent
-  #   suspends the run); with `{approved: true}` it allows, with
-  #   `{approved: false}` it Denied denies.
+  # * `:approve`   — durable, cross-process sibling of `:ask` (Spec 16): a call
+  #   with no recorded decision raises Nexo::ApprovalRequired (→
+  #   Workflow#run_agent suspends the run); a call approved in `decisions` runs,
+  #   one declined there is Denied. Decisions are per call (0.14): approving one
+  #   write does not approve the next.
   #
   # Capabilities are `:read`, `:glob`, `:write`, `:shell`, `:fetch`, `:search`.
   # Anything listed in `allow:` is permitted regardless of mode.
@@ -32,11 +36,41 @@ module Nexo
     # The configured Nexo permission mode (one of MODES).
     attr_reader :mode
 
-    # The approval decision under `:approve` (Spec 16): `nil` (undecided ⇒
-    # suspend) or a `{approved: true|false}` Hash. Writable after construction so
-    # Workflow#run_agent can thread a resume decision into an
-    # already-resolved `:approve` gate without rebuilding it. Ignored by every
+    # The per-call approval decisions under `:approve` (0.14): a Hash of
+    # ::approval_key → `true`/`false`, or `nil` when the gate was built without
+    # one. A call whose key is absent is undecided and suspends. Ignored by every
     # other mode.
+    attr_reader :decisions
+
+    # The key one gated call is decided under: the capability and its detail (a
+    # path, a command, a URL), plus a digest of the arguments when there are any
+    # (MCP calls). Two calls share a key only when they are the same call, which
+    # is what lets a resumed run recognize the call that was approved and still
+    # ask about a different one. Keys and nested argument keys are normalized to
+    # Strings, so a decision survives the JSON round trip of a run store.
+    def self.approval_key(capability, detail, args = nil)
+      key = "#{capability}:#{detail}"
+      return key if args.nil? || (args.respond_to?(:empty?) && args.empty?)
+
+      "#{key}:#{Digest::SHA256.hexdigest(JSON.generate(canonical(args)))[0, 16]}"
+    end
+
+    # `value` with Hash keys stringified and sorted, recursively, so equal
+    # arguments always serialize to the same JSON.
+    def self.canonical(value)
+      case value
+      when Hash then value.map { |k, v| [k.to_s, canonical(v)] }.sort_by(&:first).to_h
+      when Array then value.map { |v| canonical(v) }
+      else value
+      end
+    end
+    private_class_method :canonical
+
+    # DEPRECATED (0.14) — one answer for EVERY gated call: `nil` (undecided ⇒
+    # suspend) or a `{approved: true|false}` Hash. Approving this way approves
+    # whatever the agent does next, so Workflow#run_agent no longer uses it;
+    # #decisions decides per call and wins when both are set. Kept for hosts that
+    # pass `Agent.new(decision:)` themselves. Ignored by every other mode.
     attr_accessor :decision
 
     # `ask_when:` is an optional `->(capability, detail)` predicate that scopes
@@ -49,9 +83,10 @@ module Nexo
     # #authorize_mcp!. `approve_when:` is an alias that maps onto the same
     # predicate (there is one predicate, not two — Spec 16 Q4).
     #
-    # `decision:` (default `nil`) seeds the `:approve` decision (see #decision).
+    # `decisions:` (default `nil`) seeds the per-call `:approve` decisions (see
+    # #decisions). `decision:` is the deprecated global answer (see #decision).
     def initialize(mode: :read_only, allow: %i[read glob], mcp_allow: [], on_ask: nil, ask_when: nil,
-      approve_when: nil, decision: nil)
+      approve_when: nil, decision: nil, decisions: nil)
       raise ArgumentError, "unknown mode #{mode}" unless MODES.include?(mode)
 
       @mode = mode
@@ -60,6 +95,7 @@ module Nexo
       @on_ask = on_ask
       @ask_when = ask_when || approve_when
       @decision = decision
+      @decisions = decisions&.transform_keys(&:to_s)
     end
 
     # Returns a copy of this gate carrying `decision` (a `{approved: …}` Hash or
@@ -68,6 +104,13 @@ module Nexo
     # without mutating the shared instance.
     def with_decision(decision)
       dup.tap { |copy| copy.decision = decision }
+    end
+
+    # Returns a copy of this gate carrying the per-call `decisions` (see
+    # #decisions), leaving the receiver untouched. Used to thread a run's recorded
+    # approvals into a user-supplied, class-level `:approve` `Permissions`.
+    def with_decisions(decisions)
+      dup.tap { |copy| copy.instance_variable_set(:@decisions, decisions&.transform_keys(&:to_s)) }
     end
 
     # Authorizes `capability` (with optional `detail` passed to an `:ask` hook).
@@ -97,16 +140,14 @@ module Nexo
         # ask_when = approve for everything.
         return true if @ask_when && !@ask_when.call(capability, detail)
 
-        if @decision.nil?
-          # Undecided ⇒ pause the run for a human (Branch A): the signal
-          # propagates out of the tool loop; run_agent turns it into a suspend.
-          raise Nexo::ApprovalRequired.new(capability, detail)
-        elsif @decision[:approved]
-          true
-        else
-          # Explicitly denied on resume ⇒ never auto-allow; the tool rescues
-          # Denied into {error:} and the model adapts.
-          raise Denied, "#{capability} (#{detail}) not approved"
+        # Undecided ⇒ pause the run for a human (Branch A): the signal propagates
+        # out of the tool loop; run_agent turns it into a suspend. Declined ⇒
+        # never auto-allow; the tool rescues Denied into {error:} and the model
+        # adapts.
+        case approval(capability, detail)
+        when nil then raise Nexo::ApprovalRequired.new(capability, detail)
+        when true then true
+        else raise Denied, "#{capability} (#{detail}) not approved"
         end
       end
     end
@@ -176,16 +217,26 @@ module Nexo
         # decision gate as #authorize!'s :approve branch.
         return true if @mcp_allow.include?(name)
 
-        if @decision.nil?
-          raise Nexo::ApprovalRequired.new(:mcp, name, args)
-        elsif @decision[:approved]
-          true
-        else
-          raise Denied, "mcp tool #{name} not approved"
+        case approval(:mcp, name, args)
+        when nil then raise Nexo::ApprovalRequired.new(:mcp, name, args)
+        when true then true
+        else raise Denied, "mcp tool #{name} not approved"
         end
       else
         raise Denied, "mcp tool #{name} denied (unhandled mode #{@mode})"
       end
+    end
+
+    private
+
+    # The recorded answer for one gated call under `:approve`: `true`, `false`,
+    # or `nil` when nobody has decided it. Per-call #decisions win; without them
+    # the deprecated global #decision answers every call alike.
+    def approval(capability, detail, args = nil)
+      return @decisions[self.class.approval_key(capability, detail, args)] if @decisions
+      return nil if @decision.nil?
+
+      @decision[:approved] ? true : false
     end
   end
 end
