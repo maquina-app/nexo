@@ -9,14 +9,15 @@
 # ephemeral writable scratch at /workspace, and the host repo bind-mounted
 # READ-ONLY. When the run ends, `agent.close` tears the container down.
 #
-#   NEXO_LIVE=1 NEXO_MODEL=gemma3:12b ruby -Ilib examples/container_review.rb /path/to/repo
+#   NEXO_LIVE=1 NEXO_MODEL=gemma3:12b NEXO_PROVIDER=ollama ruby -Ilib examples/container_review.rb /path/to/repo
 #
 # Point at Apple's runtime on a Mac by setting NEXO_CONTAINER_RUNTIME=apple.
 # Nothing here is provider-specific: NEXO_MODEL takes any ruby_llm-supported model.
 require "nexo"
+require_relative "support/model"
 
 class ContainerReviewer < Nexo::Agent
-  model ENV.fetch("NEXO_MODEL") # provider-neutral; e.g. gemma3:12b via Ollama
+  Examples.model(self) # NEXO_MODEL, plus NEXO_PROVIDER=ollama for a local model
   permissions :read_only        # safe default
 
   instructions <<~PROMPT

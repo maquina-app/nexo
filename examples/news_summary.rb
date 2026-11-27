@@ -5,13 +5,14 @@
 # The agent may fetch ONLY the allow-listed hosts (SSRF/egress guard). :fetch is a
 # default-denied capability, so the agent runs with an explicit fetch grant.
 #
-#   NEXO_LIVE=1 NEXO_MODEL=gemma3:12b ruby -Ilib examples/news_summary.rb
+#   NEXO_LIVE=1 NEXO_MODEL=gemma3:12b NEXO_PROVIDER=ollama ruby -Ilib examples/news_summary.rb
 #
 # Nothing provider-specific: set NEXO_MODEL to any ruby_llm-supported model.
 require "nexo"
+require_relative "support/model"
 
 class NewsSummary < Nexo::Agent
-  model ENV.fetch("NEXO_MODEL")
+  Examples.model(self)
 
   # :fetch is default-denied (like :shell). Grant it explicitly + scope hosts tightly.
   permissions Nexo::Permissions.new(mode: :read_only, allow: %i[read glob fetch])

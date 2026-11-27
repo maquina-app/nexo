@@ -1,7 +1,26 @@
 ## [Unreleased]
 
+### Added
+
+- **Twelve examples.** One for each headline 0.16 feature — `retry_and_cancel`,
+  `confined_shell`, `usage_report`, `tool_question`, `multiple_approvals`, `llm_options`,
+  `deferred_tools` — and five after the templates Vercel's Eve ships: `support_agent`,
+  `data_analyst`, `software_factory`, `marketing_team`, `company_brain` (with a small MCP
+  server of its own for resources).
+
+### Changed
+
+- `examples/inbox_digest_task.rb` triages three staged files, so it runs with nothing but a
+  model; `inbox_digest.rb` and `inbox_digest_http.rb`, which needed a Gmail MCP server, are
+  removed. `news_search.rb` ships a stand-in search backend so it runs.
+
 ### Fixed
 
+- **Examples could not run on a local model.** Eight live examples declared only
+  `model ENV.fetch("NEXO_MODEL")`, so a model outside ruby_llm's registry (the Ollama tag
+  their own headers suggest) raised "Unknown model". They now take `NEXO_PROVIDER` too
+  (`examples/support/model.rb`). `approval_agent.rb` wrote its demo file into the directory it
+  was run from; it uses a temporary one.
 - Docs only: `docs/workflows.md` said the interrupted-run sweep skips the Disk store,
   `docs/loops.md` still described the removed `:turn_limit_exceeded` event, and
   `examples/mcp_filesystem.rb` said an unlisted MCP tool returns an error when it is not

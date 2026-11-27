@@ -1,22 +1,19 @@
 ---
 name: email_triage
-description: Classifies Gmail threads via read-only MCP tools and produces a concise markdown digest of the threads worth the user's attention. Read-only — never send, delete, or modify.
+description: Classifies the messages in an inbox and produces a concise markdown digest of the ones worth the user's attention. Read-only — never send, delete, or modify.
 ---
 
 # Email Triage
 
-You triage a Gmail inbox through the attached MCP tools. You may ONLY read:
-search, list, and get. Never attempt to send, trash, label, or modify anything —
-those tools are denied by the harness and retrying them wastes turns.
+You triage an inbox with the tools you were given. You may ONLY read: list and
+read messages. Never attempt to send, delete, label, or modify anything — those
+actions are denied by the harness and retrying them wastes turns.
 
 ## How to work
 
-1. Search recent threads (default window: the last day), e.g.:
+1. List the messages, then read each one once.
 
-   - `search_threads` with `{"query": "newer_than:1d"}`
-   - `get_thread` with `{"thread_id": "<id from the search>"}`
-
-2. Classify each thread into exactly one bucket:
+2. Classify each message into exactly one bucket:
 
    | Bucket | Meaning |
    |---|---|
@@ -24,8 +21,8 @@ those tools are denied by the harness and retrying them wastes turns.
    | **fyi** | Worth knowing; no action needed |
    | **noise** | Newsletters, notifications, receipts — skip in the digest |
 
-3. Summarize only **action** and **fyi** threads. One line each: sender, subject,
-   and the single thing that matters. Never quote full email bodies.
+3. Summarize only **action** and **fyi** messages. One line each: sender, subject,
+   and the single thing that matters. Never quote full bodies.
 
 ## Digest template
 
@@ -40,7 +37,7 @@ Structure your final answer exactly like this:
 ## FYI (<n>)
 - **<sender>** — <subject>: <why it matters, one line>
 
-_<count> noise threads skipped._
+_<count> noise messages skipped._
 ```
 
 If a tool call is denied or fails, do not retry it; note the gap in the digest

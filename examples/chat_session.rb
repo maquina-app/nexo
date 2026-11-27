@@ -17,9 +17,10 @@
 # A session adds only memory + addressability. The agent's sandbox, permissions
 # (default :read_only), skills, MCP, and fetch_allow all apply unchanged.
 require "nexo"
+require_relative "support/model"
 
 class Assistant < Nexo::Agent
-  model ENV.fetch("NEXO_MODEL")
+  Examples.model(self)
   instructions "You are a helpful assistant. Remember what the user tells you."
 end
 
