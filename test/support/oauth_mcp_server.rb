@@ -16,13 +16,14 @@ require "uri"
 #   * `/authorize` with PKCE (S256), answering with a redirect carrying the code
 #   * `/token` for the authorization code and for refresh, rotating refresh tokens
 #   * `/mcp`: 401 with a `WWW-Authenticate` challenge unless the bearer token is
-#     live; otherwise `initialize`, `tools/list` and `tools/call`
+#     live; otherwise `initialize`, tools, resources, prompts, and two tools that
+#     answer with a task (`slow` finishes on its second check, `stuck` never)
 #
 # No web framework and no gem: a TCPServer and a thread. It records what it saw
 # (`registrations`, `refreshes`, `calls`) so a test can assert on the server's
 # side of the conversation.
 class OauthMcpServer
-  attr_reader :port, :registrations, :refreshes, :calls, :token_requests, :answers
+  attr_reader :port, :registrations, :refreshes, :calls, :token_requests, :answers, :cancelled_tasks
 
   # `expires_in:` is what the token endpoint reports; `ruby_llm` refreshes a
   # token within a minute of its expiry, so a small value forces a refresh on
@@ -41,6 +42,8 @@ class OauthMcpServer
     @refreshes = 0
     @calls = []
     @answers = []
+    @tasks = {}
+    @cancelled_tasks = []
     @lock = Mutex.new
     @thread = Thread.new { serve }
     @thread.report_on_exception = false
@@ -207,13 +210,15 @@ class OauthMcpServer
   def result_for(message, client_id)
     case message["method"]
     when "initialize"
-      {protocolVersion: message.dig("params", "protocolVersion"), capabilities: {tools: {}, resources: {}},
+      {protocolVersion: message.dig("params", "protocolVersion"), capabilities: {tools: {}, resources: {}, prompts: {}},
        serverInfo: {name: "nexo-test", version: "1"}}
     when "tools/list"
       {tools: [
         {name: "whoami", description: "Says which client is calling", inputSchema: {type: "object", properties: {}}},
         {name: "publish", description: "Needs the write scope", inputSchema: {type: "object", properties: {}}},
-        {name: "book", description: "Books a seat, after asking which", inputSchema: {type: "object", properties: {}}}
+        {name: "book", description: "Books a seat, after asking which", inputSchema: {type: "object", properties: {}}},
+        {name: "slow", description: "Answers later, as a task", inputSchema: {type: "object", properties: {}}},
+        {name: "stuck", description: "A task that never finishes", inputSchema: {type: "object", properties: {}}}
       ]}
     when "tools/call" then call_result(message["params"], client_id)
     when "resources/list"
@@ -221,13 +226,41 @@ class OauthMcpServer
     when "resources/read"
       uri = message.dig("params", "uri")
       {contents: [{uri: uri, mimeType: "text/plain", text: "contents of #{uri}"}]}
+    when "prompts/list"
+      {prompts: [{name: "review", description: "Reviews a change",
+                  arguments: [{name: "code", description: "The diff", required: true}]}]}
+    when "prompts/get"
+      code = message.dig("params", "arguments", "code")
+      {description: "Reviews a change", messages: [
+        {role: "user", content: {type: "text", text: "Review this change carefully:\n#{code}"}}
+      ]}
+    when "tasks/get" then task_state(message.dig("params", "taskId"))
+    when "tasks/cancel"
+      id = message.dig("params", "taskId")
+      @lock.synchronize { @cancelled_tasks << id }
+      {taskId: id, status: "cancelled"}
     else {}
     end
+  end
+
+  # A task finishes on its second check; `stuck` never does.
+  def task_state(id)
+    task = @lock.synchronize { @tasks[id].tap { |entry| entry[:polls] += 1 } }
+    if task[:name] == "slow" && task[:polls] >= 2
+      return {taskId: id, status: "completed", result: {content: [{type: "text", text: "slow work finished"}]}}
+    end
+
+    {taskId: id, status: "working", statusMessage: "check #{task[:polls]}", pollIntervalMs: 10}
   end
 
   # `book` asks the person a question before it answers (MCP elicitation): the
   # first call returns an input request, the second carries the response.
   def call_result(params, client_id)
+    if %w[slow stuck].include?(params["name"])
+      id = "task-#{SecureRandom.hex(3)}"
+      @lock.synchronize { @tasks[id] = {name: params["name"], polls: 0} }
+      return {resultType: "task", taskId: id, status: "working", pollIntervalMs: 10}
+    end
     return {content: [{type: "text", text: "you are #{client_id}"}]} unless params["name"] == "book"
 
     answer = params.dig("inputResponses", "seat")

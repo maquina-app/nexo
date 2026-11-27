@@ -22,6 +22,8 @@ module Nexo
     def initialize: (?cwd: String, ?model: untyped, ?sandbox: untyped, ?permissions: untyped,
                      ?decisions: Hash[String, bool]?, ?mcp_owner: untyped, ?answers: Hash[untyped, untyped]?, ?loop: untyped) -> void
     def mcp_server: (untyped name) -> untyped
+    def mcp_prompts: (untyped name) -> Array[untyped]
+    def mcp_prompt: (untyped name, untyped prompt, **untyped arguments) -> untyped
     def chat: (?base: untyped) -> RubyLLM::Chat
     attr_reader answers: Hash[String, untyped]
     def prompt: (String text, ?max_turns: Integer?, ?cancel: (^() -> boolish)?) ?{ (Symbol, untyped) -> void } -> untyped

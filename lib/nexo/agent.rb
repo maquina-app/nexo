@@ -423,6 +423,8 @@ module Nexo
     # so swapping `loop:` swaps the engine without touching this class. The
     # optional `&on_event` block receives `(type, payload)` progress events.
     #
+    # `text` is the prompt, or an MCP server's prompt from #mcp_prompt.
+    #
     # `cancel:` (0.16) is a callable the loop asks around every tool call; when
     # it answers true the prompt stops with `RubyLLM::CancelledError`. It is
     # passed on only when given, so a loop backend of your own that does not
@@ -530,6 +532,22 @@ module Nexo
         raise ConfigurationError, "#{self.class} declares no mcp :#{name}"
       mcp_clients[index]
     end
+
+    # The prompts the MCP server declared as `name` offers — reusable messages
+    # the server wrote, each with a `name`, a `description` and the `arguments`
+    # it takes.
+    def mcp_prompts(name) = mcp_server(name).prompts
+
+    # Fills in the server's prompt `prompt` with `arguments` and returns it,
+    # ready for #prompt, which sends its messages in place of a text of yours:
+    #
+    # ```ruby
+    # agent.prompt(agent.mcp_prompt(:github, :code_review, code: diff))
+    # ```
+    #
+    # The developer picks the prompt, not the model, so no permission gate
+    # applies; the tools the model then calls are gated as always.
+    def mcp_prompt(name, prompt, **arguments) = mcp_server(name).prompt(prompt, **arguments)
 
     # Releases any MCP server connections held by this agent instance. Clients are
     # memoized on the instance and reused across prompts (Spec 6 lifecycle default),

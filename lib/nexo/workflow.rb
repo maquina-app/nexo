@@ -936,6 +936,10 @@ module Nexo
     # in the run's payload, so a resumed run finds the same owner. An owner who
     # has not authorized a server yet fails the run with
     # Nexo::AuthorizationRequired before the model is called.
+    #
+    # `prompt` may be a callable taking the agent, for a prompt only the agent
+    # can build — an MCP server's:
+    # `run_agent(->(agent) { agent.mcp_prompt(:github, :code_review, code: diff) })`.
     def run_agent(prompt, max_turns: 25, mcp_owner: nil)
       klass = self.class.agent or raise Nexo::ConfigurationError,
         "#{self.class} has no `agent` declared; add `agent MyAgent`"
@@ -945,6 +949,7 @@ module Nexo
       answers = record_answers!
       options[:answers] = answers unless answers.empty?
       agent = klass.new(**options)
+      prompt = prompt.call(agent) if prompt.respond_to?(:call)
       traced(klass.name || "agent") do
         drive(agent, prompt, max_turns) { |type, payload| emit(:"agent_#{type}", serializable(type, payload)) }
       end

@@ -42,6 +42,11 @@ module Nexo
     # Passed to `ruby_llm` as `with_tool_options(calls:)`.
     attr_accessor :tool_calls_per_round
 
+    # How long, in seconds, a prompt waits for an MCP server's long-running tool
+    # call (a task, see the `mcp` macro's `tasks:`) before it cancels the task and
+    # fails. Default `300`.
+    attr_accessor :mcp_task_timeout
+
     # Max in-flight tasks for Nexo.concurrent fan-out (Spec 5), default `8`.
     # The single most important knob for staying under provider rate limits.
     attr_accessor :max_in_flight
@@ -108,6 +113,7 @@ module Nexo
       @job_queue = nil # nil → ActiveJob's default queue
       @file_tools = :core # ruby_llm's file tools over the sandbox
       @strict_tools = true # a tool no gate saw does not run
+      @mcp_task_timeout = 300 # seconds a prompt waits on an MCP task
     end
 
     private

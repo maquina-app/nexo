@@ -178,4 +178,78 @@ class McpBeyondToolsTest < Minitest::Test
   ensure
     agent&.close
   end
+
+  # --- prompts -----------------------------------------------------------------
+
+  def test_a_servers_prompts_are_listed_with_their_arguments
+    agent = signed_in(agent_class)
+
+    prompt = agent.mcp_prompts(:local).first
+
+    assert_equal "review", prompt.name
+    assert_equal [:code], prompt.arguments.map(&:name)
+  end
+
+  def test_a_servers_prompt_is_sent_in_place_of_a_text
+    agent = signed_in(agent_class)
+    stub_replies "Looks fine."
+
+    response = agent.prompt(agent.mcp_prompt(:local, :review, code: "+ puts 1"))
+
+    assert_equal "Looks fine.", response.content
+    assert_includes @server.calls, "prompts/get"
+  end
+
+  def test_a_workflow_builds_the_prompt_from_its_agent
+    klass = agent_class
+    owner_agent = signed_in(klass)
+    owner_agent.close
+    flow = Class.new(Nexo::Workflow) do
+      agent klass
+      define_method(:call) do |_payload|
+        {"said" => run_agent(->(agent) { agent.mcp_prompt(:local, :review, code: "x") }, mcp_owner: "alice").content}
+      end
+    end
+    stub_replies "Reviewed."
+
+    run = flow.run
+
+    assert_equal "done", run.status, run.error.to_s
+    assert_equal({"said" => "Reviewed."}, run.result)
+  end
+
+  # --- tasks -------------------------------------------------------------------
+
+  def test_a_call_answered_with_a_task_is_waited_for
+    agent = signed_in(agent_class("slow", tasks: true))
+    stub_replies tool_call(:slow), "All done."
+    events = []
+
+    response = agent.prompt("go") { |type, payload| events << [type, payload] }
+
+    assert_equal "All done.", response.content
+    result = events.find { |type, _| type == :tool_result }.last
+    assert_includes result.text, "slow work finished"
+    assert_includes events.map(&:first), :tool_progress, "the server's status messages arrive as progress"
+    assert_operator @server.calls.count("tasks/get"), :>=, 2
+  end
+
+  def test_a_task_that_outlives_the_timeout_is_cancelled_and_the_prompt_fails
+    Nexo.config.mcp_task_timeout = 0.05
+    agent = signed_in(agent_class("stuck", tasks: true))
+    stub_replies tool_call(:stuck), "never reached"
+
+    error = assert_raises(Nexo::Error) { agent.prompt("go") }
+
+    assert_match(/did not finish in 0.05 seconds/, error.message)
+    assert_equal 1, @server.cancelled_tasks.size
+  end
+
+  def test_tasks_is_a_nexo_option_turned_into_the_extension
+    settings = Nexo::MCP.send(:settings, name: :x, transport: :http, token: nil,
+      config: {url: "http://127.0.0.1:1/mcp", tasks: true, allow_http: true})
+
+    assert_equal [:tasks], settings[:extensions]
+    refute settings.key?(:tasks)
+  end
 end

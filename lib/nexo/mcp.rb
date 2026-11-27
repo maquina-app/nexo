@@ -21,9 +21,11 @@ module Nexo
 
     # `mcp` macro options that are Nexo's own and never handed to `ruby_llm`:
     # `defer:` keeps the server's tool definitions out of the model's context until
-    # the provider's tool search asks for them, and `resources:` attaches the two
-    # tools that list and read the server's resources.
-    NEXO_OPTIONS = %i[defer resources].freeze
+    # the provider's tool search asks for them, `resources:` attaches the two
+    # tools that list and read the server's resources, and `tasks:` lets the
+    # server answer a tool call with a task it finishes later (the MCP tasks
+    # extension), which the loop waits for.
+    NEXO_OPTIONS = %i[defer resources tasks].freeze
 
     class << self
       # Builds a `RubyLLM::MCP` server from Nexo's friendly, transport-shaped macro
@@ -89,8 +91,10 @@ module Nexo
 
       # Maps the macro opts onto the keywords `RubyLLM.mcp` takes.
       def settings(name:, transport:, token:, config:, owner: nil)
+        tasks = config[:tasks]
         config = config.except(*NEXO_OPTIONS)
         mapped = {name: name.to_s}
+        mapped[:extensions] = [*config.delete(:extensions), :tasks] if tasks
         oauth = config.delete(:oauth)
 
         if transport.to_sym == :stdio

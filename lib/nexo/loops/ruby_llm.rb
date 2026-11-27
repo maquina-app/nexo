@@ -125,10 +125,11 @@ module Nexo
         return response unless chat.respond_to?(:waiting?) && chat.respond_to?(:pending_questions)
 
         answers = agent.respond_to?(:answers) ? agent.answers.to_h : {}
+        deadline = now + Nexo.config.mcp_task_timeout.to_f
         while chat.waiting?
           approvals, questions = chat.pending_questions.partition(&:approval?)
           require_approvals(agent, chat, approvals)
-          break if questions.empty? && approvals.empty?
+          break if questions.empty? && approvals.empty? && !await_tasks(chat, deadline)
 
           unanswered = questions.reject { |question| answer(question, answers) }
           raise Nexo::InputRequired.new(unanswered.map { |q| Nexo::InputRequired.reduce(q) }) unless unanswered.empty?
@@ -137,6 +138,36 @@ module Nexo
         end
         response
       end
+
+      # Waits one poll interval for the MCP tasks the chat's tool calls are
+      # paused on, and answers whether there were any — the caller then asks the
+      # chat to carry on, which checks on each task. A task that outlives
+      # Nexo.config.mcp_task_timeout is cancelled and the prompt fails.
+      def await_tasks(chat, deadline)
+        tasks = chat.respond_to?(:pending_tasks) ? chat.pending_tasks : []
+        return false if tasks.empty?
+
+        remaining = deadline - now
+        unless remaining.positive?
+          tasks.each { |task| cancel_task(task) }
+          raise Nexo::Error, "MCP task #{tasks.map(&:id).join(", ")} did not finish in " \
+            "#{Nexo.config.mcp_task_timeout} seconds and was cancelled"
+        end
+
+        cancel_if_requested(chat)
+        sleep [tasks.filter_map(&:poll_interval).min || 1, remaining].min
+        true
+      end
+
+      # Asks the server to cancel `task`; a server that cannot be reached is not
+      # allowed to hide the timeout being reported.
+      def cancel_task(task)
+        task.cancel
+      rescue
+        nil
+      end
+
+      def now = Process.clock_gettime(Process::CLOCK_MONOTONIC)
 
       # Raises Nexo::ApprovalRequired for the approvals still undecided. An
       # approval a host's own tool asks for (`requires_approval` on a
