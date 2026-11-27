@@ -304,7 +304,14 @@ module Nexo
 
         instance = new(run, buffer_events: buffer_events)
         instance.instance_variable_set(:@resume_input, resume_input)
-        result = instance.call(payload)
+        # Run inside ruby_llm's workflow context so every model request, tool call
+        # and usage record made by this run carries the run id (and, in Rails,
+        # lands in `ruby_llm_usages` with it). Instrumentation only: it changes no
+        # outcome, and Suspended or a failure pass straight through it.
+        result = ::RubyLLM.workflow(name || "Nexo::Workflow", id: run.id) do |trace|
+          instance.instance_variable_set(:@trace, trace)
+          instance.call(payload)
+        end
         run.update!(status: "done", result: stringify_keys(result), **cleared_state(run))
         notify_status(run)
         run
@@ -479,7 +486,7 @@ module Nexo
       # or is reloaded from the AR json column on a cross-process resume — and so
       # the first pass and the resume pass see identical data. Values must be
       # json-serializable (documented above).
-      value = json_normalize(yield)
+      value = json_normalize(traced(key) { yield })
       @run.state = store.merge(key => value)
       @run.save_state! if @run.respond_to?(:save_state!)
       value
@@ -535,7 +542,7 @@ module Nexo
 
       unless pending.empty?
         Nexo.concurrent(max_in_flight: pending.size) do |c|
-          pending.each { |name, callable| c.add { persist_checkpoint(name, callable.call) } }
+          pending.each { |name, callable| c.add { persist_checkpoint(name, traced(name.to_s) { callable.call }) } }
         end
       end
 
@@ -811,8 +818,10 @@ module Nexo
       klass = self.class.agent or raise Nexo::ConfigurationError,
         "#{self.class} has no `agent` declared; add `agent MyAgent`"
       agent = klass.new(sandbox: sandbox, decisions: record_approval!)
-      agent.prompt(prompt, max_turns: max_turns) do |type, payload|
-        emit(:"agent_#{type}", serializable(type, payload))
+      traced(klass.name || "agent") do
+        agent.prompt(prompt, max_turns: max_turns) do |type, payload|
+          emit(:"agent_#{type}", serializable(type, payload))
+        end
       end
     rescue Nexo::ApprovalRequired => a
       # Persist the pending call (immediately, like a checkpoint) so a host can
@@ -842,6 +851,13 @@ module Nexo
     end
 
     private
+
+    # Runs the block as a named step of this run's ruby_llm workflow context, so
+    # the events inside it are attributed to that step (a checkpoint, an agent).
+    # A plain `yield` when the instance is driven outside ::execute.
+    def traced(name, &block)
+      @trace ? @trace.step(name, &block) : yield
+    end
 
     # Files the resume input's `:approved` answer under the pending call's key and
     # returns every approval recorded on this run (a Hash of

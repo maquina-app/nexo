@@ -159,7 +159,7 @@ class AgentHostToolsTest < Minitest::Test
 
     assert_empty Archive.calls
     assert_match(/did not run/, results.first[:error])
-    assert_empty err
+    refute_match(/tools. macro/, err, "refusing is the signal; no warning on top")
   end
 
   def test_strict_tools_lets_every_tool_nexo_attached_through

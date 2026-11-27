@@ -266,6 +266,8 @@ module Nexo
         end
       end
 
+      # `path` expanded against `cwd`, or `SecurityError` when it would land
+      # outside the sandbox.
       def absolute(path)
         full = File.expand_path(path, @cwd)
         # Check the PHYSICAL location (symlinks resolved), not the lexical path, so
