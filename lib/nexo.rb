@@ -171,15 +171,6 @@ module Nexo
         "with `tools` on the agent, optionally with `capability:`."
     end
 
-    # Warns, once per agent class, that it still uses Nexo's own file tools.
-    def warn_deprecated_file_tools(agent_class)
-      return unless first_warning?(:"file_tools:#{agent_class}")
-
-      notice "[nexo] #{agent_class} uses `file_tools :nexo` (ReadFile, WriteFile, Glob), which is " \
-        "deprecated and will be removed in 1.0. The default is `:core`: ruby_llm's read_file, " \
-        "list_files, search_files, write_file and edit_file, behind the same permission gate."
-    end
-
     # Writes one operational notice to standard error. Not `Kernel#warn`: that
     # prints nothing when Ruby runs with `-W0`, and a refused tool call or a
     # removal notice is not a language warning to be silenced with those.

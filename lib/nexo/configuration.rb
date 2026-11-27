@@ -80,8 +80,8 @@ module Nexo
     attr_accessor :job_queue
 
     # The file tools an agent gets when it does not say (see the `file_tools`
-    # macro): `:core` (default since 0.16) for `ruby_llm`'s five over the agent's
-    # sandbox, `:nexo` for Nexo's own three, which are deprecated and go in 1.0.
+    # macro): `:core` (the default) for `ruby_llm`'s five over the agent's
+    # sandbox, or `:none`. Nexo's own three (`:nexo`) were removed in 0.16.
     attr_accessor :file_tools
 
     # What happens when the model calls a tool Nexo did not attach — one a host
@@ -106,7 +106,7 @@ module Nexo
       @broadcast_events = false # safe default: opt in to the Turbo mirror
       @run_store = nil # nil → the automatic choice (ActiveRecord under Rails, else Memory)
       @job_queue = nil # nil → ActiveJob's default queue
-      @file_tools = :core # ruby_llm's file tools; Nexo's own (:nexo) go in 1.0
+      @file_tools = :core # ruby_llm's file tools over the sandbox
       @strict_tools = true # a tool no gate saw does not run
     end
 

@@ -3,6 +3,11 @@
 require "timeout"
 
 module Nexo
+  # The sandbox-backed, permission-gated tools Nexo attaches to an agent's chat
+  # itself: Shell, Fetch and WebSearch. Each authorizes a capability against the
+  # agent's Permissions before acting and returns `{ error: ... }` on a denial
+  # rather than raising into the tool loop. File tools are `ruby_llm`'s own, over
+  # a SandboxFileStore.
   module Tools
     # Runs a shell command in the agent's sandbox. Authorizes `:shell` first.
     # A denial, or a sandbox with no shell (e.g. Sandboxes::Virtual), is

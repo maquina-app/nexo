@@ -82,13 +82,6 @@ module Nexo
       []
     end
 
-    # The last-modified time of `path`, used by the read-before-write + stale
-    # guard for real-filesystem sandboxes. Base returns `nil` (no external
-    # mutation to guard against, e.g. Virtual), which disables the guard.
-    def mtime(path)
-      nil
-    end
-
     # Commands the default #environment probe looks for. Deliberately short —
     # each entry costs a `command -v` plus one `--version` when found — and
     # extensible per call for anything else a skill's script might need.

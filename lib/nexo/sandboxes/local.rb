@@ -160,14 +160,6 @@ module Nexo
         %i[read write shell glob].include?(cap)
       end
 
-      # The last-modified time of `path` (guarded against escaping `cwd`), or
-      # `nil` when the file is absent — so a new-file write skips the
-      # read-before-write guard.
-      def mtime(path)
-        full = absolute(path)
-        File.exist?(full) ? File.mtime(full) : nil
-      end
-
       # Runs `command` through `sh`, in `cwd`, with the narrowed environment.
       # Raises `Timeout::Error` after `timeout` seconds — and by then the command
       # and every process it started have been killed.

@@ -3,7 +3,7 @@
 require "test_helper"
 require "tmpdir"
 
-# 0.15 — `file_tools :core`: ruby_llm's own file tools over a Nexo sandbox, each
+# `file_tools :core` (the default): ruby_llm's own file tools over a Nexo sandbox, each
 # behind Nexo's permission gate. Driven through ruby_llm's real loop.
 class AgentCoreFileToolsTest < Minitest::Test
   class Editor < Nexo::Agent
@@ -41,7 +41,7 @@ class AgentCoreFileToolsTest < Minitest::Test
     results
   end
 
-  def test_the_five_core_tools_replace_nexos_three
+  def test_an_editing_agent_gets_the_five_core_tools
     names = Editor.new.chat.tools.keys
 
     assert_equal %i[edit_file list_files read_file search_files write_file], names.sort
@@ -52,23 +52,6 @@ class AgentCoreFileToolsTest < Minitest::Test
 
     assert_equal :core, plain.file_tools
     assert_equal %i[list_files read_file search_files], plain.new.chat.tools.keys.sort
-  end
-
-  # 0.16: Nexo's own three still work when asked for, and say they are going.
-  def test_nexo_tools_still_work_and_warn_once_per_agent_class
-    legacy = Class.new(Nexo::Agent) do
-      model "gpt-4o-mini"
-      file_tools :nexo
-    end
-    names = nil
-
-    _out, err = capture_io do
-      names = legacy.new.chat.tools.keys
-      legacy.new.chat
-    end
-
-    assert_equal %i[nexo--tools--glob nexo--tools--read_file], names.sort
-    assert_equal 1, err.scan("deprecated and will be removed in 1.0").size
   end
 
   # A filesystem MCP server names its tools like ruby_llm's file tools. The
@@ -119,15 +102,6 @@ class AgentCoreFileToolsTest < Minitest::Test
 
     assert_equal %i[read_file], tools.keys
     assert_kind_of Nexo::MCP::GatedTool, tools[:read_file]
-  end
-
-  def test_the_config_default_can_still_select_nexo_tools
-    Nexo.config.file_tools = :nexo
-    plain = Class.new(Nexo::Agent) { model "gpt-4o-mini" }
-
-    capture_io { assert_includes plain.new.chat.tools.keys, :"nexo--tools--read_file" }
-  ensure
-    Nexo.reset_config!
   end
 
   def test_a_read_only_agent_gets_no_writing_tools
@@ -212,6 +186,50 @@ class AgentCoreFileToolsTest < Minitest::Test
       assert_match(/Wrote sub\/new.md/, written.to_s)
       assert_equal "made", File.read(File.join(dir, "sub/new.md"))
     end
+  end
+
+  # The sandbox tells the model an absolute working directory, and ruby_llm
+  # treats every path as relative: an absolute path inside the sandbox is made
+  # relative before the gate and the tool see it.
+  def test_an_absolute_path_inside_the_sandbox_works
+    Dir.mktmpdir do |dir|
+      root = File.realpath(dir)
+      File.write(File.join(root, "kept.md"), "on disk")
+      agent = LocalEditor.new(cwd: root)
+
+      read, written, listed = run_calls(agent, tool_call(:read_file, path: File.join(root, "kept.md")),
+        tool_call(:write_file, path: File.join(root, "sub/new.md"), content: "made"),
+        tool_call(:list_files, path: root))
+
+      assert_includes read.to_s, "on disk"
+      assert_match(/Wrote sub\/new.md/, written.to_s)
+      assert_equal "made", File.read(File.join(root, "sub/new.md"))
+      assert_includes listed.to_s, "kept.md"
+    end
+  end
+
+  def test_an_absolute_path_outside_the_sandbox_is_not_read
+    Dir.mktmpdir do |dir|
+      Dir.mktmpdir do |other|
+        File.write(File.join(other, "secret.md"), "hidden")
+
+        read, = run_calls(LocalEditor.new(cwd: File.realpath(dir)),
+          tool_call(:read_file, path: File.join(File.realpath(other), "secret.md")))
+
+        refute_includes read.to_s, "hidden"
+      end
+    end
+  end
+
+  def test_the_removed_nexo_tools_say_what_replaced_them
+    legacy = Class.new(Nexo::Agent) do
+      model "gpt-4o-mini"
+      file_tools :nexo
+    end
+
+    error = assert_raises(Nexo::ConfigurationError) { legacy.new.chat }
+
+    assert_match(/removed in 0\.16/, error.message)
   end
 
   def test_an_unknown_choice_is_a_configuration_error

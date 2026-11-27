@@ -18,6 +18,10 @@ class FileExplorer < Nexo::Agent
   model ENV.fetch("NEXO_MODEL")          # provider-neutral; e.g. gemma3:12b via Ollama
   permissions :read_only                 # safe default
 
+  # The server names its tools like ruby_llm's file tools (read_file, search_files),
+  # so this agent leaves the built-in ones out.
+  file_tools :none
+
   # Reached through an MCP server — no vendor SDK. The server exposes read_file,
   # list_directory, search_files, write_file, etc.
   mcp :fs,

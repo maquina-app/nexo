@@ -8,8 +8,8 @@ require "resolv"
 module Nexo
   module Tools
     # Read-only HTTP(S) GET, gated by the `:fetch` capability (denied by default,
-    # like `:shell`) and a host allow-list (SSRF/egress guard). Follows the
-    # `ReadFile`/`WriteFile` shape exactly: authorize first, act, and rescue
+    # like `:shell`) and a host allow-list (SSRF/egress guard). The same shape
+    # as Shell: authorize first, act, and rescue
     # `Permissions::Denied` into `{ error: ... }` so the loop never crashes.
     #
     # Deliberately minimal: a single stdlib GET. No POST/PUT/DELETE, no crawler,
@@ -17,7 +17,7 @@ module Nexo
     # model influences is a fixed `User-Agent`. Fetched bodies are UNTRUSTED model
     # input (prompt-injection risk) and are returned raw (truncated), never parsed.
     #
-    # Return shape differs from `ReadFile` (which returns a bare String): success
+    # Return shape: success
     # is `{ body: <string truncated to MAX_BYTES> }`; any denial or error is
     # `{ error: <message> }`.
     class Fetch < RubyLLM::Tool

@@ -30,11 +30,15 @@ module Nexo
     # call acts on — a path, say. Without it, or when it returns `nil`, the detail
     # is the tool name and its arguments as JSON, so two different calls are never
     # mistaken for one when an approval is recorded.
-    def initialize(tool:, permissions:, capability:, detail: nil)
+    #
+    # `prepare:` is an optional `->(arguments)` returning the arguments the gate
+    # and the tool should see instead — used to normalize a path, for instance.
+    def initialize(tool:, permissions:, capability:, detail: nil, prepare: nil)
       @tool = tool
       @permissions = permissions
       @capability = capability
       @detail = detail
+      @prepare = prepare
     end
 
     # Authorizes the call, then delegates to the wrapped tool. A denial is
@@ -45,6 +49,7 @@ module Nexo
     # bookkeeping, not a tool argument, so the gate never sees it.
     def call(args = nil, **kwargs)
       arguments = (args || {}).to_h.merge(kwargs).transform_keys(&:to_sym)
+      arguments = @prepare.call(arguments) if @prepare
       authorize!(arguments.except(:tool_call))
       @tool.call(**arguments)
     rescue Nexo::Permissions::Denied => e

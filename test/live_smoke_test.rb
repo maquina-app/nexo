@@ -22,7 +22,10 @@ class LiveSmokeTest < Minitest::Test
 
     model = ENV.fetch("NEXO_MODEL")
 
+    # provider/assume_model_exists are needed for an unregistered local tag.
     agent_class = Class.new(Nexo::Agent) do
+      provider :ollama
+      assume_model_exists true
       sandbox :local
       permissions :read_only
       instructions "You are a careful code reviewer. Read files and report issues."
@@ -32,12 +35,7 @@ class LiveSmokeTest < Minitest::Test
       File.write(File.join(dir, "hello.rb"), "def hello = 'hi'\n")
 
       agent = agent_class.new(cwd: dir, model: model)
-      # provider/assume_model_exists are needed for an unregistered local tag.
-      chat = RubyLLM.chat(model: model, provider: :ollama, assume_model_exists: true)
-      chat.with_instructions(agent.instructions)
-      chat.with_tools(*agent_tools(agent))
-
-      response = chat.ask("List the Ruby files and summarize the project.")
+      response = agent.prompt("List the Ruby files and summarize the project.")
 
       refute_empty response.content.to_s
     end
@@ -104,16 +102,5 @@ class LiveSmokeTest < Minitest::Test
 
     denied = tool.execute(url: "https://icanhazip.com/")
     assert denied[:error], "off-list host should return { error: }"
-  end
-
-  private
-
-  def agent_tools(agent)
-    sandbox = agent.sandbox
-    permissions = agent.permissions
-    [
-      Nexo::Tools::ReadFile.new(sandbox: sandbox, permissions: permissions),
-      Nexo::Tools::Glob.new(sandbox: sandbox, permissions: permissions)
-    ]
   end
 end

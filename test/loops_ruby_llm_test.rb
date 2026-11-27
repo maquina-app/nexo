@@ -12,7 +12,7 @@ class LoopsRubyLLMTest < Minitest::Test
   class VirtualAgent < Nexo::Agent
     model TEST_MODEL
     sandbox :virtual
-    # :write is granted so WriteFile is actually attached. Under the default
+    # :write is granted so write_file is actually attached. Under the default
     # :read_only gate it is statically denied and therefore correctly left out
     # of the schema — this test is about the LOOP's wiring, not about gating.
     permissions Nexo::Permissions.new(mode: :read_only, allow: %i[read glob write])

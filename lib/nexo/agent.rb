@@ -133,15 +133,12 @@ module Nexo
       #   read-before-write guard that works on every sandbox.
       # * `:none` — no file tools: for an agent that reaches its files another
       #   way, such as a filesystem MCP server whose tools carry the same names.
-      # * `:nexo` — Nexo's own `ReadFile`, `WriteFile` and `Glob`. Deprecated:
-      #   it warns once per agent class and is removed in 1.0.
       #
-      # Either way the tools are behind the same permission gate: reading and
-      # listing are `:read`, writing and editing are `:write`, and under
-      # `:read_only` the writing tools are not attached at all. The two sets use
-      # different tool names and return different shapes, so a skill that names
-      # `nexo--tools--write_file`, or a host that reads tool events, must be
-      # updated when switching.
+      # The tools are behind the permission gate: reading, listing and searching
+      # are `:read`, writing and editing are `:write`, and under `:read_only` the
+      # writing tools are not attached at all. A path may be relative to the
+      # sandbox's working directory or absolute inside it. Nexo's own `ReadFile`,
+      # `WriteFile` and `Glob` (`:nexo`) were removed in 0.16.
       def file_tools(value = nil)
         value.nil? ? (@file_tools || Nexo.config.file_tools) : (@file_tools = value)
       end
@@ -401,13 +398,13 @@ module Nexo
       @loop = loop
     end
 
-    # Builds a configured chat with the four sandbox-backed tools attached as
+    # Builds a configured chat with the file and shell tools attached as
     # instances bound to this agent's sandbox and permissions, then layers on the
     # instructions of every declared skill.
     #
     # `base:` lets a Nexo::Session pass a persisted `acts_as_chat` record
     # (hydrated via ruby_llm's `#to_llm` delegation) so the very same wiring —
-    # instructions, the four sandbox tools, skills, MCP, fetch — is applied onto
+    # instructions, the sandbox tools, skills, MCP, fetch — is applied onto
     # the continuing thread instead of a fresh chat. When `base` is nil the path
     # is byte-for-byte the standalone-agent build: a fresh `RubyLLM.chat`. A
     # session therefore changes only *memory/persistence*, never authority or
@@ -666,7 +663,7 @@ module Nexo
 
     # Lazily connects the declared MCP servers and attaches their tools, each
     # wrapped in a MCP::GatedTool so every invocation is authorized through this
-    # agent's Permissions first. Attached after the four sandbox tools and the
+    # agent's Permissions first. Attached after the sandbox tools and the
     # skills, so MCP tools fire the chat's `before_tool_call`/`after_tool_result`
     # callbacks (wired in Loops::RubyLLM) and appear in the run's event log with
     # no extra wiring. Returns early when no server is declared.
@@ -771,30 +768,24 @@ module Nexo
     # turn and models do try it. #authorize! stays the actual boundary either way.
     def file_tool_set
       case self.class.file_tools
-      when :nexo
-        Nexo.warn_deprecated_file_tools(self.class)
-        nexo_file_tools
       when :core then core_file_tools
       when :none then []
-      else raise ConfigurationError, "unknown file_tools #{self.class.file_tools.inspect} (use :core, :none or :nexo)"
+      when :nexo
+        raise ConfigurationError, "`file_tools :nexo` was removed in 0.16: Nexo's ReadFile, WriteFile and Glob " \
+          "are gone. Use `:core` (the default: read_file, list_files, search_files, write_file, edit_file) or `:none`"
+      else raise ConfigurationError, "unknown file_tools #{self.class.file_tools.inspect} (use :core or :none)"
       end
-    end
-
-    # Nexo's own file tools. One ReadTracker per chat, shared by ReadFile (records)
-    # and WriteFile (enforces the read-before-write + stale guard).
-    def nexo_file_tools
-      tracker = ReadTracker.new
-      tools = [Tools::ReadFile.new(sandbox: @sandbox, permissions: @permissions, tracker: tracker)]
-      unless @permissions.never_allows?(:write)
-        tools << Tools::WriteFile.new(sandbox: @sandbox, permissions: @permissions, tracker: tracker)
-      end
-      tools << Tools::Glob.new(sandbox: @sandbox, permissions: @permissions)
     end
 
     # `ruby_llm`'s file tools over one SandboxFileStore per chat, each behind
     # Nexo::GatedTool. They are built here and attached with `with_tools` — NOT
     # with `chat.with_file_store`, which would attach them with no place for the
-    # gate. The gate is told the path the call acts on, like Nexo's own tools.
+    # gate. The gate is told the path the call acts on.
+    #
+    # `ruby_llm` treats every path as relative to the store, so `/workspace/a.md`
+    # would be looked up as `workspace/a.md`. The sandbox tells the model an
+    # absolute working directory, so an absolute path inside it is made relative
+    # before the gate and the tool see it (#sandbox_relative).
     #
     # VERIFIED (ruby_llm 2.2.3): `FileStore::Tools.classes(names)` returns the
     # tool classes for `:read` (list, read, search), `:write` and `:edit`, each
@@ -807,9 +798,23 @@ module Nexo
       groups.flat_map do |group, capability|
         ::RubyLLM::FileStore::Tools.classes([group]).map do |tool|
           Nexo::GatedTool.new(tool: tool.new(store: -> { store }), permissions: @permissions,
-            capability: capability, detail: ->(arguments) { arguments[:path] })
+            capability: capability, detail: ->(arguments) { arguments[:path] },
+            prepare: ->(arguments) { sandbox_relative(arguments) })
         end
       end
+    end
+
+    # `arguments` with an absolute `:path` inside the sandbox's working directory
+    # made relative to it. The directory itself becomes no path at all, which the
+    # listing and search tools read as "everything". Any other path is left alone.
+    def sandbox_relative(arguments)
+      path = arguments[:path]
+      root = @sandbox.cwd.to_s.chomp("/") if @sandbox.respond_to?(:cwd)
+      return arguments unless path.is_a?(String) && root && !root.empty?
+      return arguments.except(:path) if path.chomp("/") == root
+      return arguments unless path.start_with?("#{root}/")
+
+      arguments.merge(path: path.delete_prefix("#{root}/"))
     end
 
     # Attaches the tools declared with the `tools` macro. One declared with a

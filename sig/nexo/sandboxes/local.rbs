@@ -12,7 +12,6 @@ module Nexo
       def shell: (String command, ?timeout: Numeric) -> Hash[Symbol, untyped]
       def instructions: () -> String
       def supports?: (Symbol cap) -> bool
-      def mtime: (String path) -> Time?
     end
   end
 end

@@ -20,7 +20,6 @@ module Nexo
       def close: () -> void
       def instructions: () -> String
       def supports?: (Symbol cap) -> bool
-      def mtime: (String path) -> Time?
     end
   end
 end
