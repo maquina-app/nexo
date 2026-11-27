@@ -89,13 +89,13 @@ class ContainerArgvTest < Minitest::Test
     assert_includes gaps, "--pids-limit"
   end
 
-  # Apple accepts --tmpfs but the mount is NOT writable under --read-only, so a
-  # read-only rootfs leaves the agent with no writable workspace at all. Verified live.
-  def test_apple_reports_that_a_read_only_rootfs_has_no_writable_scratch
+  # On `container` 1.2 a --tmpfs under --read-only was not writable; on 1.7.1 it
+  # is (verified live), so a read-only rootfs is no longer reported as a gap.
+  def test_apple_no_longer_reports_a_read_only_rootfs_as_a_gap
     gaps = build(runtime: :apple, readonly_rootfs: true).hardening_gaps.join(" ")
 
-    assert_includes gaps, "--tmpfs is not writable"
-    assert_includes gaps, "readonly_rootfs: false"
+    refute_includes gaps, "--tmpfs"
+    assert_includes build(runtime: :apple).send(:run_argv).join(" "), "--read-only --tmpfs /workspace:rw"
   end
 
   def test_apple_reports_no_scratch_gap_when_the_rootfs_is_writable

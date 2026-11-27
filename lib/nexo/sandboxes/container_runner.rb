@@ -72,9 +72,12 @@ module Nexo
         @user = user
       end
 
-      # Whether the runtime's CLI is installed and its daemon answers.
+      # Whether the runtime's CLI is installed and its daemon answers. Docker's
+      # `version` asks the daemon; Apple's `container` only answers for its
+      # service through `system status` (VERIFIED, `container` 1.7.1).
       def supported?
-        system(@bin, "version", out: File::NULL, err: File::NULL) ? true : false
+        probe = (@runtime == :apple) ? %w[system status] : %w[version]
+        system(@bin, *probe, out: File::NULL, err: File::NULL) ? true : false
       end
 
       # Why #supported? is false, for the error a caller raises.
@@ -106,6 +109,8 @@ module Nexo
       # into a shell string on the host.
       def run_argv(name, command, readable:, writable:, denied:, directory:, env:)
         argv = [@bin, "run", "--rm", "--name", name, "--network", @network.to_s, "--cap-drop", "ALL"]
+        # Apple's CLI reports image and start progress on stderr unless told not to.
+        argv += ["--progress", "none"] if @runtime == :apple
         argv += ["--security-opt", "no-new-privileges"] if @runtime == :docker
         argv += ["--read-only", "--tmpfs", "/tmp:rw"]
         argv += ["--pids-limit", @pids_limit.to_s] if @pids_limit && @runtime == :docker

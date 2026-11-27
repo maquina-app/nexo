@@ -29,6 +29,17 @@ class ContainerRunnerTest < Minitest::Test
     assert_equal %w[alpine echo hi], args.last(3)
   end
 
+  # VERIFIED live on Apple `container` 1.7.1: it rejects --security-opt and
+  # --pids-limit, and writes progress to stderr unless told not to.
+  def test_the_apple_runtime_gets_only_the_flags_its_cli_accepts
+    args = argv(runner(runtime: :apple), "echo", "hi")
+
+    assert_equal %w[container run --rm --name nexo-run-x --network none --cap-drop ALL --progress none], args.first(11)
+    refute_includes args, "--security-opt"
+    refute_includes args, "--pids-limit"
+    assert_includes args, "--read-only"
+  end
+
   def test_one_string_is_a_shell_command
     assert_equal ["alpine", "sh", "-c", "echo hi | wc -c"], argv(runner, "echo hi | wc -c").last(4)
   end

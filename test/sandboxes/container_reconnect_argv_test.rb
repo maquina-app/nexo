@@ -65,15 +65,19 @@ class ContainerReconnectArgvTest < Minitest::Test
     refute_includes run, "infinity"
   end
 
-  def test_apple_reconnect_raises_configuration_error
-    # Apple's container CLI has no verified exact label filter (Spec 20 Q4), so
-    # reconnect must refuse rather than risk a substring/wrong-container attach.
-    # The raise happens before any daemon call, so this stays daemon-free.
-    error = assert_raises(Nexo::ConfigurationError) do
-      build(runtime: :apple, reconnect: true).send(:reconnect_existing)
-    end
+  # Apple's `container list` has no label filter, so reconnect lists every
+  # container as JSON and matches the identity label exactly (VERIFIED, 1.7.1).
+  def test_apple_reconnect_lists_json_and_matches_the_label_exactly
+    sandbox = build(runtime: :apple, reconnect: true)
+    listing = JSON.generate([
+      {"id" => "nexo-fixed", "configuration" => {"labels" => {"nexo.sandbox.id" => "nexo-fixed"}}},
+      {"id" => "nexo-fixedx", "configuration" => {"labels" => {"nexo.sandbox.id" => "nexo-fixedx"}}},
+      {"id" => "unrelated", "configuration" => {"labels" => {}}}
+    ])
 
-    assert_match(/apple/i, error.message)
+    assert_equal %w[container list --all --format json], sandbox.send(:reconnect_argv)
+    assert_equal %w[nexo-fixed], sandbox.send(:reconnect_ids, listing)
+    assert_empty sandbox.send(:reconnect_ids, "[]")
   end
 
   # --- R4: reconnect never crosses runtimes -------------------------------
@@ -82,8 +86,8 @@ class ContainerReconnectArgvTest < Minitest::Test
     docker = build(reconnect: true).send(:reconnect_argv)
 
     assert_equal "docker", docker.first
-    # The apple binary is "container"; that path raises before querying, proving
-    # a :docker container is never looked up by an :apple sandbox and vice versa.
-    assert_equal "container", Nexo::Sandboxes::Container::RUNTIMES.fetch(:apple)
+    # Each runtime is asked through its own binary, so a :docker container is
+    # never looked up by an :apple sandbox and vice versa.
+    assert_equal "container", build(runtime: :apple, reconnect: true).send(:reconnect_argv).first
   end
 end

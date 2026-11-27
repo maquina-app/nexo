@@ -18,7 +18,9 @@ require "test_helper"
 class ContainerReconnectSmokeTest < Minitest::Test
   def setup
     skip "set NEXO_LIVE=1 to run live container smoke tests" unless ENV["NEXO_LIVE"] == "1"
-    skip "docker binary not on PATH" unless system("command -v docker > /dev/null 2>&1")
+    @runtime = (ENV["NEXO_CONTAINER_RUNTIME"] || "docker").to_sym
+    @bin = Nexo::Sandboxes::Container::RUNTIMES.fetch(@runtime)
+    skip "#{@bin} binary not on PATH" unless system("command -v #{@bin} > /dev/null 2>&1")
 
     @image = ENV["NEXO_CONTAINER_IMAGE"] || "alpine"
     @name = "nexo-reconnect-#{Nexo.generate_run_id}"
@@ -28,8 +30,8 @@ class ContainerReconnectSmokeTest < Minitest::Test
   def teardown
     # reconnect: true means close leaves the shared container in place, so force-
     # remove the real container (by its name) plus the decoy explicitly.
-    system("docker", "rm", "-f", @decoy_cid, out: File::NULL, err: File::NULL) if @decoy_cid
-    system("docker", "rm", "-f", @name, out: File::NULL, err: File::NULL)
+    system(@bin, "rm", "-f", @decoy_cid, out: File::NULL, err: File::NULL) if @decoy_cid
+    system(@bin, "rm", "-f", @name, out: File::NULL, err: File::NULL)
     @reattached&.close
     @origin&.close
   end
@@ -43,8 +45,9 @@ class ContainerReconnectSmokeTest < Minitest::Test
     # A decoy whose name CONTAINS the real name but carries a different identity
     # label. A substring (name=) match would wrongly find it; the exact label
     # filter must not.
-    @decoy_cid = `docker run -d --name #{@name}x --label nexo.sandbox.id=#{@name}x #{@image} tail -f /dev/null`.strip
-    refute_empty @decoy_cid
+    @decoy_cid = "#{@name}x"
+    assert system(@bin, "run", "-d", "--name", @decoy_cid, "--label", "nexo.sandbox.id=#{@decoy_cid}",
+      @image, *%w[tail -f /dev/null], out: File::NULL, err: File::NULL)
 
     @reattached = build(reconnect: true)
     @reattached.write("marker2.txt", "reattached") # forces reconnect
@@ -61,6 +64,6 @@ class ContainerReconnectSmokeTest < Minitest::Test
   private
 
   def build(**opts)
-    Nexo::Sandboxes::Container.new(image: @image, name: @name, cwd: "/workspace", **opts)
+    Nexo::Sandboxes::Container.new(image: @image, runtime: @runtime, name: @name, cwd: "/workspace", **opts)
   end
 end

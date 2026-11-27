@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require "json"
 require "open3"
 require "securerandom"
 require "timeout"
@@ -41,20 +42,22 @@ module Nexo
       RUNTIMES = {docker: "docker", apple: "container"}.freeze
 
       # What each runtime's CLI can actually express. Verified live against
-      # `container` 1.2.2 on macOS and Docker 29.4: Apple's CLI rejects
+      # Docker 29 and Apple `container` 1.7.1 (0.16): Apple's CLI rejects
       # `--security-opt` and `--pids-limit` with "Unknown option", which aborts
       # `container run` before the sandbox ever starts.
       #
-      # `writable_tmpfs` is not about the flag being accepted — Apple accepts
-      # `--tmpfs` — but about what it does: combined with `--read-only` the mount is
-      # NOT writable there, so a read-only rootfs leaves no usable scratch.
+      # `writable_tmpfs` is not about the flag being accepted but about what it
+      # does: on `container` 1.2 a `--tmpfs` under `--read-only` was NOT writable,
+      # which left a read-only rootfs with no usable scratch. It is writable on
+      # 1.7.1, so the gap is no longer reported; on an older `container`, set
+      # `readonly_rootfs: false`.
       #
       # Anything a runtime cannot honor is reported through #hardening_gaps rather
       # than dropped quietly: running with weaker isolation, or with a workspace you
       # cannot write to, must be visible.
       CAPABILITIES = {
         docker: {security_opt: true, pids_limit: true, writable_tmpfs: true},
-        apple: {security_opt: false, pids_limit: false, writable_tmpfs: false}
+        apple: {security_opt: false, pids_limit: false, writable_tmpfs: true}
       }.freeze
 
       # The container working directory (default `/workspace`, a container path),
@@ -255,29 +258,18 @@ module Nexo
       # * >1 matches -> raise `Nexo::Error`; never guess which one to attach.
       #
       # Only genuinely unexpected errors (a daemon/CLI failure) fail open to the
-      # create path; the ambiguity raise and the Apple-posture `ConfigurationError`
-      # (both `Nexo::Error` subclasses) are re-raised, never swallowed.
+      # create path; the ambiguity raise (a `Nexo::Error`) is re-raised, never
+      # swallowed.
       #
       # Runtime isolation is inherent: the query shells the runtime-specific `@bin`
       # (docker vs. Apple `container`), and each runtime keeps its own id namespace,
       # so a `:docker` container can never be reattached by an `:apple` sandbox or
       # vice versa.
       def reconnect_existing
-        # Apple reconnect posture (Spec 20 R4/Q4): Apple's `container` CLI has no
-        # live-verified exact `label=` filter, and a name substring match is unsafe,
-        # so reconnect on `:apple` raises rather than risk attaching the wrong
-        # container. Wire the verified mechanism here once Group 0 confirms one.
-        if @runtime == :apple
-          raise ConfigurationError,
-            "reconnect: true is not supported on the Apple :container runtime — " \
-            "it has no verified exact label filter (Spec 20 Q4); use runtime: :docker " \
-            "for reconnect, or run an ephemeral :apple sandbox (reconnect: false)"
-        end
-
         out, _err, status = Open3.capture3(*reconnect_argv)
         return nil unless status.success?
 
-        ids = out.strip.split("\n").reject(&:empty?)
+        ids = reconnect_ids(out)
         return nil if ids.empty?
         if ids.size > 1
           raise Nexo::Error, "ambiguous reconnect: #{ids.size} containers labeled #{@name}"
@@ -291,11 +283,25 @@ module Nexo
         nil
       end
 
-      # The exact reconnect query argv, built purely so the offline suite can assert
-      # it with no daemon. Matches by the exact identity label set in `run_argv`
-      # (`label=nexo.sandbox.id=<name>`), NOT a `name=<name>` substring filter.
+      # The reconnect query argv, built purely so the offline suite can assert it
+      # with no daemon. Docker filters by the exact identity label set in
+      # `run_argv` (`label=nexo.sandbox.id=<name>`), NOT a `name=<name>` substring
+      # filter. Apple's `container list` has no filter, so it lists every
+      # container as JSON and #reconnect_ids matches the label exactly.
       def reconnect_argv
+        return [@bin, "list", "--all", "--format", "json"] if @runtime == :apple
+
         [@bin, "ps", "-aq", "--no-trunc", "-f", "label=nexo.sandbox.id=#{@name}"]
+      end
+
+      # The ids of the containers carrying this sandbox's identity label, from the
+      # output of #reconnect_argv. VERIFIED (Apple `container` 1.7.1): each entry
+      # of the JSON list has an `id` and its labels under `configuration.labels`.
+      def reconnect_ids(out)
+        return out.strip.split("\n").reject(&:empty?) unless @runtime == :apple
+
+        JSON.parse(out).select { |entry| entry.dig("configuration", "labels", "nexo.sandbox.id") == @name }
+          .map { |entry| entry["id"] }
       end
 
       # Runs `cmd` inside the started container and returns the
