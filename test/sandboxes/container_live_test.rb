@@ -57,6 +57,29 @@ class ContainerLiveTest < Minitest::Test
     refute_match(/sleep 4[78]/, left)
   end
 
+  # The sandbox tells the model its working directory is /workspace, so the
+  # model addresses files as /workspace/…; ruby_llm's file tools take every path
+  # as relative. No model is called: the agent's own gated tools are.
+  def test_the_file_tools_take_an_absolute_path_inside_the_workspace
+    RubyLLM.configure { |config| config.ollama_api_base ||= "http://localhost:11434/v1" }
+    klass = Class.new(Nexo::Agent) do
+      model "unused"
+      provider :ollama
+      assume_model_exists true
+      permissions Nexo::Permissions.new(mode: :read_only, allow: %i[read glob write])
+    end
+    tools = klass.new(sandbox: @sandbox).chat.tools
+
+    written = tools[:write_file].call(path: "/workspace/abs/note.md", content: "absolute")
+    read = tools[:read_file].call(path: "/workspace/abs/note.md")
+    listed = tools[:list_files].call(path: "/workspace")
+
+    assert_match(/Wrote abs\/note.md/, written.to_s)
+    assert_includes read.to_s, "absolute"
+    assert_includes listed.to_s, "abs/note.md"
+    assert_equal "absolute", @sandbox.read("abs/note.md")
+  end
+
   def test_glob_lists_written_files
     @sandbox.write("a.rb", "1")
     @sandbox.write("b.rb", "2")
