@@ -5,7 +5,8 @@
 # Uses the official filesystem MCP server (npx, no credentials) so you can watch the
 # safe-by-default gate in action end to end:
 #   * read tools are on the mcp_allow list  -> the model can use them
-#   * write_file is NOT on the list          -> the gate returns { error: ... } (denied)
+#   * write_file is NOT on the list          -> under :read_only it is not attached,
+#                                               so the model has no tool to write with
 #
 # Requires: `npx` on PATH, and a model. MCP ships with ruby_llm — no extra gem.
 #
@@ -29,7 +30,8 @@ class FileExplorer < Nexo::Agent
     command: "npx",
     args: ["-y", "@modelcontextprotocol/server-filesystem", ENV.fetch("FS_ROOT", "/tmp")]
 
-  # Opt IN to read tools only. write_file is deliberately absent -> denied by the gate.
+  # Opt IN to read tools only. write_file is deliberately absent, so it is never
+  # offered to the model.
   mcp_allow %w[read_file read_text_file list_directory search_files directory_tree]
 
   instructions "You explore a filesystem via MCP tools. Read and list only; never modify files."
@@ -44,9 +46,11 @@ if __FILE__ == $PROGRAM_NAME
     puts "== Allowed path: listing + reading under #{root} =="
     puts agent.prompt("List the files in #{root} and summarize what the first text file contains.").content
 
-    puts "\n== Denied path: ask it to write (the gate should refuse) =="
+    puts "\n== Denied path: ask it to write (it has no tool to do it) =="
     puts agent.prompt("Create a file #{root}/nexo_probe.txt containing the word HELLO.").content
-    # Expect the model to report it could not write: the write_file MCP call returns
+    # Expect the model to report it could not write. Under :read_only an MCP tool that
+    # is not in mcp_allow is not attached (since 0.14), so there is no write_file to
+    # call. The gate still refuses a call that reaches it another way, with
     # { error: "mcp tool write_file denied in read_only mode (not in mcp_allow)" }.
   ensure
     agent.close   # tear down the stdio server subprocess

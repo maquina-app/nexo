@@ -57,9 +57,9 @@ Things to know:
 - **Upgrading from 0.12:** `max_turns` used to be telemetry only — a run that passed it
   kept going. It now stops. If a legitimate run needs more rounds, raise the number.
 - `max_turns: nil` runs uncapped. Use it only for trusted workloads.
-- The event also fires, once per prompt, the first time the count of tool **calls** passes
-  `max_turns`. A round can hold several calls, so with concurrent tool calls this can
-  arrive before the round cap trips. It is a warning; the raise is the stop.
+- There is no event for it. The `:turn_limit_exceeded` event was removed in 0.16; rescue
+  `RubyLLM::ToolRoundLimitError`. One round can hold several tool calls, and
+  `Nexo.config.tool_calls_per_round` (default 20) bounds those.
 - The cap counts rounds, not time or tokens. Bound those inside your own tools (a read
   tool that accepts at most N ids) or with your provider's limits.
 
