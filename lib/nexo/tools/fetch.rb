@@ -60,15 +60,15 @@ module Nexo
         end
 
         # Resolve ONCE: reject if any resolved address is unsafe, then connect
-        # pinned to that same vetted IP so DNS can't rebind to a private address
-        # between the check and the connect. Unresolvable hosts fail open to a
-        # hostname connect (which then errors naturally), preserving prior behavior.
+        # pinned to a vetted IP so DNS can't rebind to a private address between
+        # the check and the connect. Unresolvable hosts fail open to a hostname
+        # connect (which then errors naturally), preserving prior behavior.
         addresses = resolve(uri.host)
         if addresses.any? { |ip| unsafe_ip?(ip) }
           raise Permissions::Denied, "private/loopback address refused: #{uri.host}"
         end
 
-        {body: get(uri, addresses.first).byteslice(0, MAX_BYTES)}
+        {body: get_any(uri, addresses).byteslice(0, MAX_BYTES)}
       rescue Permissions::Denied => e
         {error: e.message}
       rescue Nexo::ApprovalRequired
@@ -112,6 +112,36 @@ module Nexo
       def unsafe_ip?(addr)
         addr.loopback? || addr.private? || addr.link_local? ||
           UNSAFE_RANGES.any? { |range| range.include?(addr) }
+      end
+
+      # Failures that mean "this address cannot be reached", as opposed to "the
+      # server answered badly". Only these move on to the next vetted address, so
+      # a request is never sent twice.
+      CONNECT_ERRORS = [
+        Errno::EHOSTUNREACH, Errno::ENETUNREACH, Errno::ECONNREFUSED, Errno::EADDRNOTAVAIL,
+        Net::OpenTimeout, SocketError
+      ].freeze
+      private_constant :CONNECT_ERRORS
+
+      # How many resolved addresses to try. Each attempt can wait out the 5s
+      # connect timeout, so this bounds the worst case.
+      MAX_ADDRESSES = 4
+      private_constant :MAX_ADDRESSES
+
+      # GETs `uri` from the first vetted address that accepts a connection. A host
+      # commonly resolves to both an IPv6 and an IPv4 address, and a machine with
+      # no IPv6 route cannot reach the first — trying only that one made every
+      # fetch to such a host fail. Every address tried was vetted by the caller.
+      def get_any(uri, addresses)
+        return get(uri) if addresses.empty?
+
+        failure = nil
+        addresses.first(MAX_ADDRESSES).each do |ip|
+          return get(uri, ip)
+        rescue *CONNECT_ERRORS => e
+          failure = e
+        end
+        raise failure
       end
 
       # GETs `uri`, pinned to the pre-vetted `ip` when one was resolved (so the

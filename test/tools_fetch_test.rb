@@ -82,4 +82,45 @@ class ToolsFetchTest < Minitest::Test
       end
     end
   end
+
+  # 0.14: a host with an unroutable first address (IPv6 on a machine with no
+  # IPv6 route) used to fail every fetch, because only that address was tried.
+  class UnroutableFirst < Nexo::Tools::Fetch
+    attr_reader :tried
+
+    private
+
+    def get(uri, ip = nil)
+      (@tried ||= []) << ip.to_s
+      raise Errno::EHOSTUNREACH if ip.ipv6?
+
+      "BODY via #{ip}"
+    end
+  end
+
+  def test_the_next_vetted_address_is_tried_when_the_first_cannot_be_reached
+    t = UnroutableFirst.new(sandbox: Nexo::Sandboxes::Virtual.new, permissions: perms, allow_hosts: %w[example.com])
+
+    Resolv.stub(:getaddresses, ["2606:2800:220:1::1", "93.184.216.34"]) do
+      assert_equal({body: "BODY via 93.184.216.34"}, t.execute(url: "https://example.com/"))
+    end
+    assert_equal ["2606:2800:220:1::1", "93.184.216.34"], t.tried
+  end
+
+  def test_no_reachable_address_is_a_fetch_error
+    t = UnroutableFirst.new(sandbox: Nexo::Sandboxes::Virtual.new, permissions: perms, allow_hosts: %w[example.com])
+
+    Resolv.stub(:getaddresses, ["2606:2800:220:1::1", "2606:2800:220:1::2"]) do
+      assert_match(/fetch failed/, t.execute(url: "https://example.com/")[:error])
+    end
+  end
+
+  def test_an_unsafe_second_address_still_refuses_the_whole_host
+    t = UnroutableFirst.new(sandbox: Nexo::Sandboxes::Virtual.new, permissions: perms, allow_hosts: %w[example.com])
+
+    Resolv.stub(:getaddresses, ["2606:2800:220:1::1", "10.0.0.5"]) do
+      assert_match(/private\/loopback/, t.execute(url: "https://example.com/")[:error])
+    end
+    assert_nil t.tried
+  end
 end
