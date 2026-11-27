@@ -174,6 +174,26 @@ class SandboxLocalShellTest < Minitest::Test
     end
   end
 
+  # Runs on Linux in CI (Bubblewrap) as well as on macOS (Seatbelt): a confined
+  # command can read neither a file outside the workspace nor the network.
+  def test_confined_shell_cannot_read_outside_the_workspace_or_reach_the_network
+    skip "mxc is not installed" unless mxc_available?
+
+    Dir.mktmpdir do |dir|
+      Dir.mktmpdir do |outside|
+        secret = File.join(File.realpath(outside), "secret.txt")
+        File.write(secret, "TOP SECRET")
+        sandbox = Nexo::Sandboxes::Local.new(cwd: dir, isolation: :confined, readable: [RbConfig::CONFIG["prefix"]])
+
+        peek = sandbox.shell("cat #{secret} 2>&1")
+        net = sandbox.shell(%(#{RbConfig.ruby} -rsocket -e 'Socket.tcp("1.1.1.1", 53, connect_timeout: 3) { puts "NET_OK" }' 2>&1; true))
+
+        refute_includes peek[:stdout], "TOP SECRET"
+        refute_includes net[:stdout], "NET_OK"
+      end
+    end
+  end
+
   private
 
   def mxc_available?

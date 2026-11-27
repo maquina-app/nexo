@@ -21,6 +21,20 @@ ever allow:
   `ReadFile` and `Glob` are always attached. This is a cost and description-accuracy measure, not
   a security boundary: `Permissions#authorize!` remains the gate and still denies at call time.
 
+To bound what **any** tool returns — an MCP tool, one of your own — declare a context
+budget. It is `ruby_llm`'s `with_context_budget`, per agent:
+
+```ruby
+class Researcher < Nexo::Agent
+  context_budget per_result: 0.25, per_request: 0.7
+end
+```
+
+`per_result:` cuts a single result longer than that share of the model's context window;
+`per_request:` leaves the oldest results out of a request that would exceed its share. Both
+need the window, which `ruby_llm` knows only for models in its registry: for a local or
+unregistered model add `window: 128_000`, or the budget does nothing.
+
 `Shell` truncates unbounded command output before it reaches the model:
 
 - **Shell output truncation (`Nexo::OutputTruncator`).** Unbounded command output (`npm install`,
@@ -43,6 +57,45 @@ ever allow:
   (direct tool construction). Best-effort: mtime-based, so a sub-second external edit may slip past
   the stale check (read-before-write is the primary guard). Clobber-safety within a session only —
   no versioning, locking, or VCS semantics.
+
+## `file_tools :core` — `ruby_llm`'s file tools over your sandbox
+
+`ruby_llm` 2.2 has its own file tools. Nexo can attach those in place of its own three,
+over the same sandbox and behind the same permission gate:
+
+```ruby
+class Editor < Nexo::Agent
+  sandbox :local
+  file_tools :core
+  permissions Nexo::Permissions.new(mode: :read_only, allow: %i[read glob write])
+end
+```
+
+| | `:nexo` (default) | `:core` |
+|---|---|---|
+| Tools | `read_file`, `write_file`, `glob` (as `nexo--tools--…`) | `list_files`, `read_file`, `search_files`, `write_file`, `edit_file` |
+| Change part of a file | no, rewrite the whole file | yes, `edit_file` |
+| Search file contents | no | yes, `search_files` |
+| Read-before-write guard | by modification time, real filesystems only | by content digest, on every sandbox including `:virtual` |
+| Large files | whole file, capped at 200 KB | paged: 1,000 lines or 20,000 characters a call |
+| Dotfiles | listed | hidden |
+
+Reading, listing and searching are `:read`; writing and editing are `:write`, and under
+`:read_only` the two writing tools are not attached. Under `:approve`, a write suspends the
+run with the file's path as the detail.
+
+Things to know before switching:
+
+- **The tool names and result shapes differ.** A skill that names `nexo--tools--write_file`,
+  or a host that reads tool events, needs updating.
+- **Listing goes through the sandbox.** `:virtual` and `:local` answer directly. A container
+  or remote sandbox runs one `find`, and reads each file to report its size.
+- **There is no delete**, because a sandbox has none.
+- The tool classes are internal to `ruby_llm`; Nexo's tests drive them through the real
+  loop, which is what will catch a change there.
+
+Set `Nexo.config.file_tools = :core` to switch every agent. `:core` is planned as the
+default in 1.0.
 
 ## Tools of your own — the `tools` macro
 

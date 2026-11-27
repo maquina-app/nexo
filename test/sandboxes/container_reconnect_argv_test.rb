@@ -49,7 +49,7 @@ class ContainerReconnectArgvTest < Minitest::Test
   def test_reconnect_uses_exact_label_filter_not_name
     argv = build(reconnect: true).send(:reconnect_argv)
 
-    assert_equal %w[docker ps -aqf label=nexo.sandbox.id=nexo-fixed], argv
+    assert_equal %w[docker ps -aq --no-trunc -f label=nexo.sandbox.id=nexo-fixed], argv
     refute_includes argv.join(" "), "name=nexo-fixed"
   end
 

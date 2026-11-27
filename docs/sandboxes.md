@@ -80,6 +80,28 @@ Things to know:
 - Unconfined remains the default in 0.14. Use a [container](#container-sandbox--docker--apple-container)
   when you need a different filesystem, not only a fence.
 
+### A container per command — `ContainerRunner`
+
+`Nexo::Sandboxes::ContainerRunner` answers the same contract with a throwaway container
+for each command, hardened like the container sandbox (no network, capabilities dropped,
+read-only root). Use it where a process sandbox is not available or not enough:
+
+```ruby
+runner = Nexo::Sandboxes::ContainerRunner.new(image: "ruby:3.3-slim")
+
+class Builder < Nexo::Agent
+  sandbox :local, isolation: runner     # files on the host, commands in a container
+end
+
+RubyLLM.configure { |config| config.sandbox = runner }   # or for ruby_llm's own run_code
+```
+
+The working directory is bound into the container at its own path, read-write, and nothing
+else of the host is visible. Each command pays a container start. It cannot honour a host
+allow-list: every run has the network the runner was built with, none by default. Verified
+on Docker 29: a command wrote inside the workspace, could not read a file outside it, had
+no network, and was killed at its timeout.
+
 ### Two fixes in 0.14 that change behaviour
 
 - **The narrowed environment is now real.** Before 0.14 the shell inherited the whole process
@@ -416,7 +438,7 @@ The container starts **lazily** on first tool use and its id is memoized.
   `Workflow.execute`'s `ensure` (on done, suspended, or failed), never per `run_agent` call.
 - **Reconnect (`name:` + `reconnect: true`):** every container is tagged at `run` with an
   **exact identity label** — `--label nexo.sandbox.id=<name>`. On start the sandbox looks up
-  that container by the **exact label filter** (`docker ps -aqf label=nexo.sandbox.id=<name>`),
+  that container by the **exact label filter** (`docker ps -aq --no-trunc -f label=nexo.sandbox.id=<name>`),
   **not** a name substring, and reuses/restarts it instead of creating a new one; `close`
   leaves it running/stopped so a later sandbox with the same name reattaches. The default
   container name is `nexo-<run-id>`.
