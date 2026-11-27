@@ -3,6 +3,8 @@
 require "digest"
 require "fileutils"
 require "json"
+require "openssl"
+require "securerandom"
 
 module Nexo
   module MCP
@@ -20,29 +22,56 @@ module Nexo
     # It answers the store contract `ruby_llm` documents: `read(key)`,
     # `write(key, data, owner:)`, `delete(key)` and `synchronize(key)`.
     #
-    # ⚠️ SECURITY: the files hold live access and refresh tokens, in plain JSON.
-    # They are NOT encrypted. The directory is created `0700` and every file
-    # `0600`, so they are readable by your user and nobody else — the same
-    # protection an SSH key or a `gh` token has, and no more. Do not point this at
-    # a shared or synced directory, and prefer the encrypted Rails table when
-    # ActiveRecord is available. File names are a digest of the key, so the
-    # directory listing reveals neither owners nor servers.
+    # ⚠️ SECURITY: the files hold live access and refresh tokens. The directory
+    # is created `0700` and every file `0600`, so they are readable by your user
+    # and nobody else. File names are a digest of the key, so the directory
+    # listing reveals neither owners nor servers.
+    #
+    # Without a `key:` the contents are plain JSON — the protection an SSH key
+    # or a `gh` token has, and no more: fine for a personal CLI, wrong for a
+    # shared or synced directory or a backed-up server. Pass a `key:` and every
+    # file is encrypted with AES-256-GCM (0.16):
+    #
+    # ```ruby
+    # Nexo::MCP::CredentialStore.new(dir: "/var/lib/my-app/mcp", key: ENV.fetch("MCP_STORE_KEY"))
+    # ```
+    #
+    # The key is 32 random bytes, given raw or as 64 hex characters — make one
+    # with ::generate_key and keep it OUT of the directory (an environment
+    # variable, a keychain, a secrets manager). A file that does not decrypt —
+    # wrong key, tampering, or an encrypted file read with no key — reads as
+    # `nil`, so the server is simply not authorized. Plain files written before
+    # a key was set are still read, and are encrypted the next time they are
+    # written.
     class CredentialStore
+      # The cipher every encrypted file uses.
+      CIPHER = "aes-256-gcm"
+
+      # A new random key for `key:`, as 64 hex characters.
+      def self.generate_key = SecureRandom.hex(32)
+
       # The directory the credentials live in (expanded).
       attr_reader :dir
 
-      # Roots the store at `dir`, creating it `0700` if needed.
-      def initialize(dir:)
+      # Roots the store at `dir`, creating it `0700` if needed. With `key:` the
+      # files are encrypted. Raises ConfigurationError for a key that is not 32
+      # bytes (or 64 hex characters).
+      def initialize(dir:, key: nil)
+        @key = cipher_key(key)
         @dir = File.expand_path(dir)
         FileUtils.mkdir_p(@dir, mode: 0o700)
       end
 
+      # Whether the files are encrypted.
+      def encrypted? = !@key.nil?
+
       # The credentials stored under `key` as a Hash, or `nil`. A file that is
-      # missing or unreadable as JSON reads as `nil`: the server is then simply
-      # not authorized, which is the safe answer.
+      # missing, unreadable as JSON, or that does not decrypt reads as `nil`: the
+      # server is then simply not authorized, which is the safe answer.
       def read(key)
-        JSON.parse(File.read(path(key)))
-      rescue Errno::ENOENT, JSON::ParserError
+        stored = JSON.parse(File.read(path(key)))
+        sealed?(stored) ? unseal(key, stored) : stored
+      rescue Errno::ENOENT, JSON::ParserError, OpenSSL::Cipher::CipherError, ArgumentError
         nil
       end
 
@@ -52,7 +81,7 @@ module Nexo
       def write(key, data, **)
         target = path(key)
         temporary = "#{target}.#{Process.pid}.#{Thread.current.object_id}.tmp"
-        File.open(temporary, File::WRONLY | File::CREAT | File::TRUNC, 0o600) { |file| file.write(JSON.generate(data)) }
+        File.open(temporary, File::WRONLY | File::CREAT | File::TRUNC, 0o600) { |file| file.write(JSON.generate(@key ? seal(key, data) : data)) }
         File.rename(temporary, target)
         data
       ensure
@@ -76,6 +105,51 @@ module Nexo
       end
 
       private
+
+      # The 32-byte key from what the host passed: raw bytes or 64 hex characters.
+      def cipher_key(key)
+        return if key.nil?
+
+        bytes = key.to_s
+        bytes = [bytes].pack("H*") if bytes.match?(/\A\h{64}\z/)
+        return bytes.b if bytes.bytesize == 32
+
+        raise Nexo::ConfigurationError,
+          "the credential store key must be 32 bytes, or 64 hex characters " \
+          "(make one with Nexo::MCP::CredentialStore.generate_key)"
+      end
+
+      # Whether a parsed file is an encrypted envelope rather than credentials.
+      def sealed?(stored)
+        stored.is_a?(Hash) && stored["nexo_sealed"] == 1
+      end
+
+      # Encrypts `data` for `key`. The key name is authenticated with the
+      # ciphertext, so a file copied over another owner's does not decrypt.
+      def seal(key, data)
+        cipher = OpenSSL::Cipher.new(CIPHER).encrypt
+        cipher.key = @key
+        iv = cipher.random_iv
+        cipher.auth_data = key.to_s
+        sealed = cipher.update(JSON.generate(data)) + cipher.final
+        {"nexo_sealed" => 1, "iv" => [iv].pack("m0"),
+         "tag" => [cipher.auth_tag].pack("m0"), "data" => [sealed].pack("m0")}
+      end
+
+      # Decrypts an envelope. With no key configured there is nothing to decrypt
+      # with, which reads as "not authorized".
+      def unseal(key, stored)
+        return unless @key
+
+        cipher = OpenSSL::Cipher.new(CIPHER).decrypt
+        cipher.key = @key
+        cipher.iv = stored.fetch("iv").unpack1("m0")
+        cipher.auth_tag = stored.fetch("tag").unpack1("m0")
+        cipher.auth_data = key.to_s
+        JSON.parse(cipher.update(stored.fetch("data").unpack1("m0")) + cipher.final)
+      rescue KeyError
+        nil
+      end
 
       # The file for `key`: a digest, so a key containing a URL is a safe name.
       def path(key)

@@ -814,10 +814,18 @@ module Nexo
     # then runs the approved call, gets `{error:}` for a declined one, and
     # suspends again at any gated call that has no answer yet — approving one
     # write never approves the next.
-    def run_agent(prompt, max_turns: 25)
+    #
+    # `mcp_owner:` (0.16) is whose OAuth credentials the agent's `oauth:` MCP
+    # servers use — the same value as `Agent.new(mcp_owner:)`. Pass an id that is
+    # in the run's payload, so a resumed run finds the same owner. An owner who
+    # has not authorized a server yet fails the run with
+    # Nexo::AuthorizationRequired before the model is called.
+    def run_agent(prompt, max_turns: 25, mcp_owner: nil)
       klass = self.class.agent or raise Nexo::ConfigurationError,
         "#{self.class} has no `agent` declared; add `agent MyAgent`"
-      agent = klass.new(sandbox: sandbox, decisions: record_approval!)
+      options = {sandbox: sandbox, decisions: record_approval!}
+      options[:mcp_owner] = mcp_owner unless mcp_owner.nil?
+      agent = klass.new(**options)
       traced(klass.name || "agent") do
         agent.prompt(prompt, max_turns: max_turns) do |type, payload|
           emit(:"agent_#{type}", serializable(type, payload))
@@ -971,6 +979,13 @@ module Nexo
     end
 
     def reduce_tool_result(payload)
+      # An MCP tool answers with a `RubyLLM::MCP::Result`, whose `to_s` is the
+      # object's address: record its text, and whether the server called it an
+      # error (found by the real-HTTP round trip in 0.16).
+      if payload.respond_to?(:text) && payload.respond_to?(:error?)
+        return {"ok" => !payload.error?, "content" => payload.text.to_s}
+      end
+
       unless payload.is_a?(Hash)
         # A bare content value (e.g. file contents) — a successful read.
         return {"ok" => true, "content" => payload.to_s}
