@@ -28,5 +28,6 @@ class WorkflowRuntimeRailsTest < Minitest::Test
     assert_match(/SUSPEND_RESUME_OK/, out) # Spec 13
     assert_match(/RESUME_LATER_OK/, out) # Spec 13
     assert_match(/RETRY_OK/, out) # 0.16
+    assert_match(/CANCEL_OK/, out) # 0.16
   end
 end

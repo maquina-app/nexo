@@ -47,7 +47,7 @@ module Nexo
     # (pending approval call — Spec 16), and `"__buffer_events__"` (the persisted
     # buffering choice — Spec 5). ::cleared_state strips these when a run reaches
     # `"done"`; #checkpoint_all refuses a step named after any of them (Spec 21).
-    RESERVED_STATE_KEYS = %w[__suspend__ __approval__ __approvals__ __buffer_events__].freeze
+    RESERVED_STATE_KEYS = %w[__suspend__ __approval__ __approvals__ __input__ __answers__ __buffer_events__].freeze
 
     # Control-flow signal raised by #suspend! and caught by ::execute to pause
     # a run durably — NOT a failure. It transitions the run to `"suspended"`
@@ -64,6 +64,17 @@ module Nexo
         @reason = reason
         @resume_key = resume_key
         super("workflow suspended: #{reason}")
+      end
+    end
+
+    # Control-flow signal for a run someone asked to stop (see ::cancel) — like
+    # Suspended, NOT a failure. ::execute catches it, marks the run
+    # `"cancelled"` and returns it. Raised at the next #checkpoint, at the start
+    # of #run_agent, or out of an agent's prompt once it stops.
+    class Cancelled < StandardError
+      # Builds the signal.
+      def initialize(message = "workflow cancelled")
+        super
       end
     end
 
@@ -252,6 +263,56 @@ module Nexo
         klass.execute(run, payload: symbolize(run.payload), resume_input: input, buffer_events: buffered)
       end
 
+      # Stops a run (0.16). A run that is not executing — `"pending"`,
+      # `"queued"` or `"suspended"` — becomes `"cancelled"` at once. A
+      # `"running"` one is asked to stop: the request is left in the run store,
+      # and the process executing the run notices it at its next #checkpoint, at
+      # the start of a #run_agent, or around the agent's next tool call (the
+      # model request in flight finishes first). It then ends `"cancelled"`,
+      # keeping its events, artifacts and checkpoints; nothing is rolled back.
+      #
+      # Works across processes with the ActiveRecord and Disk run stores (under
+      # ActiveRecord the run reads `"cancelling"` until it stops). Returns the
+      # run. Raises Nexo::Error for a run that already ended, and for a custom
+      # run store that cannot record the request.
+      #
+      # A cancelled run is final: it can be neither resumed nor retried.
+      def cancel(run_id)
+        store = Nexo::RunStore.default
+        run = store.find(run_id)
+        case run.status
+        when "pending", "queued", "suspended"
+          run.update!(status: "cancelled")
+          notify_status(run)
+        when "running"
+          unless store.respond_to?(:request_cancel!)
+            raise Nexo::Error, "#{store.class} cannot cancel a running run (it needs request_cancel!)"
+          end
+          store.request_cancel!(run)
+        when "cancelling" then nil
+        else raise Nexo::Error, "run #{run_id} cannot be cancelled (#{run.status})"
+        end
+        run
+      end
+
+      # What a run's agents used (0.16): the token counts by kind and the cost,
+      # summed over every `agent_usage` event in its log. `"cost"` is `nil` when
+      # `ruby_llm` had no price for a model used (a local model, say), since a
+      # partial total would read as the whole bill.
+      #
+      # ```ruby
+      # Nexo::Workflow.usage(run)
+      # # => {"tokens" => {"input_tokens" => 18_230, "output_tokens" => 2_114}, "cost" => 0.0412, "prompts" => 3}
+      # ```
+      def usage(run)
+        events = (run.events || []).select { |event| event["type"] == "agent_usage" }.map { |event| event["data"] || {} }
+        tokens = events.each_with_object(Hash.new(0)) do |data, sum|
+          (data["tokens"] || {}).each { |kind, count| sum[kind] += count.to_i }
+        end
+        costs = events.map { |data| data["cost"] }
+        {"tokens" => tokens, "cost" => (costs.sum unless costs.empty? || costs.any?(&:nil?)), "prompts" => events.size}
+      end
+
       # The statuses ::retry accepts: a run that raised, and one whose process
       # died (see ::reconcile_interrupted!).
       RETRYABLE = %w[failed interrupted].freeze
@@ -338,6 +399,9 @@ module Nexo
         # (sync or job) honors it instead of silently reverting to the config
         # default. Only written when buffering is on, so the unbuffered Spec 2 hot
         # path takes no extra state write (see #resume, which reads it back).
+        # A run cancelled while it waited in a queue is not started.
+        return run if run.status == "cancelled"
+
         persist_buffer_choice(run, buffer_events)
         run.update!(status: "running")
         notify_status(run)
@@ -365,6 +429,14 @@ module Nexo
           state: (run.state || {}).merge("__suspend__" => {
             "reason" => s.reason, "resume_key" => s.resume_key, "at" => Time.now.utc.iso8601
           }))
+        notify_status(run)
+        run
+      rescue Nexo::Workflow::Cancelled, ::RubyLLM::CancelledError
+        # Asked to stop (::cancel): final, not a failure, and not re-raised.
+        # Checkpoints, events and artifacts stay as they are.
+        run.update!(status: "cancelled")
+        store = Nexo::RunStore.default
+        store.clear_cancel!(run) if store.respond_to?(:clear_cancel!)
         notify_status(run)
         run
       rescue StandardError, ScriptError, SecurityError => e
@@ -520,6 +592,8 @@ module Nexo
       key = name.to_s
       store = @run.state || {}
       return store[key] if store.key?(key)
+
+      check_cancelled!
 
       # JSON round-trip the block's value before storing so it reads back the SAME
       # shape (string keys, no symbols) whether the run stays in the Memory store
@@ -863,14 +937,23 @@ module Nexo
     def run_agent(prompt, max_turns: 25, mcp_owner: nil)
       klass = self.class.agent or raise Nexo::ConfigurationError,
         "#{self.class} has no `agent` declared; add `agent MyAgent`"
+      check_cancelled!
       options = {sandbox: sandbox, decisions: record_approval!}
       options[:mcp_owner] = mcp_owner unless mcp_owner.nil?
+      answers = record_answers!
+      options[:answers] = answers unless answers.empty?
       agent = klass.new(**options)
       traced(klass.name || "agent") do
-        agent.prompt(prompt, max_turns: max_turns) do |type, payload|
-          emit(:"agent_#{type}", serializable(type, payload))
-        end
+        drive(agent, prompt, max_turns) { |type, payload| emit(:"agent_#{type}", serializable(type, payload)) }
       end
+    rescue ::RubyLLM::CancelledError
+      raise Cancelled
+    rescue Nexo::InputRequired => i
+      # A tool asked the person something. Persist the questions so a host can
+      # show them, then suspend; ::resume with `{answers: {key => value}}`.
+      @run.state = (@run.state || {}).merge("__input__" => i.questions.map(&:to_h))
+      @run.save_state! if @run.respond_to?(:save_state!)
+      suspend!(reason: "input: #{i.questions.map(&:message).compact.join(" / ")}", resume_key: i.questions.first&.key)
     rescue Nexo::ApprovalRequired => a
       # Persist the pending call (immediately, like a checkpoint) so a host can
       # render the approval prompt, then suspend — the existing Workflow.execute
@@ -905,6 +988,48 @@ module Nexo
     # A plain `yield` when the instance is driven outside ::execute.
     def traced(name, &block)
       @trace ? @trace.step(name, &block) : yield
+    end
+
+    # Runs the agent's prompt. The `cancel:` hook is passed only to an agent
+    # whose #prompt takes it, so a spy or a custom agent class keeps working.
+    def drive(agent, prompt, max_turns, &on_event)
+      takes_cancel = agent.method(:prompt).parameters.any? { |kind, name| name == :cancel || kind == :keyrest }
+      return agent.prompt(prompt, max_turns: max_turns, &on_event) unless takes_cancel
+
+      agent.prompt(prompt, max_turns: max_turns, cancel: -> { cancel_requested? }, &on_event)
+    end
+
+    # Whether someone asked for this run to stop (see ::cancel). Read from the
+    # run store each time, so a request made in another process is seen.
+    def cancel_requested?
+      store = Nexo::RunStore.default
+      return false unless store.respond_to?(:cancel_requested?)
+
+      store.cancel_requested?(@run)
+    end
+
+    # Raises Cancelled when the run was asked to stop.
+    def check_cancelled!
+      raise Cancelled if cancel_requested?
+    end
+
+    # Files the answers a resume carries (`{answers: {key => value}}`) for the
+    # questions recorded under `"__input__"`, merged into the reserved
+    # `"__answers__"` state key, and returns every answer recorded so far. Only
+    # keys that were actually asked are kept. Like approvals, answers
+    # accumulate: a later question suspends the run again.
+    def record_answers!
+      state = @run.state || {}
+      answers = state["__answers__"] || {}
+      pending = state["__input__"]
+      given = resume_input[:answers]
+      return answers unless pending && given
+
+      asked = pending.map { |question| question["key"] }
+      answers = answers.merge(given.to_h.transform_keys(&:to_s).slice(*asked))
+      @run.state = state.except("__input__").merge("__answers__" => answers)
+      @run.save_state! if @run.respond_to?(:save_state!)
+      answers
     end
 
     # Files the resume input's `:approved` answer under the pending call's key and
@@ -991,6 +1116,9 @@ module Nexo
       when :tool_call then reduce_tool_call(payload)
       when :tool_result then reduce_tool_result(payload)
       when :done then reduce_done(payload)
+      when :usage then reduce_usage(payload)
+      when :tool_progress then reduce_progress(payload)
+      when :fallback then reduce_fallback(payload)
       else {"value" => payload.to_s}
       end
     end
@@ -1038,6 +1166,31 @@ module Nexo
       out = {"ok" => ok}
       out["content"] = content.to_s unless content.nil?
       out
+    end
+
+    # `:usage` is already plain data: token counts by kind and a cost or nil.
+    def reduce_usage(payload)
+      h = payload.to_h.transform_keys(&:to_s)
+      {"tokens" => (h["tokens"] || {}).to_h.transform_keys(&:to_s), "cost" => h["cost"]}
+    end
+
+    # `:tool_progress` carries the tool call and a `RubyLLM::Progress`.
+    def reduce_progress(payload)
+      call, progress = payload.to_h.values_at(:tool_call, :progress)
+      {"name" => (call.respond_to?(:name) ? call.name.to_s : call.to_s),
+       "message" => (progress.message if progress.respond_to?(:message)),
+       "value" => (progress.value if progress.respond_to?(:value)),
+       "total" => (progress.total if progress.respond_to?(:total))}.compact
+    end
+
+    # `:fallback` carries a `RubyLLM::Fallback`: which model failed, which one
+    # the request moved to, and why.
+    def reduce_fallback(payload)
+      model = ->(value) { value.respond_to?(:id) ? value.id.to_s : value&.to_s }
+      {"from" => model.call(payload.from), "to" => model.call(payload.to),
+       "error" => payload.error&.message, "failed" => !payload.fallback_error.nil?}.compact
+    rescue
+      {"value" => payload.to_s}
     end
 
     def reduce_done(payload)

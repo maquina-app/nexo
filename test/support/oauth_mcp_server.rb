@@ -22,7 +22,7 @@ require "uri"
 # (`registrations`, `refreshes`, `calls`) so a test can assert on the server's
 # side of the conversation.
 class OauthMcpServer
-  attr_reader :port, :registrations, :refreshes, :calls, :token_requests
+  attr_reader :port, :registrations, :refreshes, :calls, :token_requests, :answers
 
   # `expires_in:` is what the token endpoint reports; `ruby_llm` refreshes a
   # token within a minute of its expiry, so a small value forces a refresh on
@@ -40,6 +40,7 @@ class OauthMcpServer
     @token_requests = []
     @refreshes = 0
     @calls = []
+    @answers = []
     @lock = Mutex.new
     @thread = Thread.new { serve }
     @thread.report_on_exception = false
@@ -195,27 +196,58 @@ class OauthMcpServer
     @lock.synchronize { @calls << message["method"] }
     return respond(client, 202, nil) unless message.key?("id")
 
+    if message["method"] == "tools/call" && message.dig("params", "name") == "publish"
+      challenge = %(Bearer error="insufficient_scope", scope="write", error_description="Additional scopes required: write")
+      return respond(client, 403, {error: "insufficient_scope"}, "WWW-Authenticate" => challenge)
+    end
+
     respond(client, 200, {jsonrpc: "2.0", id: message["id"], result: result_for(message, client_id)})
   end
 
   def result_for(message, client_id)
     case message["method"]
     when "initialize"
-      {protocolVersion: message.dig("params", "protocolVersion"), capabilities: {tools: {}},
+      {protocolVersion: message.dig("params", "protocolVersion"), capabilities: {tools: {}, resources: {}},
        serverInfo: {name: "nexo-test", version: "1"}}
     when "tools/list"
-      {tools: [{name: "whoami", description: "Says which client is calling",
-                inputSchema: {type: "object", properties: {}}}]}
-    when "tools/call"
-      {content: [{type: "text", text: "you are #{client_id}"}]}
+      {tools: [
+        {name: "whoami", description: "Says which client is calling", inputSchema: {type: "object", properties: {}}},
+        {name: "publish", description: "Needs the write scope", inputSchema: {type: "object", properties: {}}},
+        {name: "book", description: "Books a seat, after asking which", inputSchema: {type: "object", properties: {}}}
+      ]}
+    when "tools/call" then call_result(message["params"], client_id)
+    when "resources/list"
+      {resources: [{uri: "note://welcome", name: "welcome", mimeType: "text/plain"}]}
+    when "resources/read"
+      uri = message.dig("params", "uri")
+      {contents: [{uri: uri, mimeType: "text/plain", text: "contents of #{uri}"}]}
     else {}
     end
+  end
+
+  # `book` asks the person a question before it answers (MCP elicitation): the
+  # first call returns an input request, the second carries the response.
+  def call_result(params, client_id)
+    return {content: [{type: "text", text: "you are #{client_id}"}]} unless params["name"] == "book"
+
+    answer = params.dig("inputResponses", "seat")
+    if answer.nil?
+      return {resultType: "input_required", requestState: "state-1", inputRequests: {
+        seat: {method: "elicitation/create", params: {
+          message: "Window or aisle?",
+          requestedSchema: {type: "object", properties: {seat: {type: "string"}}, required: ["seat"]}
+        }}
+      }}
+    end
+
+    @lock.synchronize { @answers << answer }
+    {content: [{type: "text", text: "booked: #{answer.to_json}"}]}
   end
 
   def respond(client, status, payload, extra = {})
     body = payload.nil? ? "" : JSON.generate(payload)
     reason = {200 => "OK", 201 => "Created", 202 => "Accepted", 302 => "Found", 400 => "Bad Request",
-              401 => "Unauthorized", 404 => "Not Found", 500 => "Internal Server Error"}.fetch(status, "OK")
+              401 => "Unauthorized", 403 => "Forbidden", 404 => "Not Found", 500 => "Internal Server Error"}.fetch(status, "OK")
     head = ["HTTP/1.1 #{status} #{reason}", "Content-Type: application/json", "Content-Length: #{body.bytesize}",
       "Connection: close", *extra.map { |name, value| "#{name}: #{value}" }]
     client.write("#{head.join("\r\n")}\r\n\r\n#{body}")

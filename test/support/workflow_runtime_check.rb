@@ -108,7 +108,7 @@ abort "FAIL: failed? predicate" unless failed_run.failed?
 abort "FAIL: queued? predicate" unless queued_run.queued?
 abort "FAIL: running? predicate" unless running_run.running?
 abort "FAIL: STATUSES constant" unless
-  Nexo::WorkflowRun::STATUSES == %w[pending queued running done failed interrupted suspended]
+  Nexo::WorkflowRun::STATUSES == %w[pending queued running done failed interrupted suspended cancelling cancelled]
 puts "HELPERS_OK"
 
 # --- Spec 13: durable suspend/resume over the AR store (cross-process shape).
@@ -196,3 +196,33 @@ rescue Nexo::Error
   nil
 end
 puts "RETRY_OK"
+
+# --- Workflow.cancel on the ActiveRecord store (0.16): the request is the
+# "cancelling" status, read back by the worker; the run ends "cancelled".
+class StoppableFlow < Nexo::Workflow
+  class << self
+    attr_accessor :steps
+  end
+  self.steps = []
+
+  def call(_payload)
+    checkpoint("one") { self.class.steps << "one" }
+    Nexo::Workflow.cancel(@run.id) # what another process would do while this one works
+    self.class.abort_unless_cancelling(@run.id)
+    checkpoint("two") { self.class.steps << "two" }
+    {finished: true}
+  end
+
+  def self.abort_unless_cancelling(id)
+    status = Nexo::WorkflowRun.where(id: id).pick(:status)
+    abort "FAIL: expected cancelling while the run is still working (#{status})" unless status == "cancelling"
+  end
+end
+
+stopped = StoppableFlow.run
+abort "FAIL: cancel did not stop the run (#{stopped.reload.status})" unless stopped.reload.status == "cancelled"
+abort "FAIL: the step after the cancel ran (#{StoppableFlow.steps.inspect})" unless StoppableFlow.steps == ["one"]
+waiting = Nexo::WorkflowRun.create!(workflow_class: "StoppableFlow", payload: {}, status: "queued")
+Nexo::Workflow.cancel(waiting.id)
+abort "FAIL: a queued run was not cancelled at once" unless waiting.reload.status == "cancelled"
+puts "CANCEL_OK"

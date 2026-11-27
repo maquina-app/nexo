@@ -11,8 +11,24 @@ module Nexo
     class GatedTool < Nexo::GatedTool
       # Wraps `tool` (an MCP tool) so every call is authorized through
       # `permissions` (the MCP axis) before delegating.
-      def initialize(tool:, permissions:)
+      #
+      # `server:` is the server's `mcp` macro name. With it, a call the server
+      # refuses for want of a scope raises Nexo::AuthorizationRequired naming the
+      # server and the scopes (0.16) in place of `ruby_llm`'s own error, so a
+      # host has one error for "send this user to sign in", first time or wider.
+      def initialize(tool:, permissions:, server: nil)
         super(tool: tool, permissions: permissions, capability: :mcp)
+        @server = server
+      end
+
+      # As Nexo::GatedTool#call, turning a missing scope into
+      # Nexo::AuthorizationRequired.
+      def call(args = nil, **kwargs)
+        super
+      rescue ::RubyLLM::MCP::InsufficientScopeError => e
+        raise unless @server
+
+        raise Nexo::AuthorizationRequired.new(@server, scopes: e.scopes)
       end
 
       private

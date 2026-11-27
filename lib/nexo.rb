@@ -44,11 +44,63 @@ module Nexo
     # The `mcp` macro name of the server that needs authorizing.
     attr_reader :server
 
-    # Builds the error for the MCP server declared as `server`.
-    def initialize(server)
+    # The scopes the server asked for when it refused a call for want of one
+    # (0.16), as Strings. Empty for a server that was never authorized.
+    attr_reader :scopes
+
+    # Builds the error for the MCP server declared as `server`. With `scopes:`
+    # it reports a server that refused a call because the stored grant lacks
+    # them: the fix is the same — send the user through the authorization URL
+    # again, which asks for the wider grant.
+    def initialize(server, scopes: [])
       @server = server.to_sym
-      super("MCP server :#{server} is not authorized — send the user to " \
+      @scopes = Array(scopes).map(&:to_s)
+      reason = @scopes.empty? ? "is not authorized" : "needs more access (#{@scopes.join(", ")})"
+      super("MCP server :#{server} #{reason} — send the user to " \
         "agent.mcp_server(:#{server}).authorization_url(redirect_uri:) first")
+    end
+  end
+
+  # Raised when a tool asked the person something and nobody has answered yet
+  # (0.16) — an MCP server's question (elicitation), or a `RubyLLM::Tool` that
+  # calls `ask`. Like ApprovalRequired it is a signal, not a failure:
+  # Workflow#run_agent turns it into a durable suspend, and a direct caller can
+  # rescue it, put the #questions to the person, and prompt again with
+  # `Agent.new(answers:)`.
+  class InputRequired < StandardError
+    # One question, reduced to plain data so it survives a run store: the `key`
+    # an answer is filed under, the `tool` that asked, the `message` to show,
+    # the `fields` to collect (each a Hash of name, type, title, required,
+    # choices), and a `url` when the person is asked to visit a page instead.
+    Question = Struct.new(:key, :tool, :message, :fields, :url) do
+      # The question as a String-keyed Hash, for a run's state.
+      def to_h = {"key" => key, "tool" => tool, "message" => message, "fields" => fields, "url" => url}.compact
+    end
+
+    # The unanswered questions, each a Question.
+    attr_reader :questions
+
+    # Builds the signal for `questions` (Question structs).
+    def initialize(questions)
+      @questions = questions
+      super("input required: #{questions.map(&:message).compact.join(" / ")}")
+    end
+
+    # The key an answer to `question` (a `RubyLLM::Question`) is filed under:
+    # the tool that asked, then the question's own key. The same call asking
+    # the same thing on a later run gets the same key.
+    def self.key_for(question)
+      "#{question.tool_call&.name}:#{question.key}"
+    end
+
+    # Reduces a `RubyLLM::Question` to a Question struct.
+    def self.reduce(question)
+      fields = Array(question.fields).map do |field|
+        {"name" => field.name.to_s, "type" => field.type, "title" => field.title,
+         "required" => field.required, "choices" => field.choices}.compact
+      end
+      Question.new(key_for(question), question.tool_call&.name.to_s, question.message,
+        fields, (question.url if question.url?))
     end
   end
 

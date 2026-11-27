@@ -108,8 +108,14 @@ module Nexo
 
         # Clears the shared table. Intended for test isolation.
         def reset!
-          @mutex.synchronize { @runs = {} }
+          @mutex.synchronize do
+            @runs = {}
+            @cancels = Set.new
+          end
         end
+
+        # The ids of runs someone asked to cancel (see Workflow.cancel).
+        def cancels = (@cancels ||= Set.new)
       end
 
       # Builds a fresh `"pending"` Run (UUID id, empty events/artifacts/state) and
@@ -139,6 +145,15 @@ module Nexo
       # can't both re-enter #call (Spec 13 double-execution guard). The status
       # flip is direct (not via #update!) to avoid re-entering the non-reentrant
       # mutex.
+      # Records that someone asked for the running `run` to stop (0.16).
+      def request_cancel!(run) = self.class.mutex.synchronize { self.class.cancels << run.id }
+
+      # Whether a cancel was asked for `run`.
+      def cancel_requested?(run) = self.class.mutex.synchronize { self.class.cancels.include?(run.id) }
+
+      # Forgets the request once the run has stopped.
+      def clear_cancel!(run) = self.class.mutex.synchronize { self.class.cancels.delete(run.id) }
+
       def claim_for_resume!(run, from: "suspended")
         self.class.mutex.synchronize do
           return false unless Array(from).include?(run.status)
@@ -164,9 +179,21 @@ module Nexo
       # conditional UPDATE, returning true only for the worker that won the row. This closes
       # the cross-process double-resume race the plain `find`-then-check couldn't:
       # a queued resume_later and a concurrent sync resume can't both re-enter.
+      # Records that someone asked for the running `run` to stop (0.16): one
+      # conditional UPDATE to `"cancelling"`, which the worker reads back. The
+      # worker never rewrites `status` mid-run, so the request is not lost.
+      def request_cancel!(run)
+        Nexo::WorkflowRun.where(id: run.id, status: "running").update_all(status: "cancelling")
+      end
+
+      # Whether a cancel was asked for `run`, read from the database.
+      def cancel_requested?(run) = Nexo::WorkflowRun.where(id: run.id, status: "cancelling").exists?
+
+      # Nothing to forget: the final status replaces `"cancelling"`.
+      def clear_cancel!(_run) = nil
+
       def claim_for_resume!(run, from: "suspended")
-        Nexo::WorkflowRun
-          .where(id: run.id, status: Array(from))
+        Nexo::WorkflowRun.where(id: run.id, status: Array(from))
           .update_all(status: "running") == 1
       end
     end
@@ -276,6 +303,21 @@ module Nexo
       # Atomically claims a run in one of the `from:` statuses, re-reading from disk so a
       # stale in-memory copy cannot win. Within one process only — see the class
       # note.
+      # Records that someone asked for the running `run` to stop (0.16), as an
+      # empty file beside the run's document — the worker rewrites the whole
+      # document on every save, so the request cannot live inside it.
+      def request_cancel!(run) = ::File.write(cancel_path(run.id), "")
+
+      # Whether a cancel was asked for `run`.
+      def cancel_requested?(run) = ::File.exist?(cancel_path(run.id))
+
+      # Forgets the request once the run has stopped.
+      def clear_cancel!(run)
+        ::File.delete(cancel_path(run.id))
+      rescue Errno::ENOENT
+        nil
+      end
+
       def claim_for_resume!(run, from: "suspended")
         MUTEX.synchronize do
           current = find(run.id)
@@ -291,6 +333,8 @@ module Nexo
       private
 
       def path_for(id) = ::File.join(@dir, "#{id}.json")
+
+      def cancel_path(id) = ::File.join(@dir, "#{id}.cancel")
 
       # Rebuilds a Run from its document. Missing members read as nil/empty rather
       # than raising, so a document written by an older version still loads.

@@ -19,6 +19,12 @@ module Nexo
     # and falls back for older servers itself, so every one of these is just "a URL".
     HTTP_TRANSPORTS = %i[http sse streamable streamable_http].freeze
 
+    # `mcp` macro options that are Nexo's own and never handed to `ruby_llm`:
+    # `defer:` keeps the server's tool definitions out of the model's context until
+    # the provider's tool search asks for them, and `resources:` attaches the two
+    # tools that list and read the server's resources.
+    NEXO_OPTIONS = %i[defer resources].freeze
+
     class << self
       # Builds a `RubyLLM::MCP` server from Nexo's friendly, transport-shaped macro
       # opts and returns it. Nothing connects yet: `ruby_llm` starts a stdio process
@@ -83,7 +89,7 @@ module Nexo
 
       # Maps the macro opts onto the keywords `RubyLLM.mcp` takes.
       def settings(name:, transport:, token:, config:, owner: nil)
-        config = config.dup
+        config = config.except(*NEXO_OPTIONS)
         mapped = {name: name.to_s}
         oauth = config.delete(:oauth)
 

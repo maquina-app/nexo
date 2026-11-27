@@ -20,7 +20,7 @@ if defined?(::ActiveRecord::Base)
       # NOT a failure). There is no distinct "resumed" status: resume re-enters
       # execute, transitioning running → done (or suspended again). Documentation
       # only — status is a plain string column.
-      STATUSES = %w[pending queued running done failed interrupted suspended].freeze
+      STATUSES = %w[pending queued running done failed interrupted suspended cancelling cancelled].freeze
 
       # Status scopes for a host UI (Spec 11 R3) — Nexo dictates no controllers or
       # views, only these query helpers.

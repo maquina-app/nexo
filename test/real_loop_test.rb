@@ -48,7 +48,7 @@ class RealLoopTest < Minitest::Test
     response = agent.prompt("Read the note") { |type, payload| events << [type, payload] }
 
     assert_equal "The note says hello.", response.content
-    assert_equal %i[tool_call tool_result done], events.map(&:first)
+    assert_equal %i[tool_call tool_result done usage], events.map(&:first)
 
     call = events[0].last
     assert_kind_of RubyLLM::ToolCall, call

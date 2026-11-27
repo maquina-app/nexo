@@ -270,10 +270,15 @@ module Nexo
       # Declare tools here instead of overriding `#chat` to call `with_tools`: a
       # tool added that way is unknown to Nexo, which warns about it, and refuses
       # it under `Nexo.config.strict_tools`.
-      def tools(*list, capability: nil)
+      #
+      # `defer: true` (0.16) keeps the tools' definitions out of the model's
+      # context until the provider's tool search loads the ones it needs — for a
+      # long catalogue. A provider without tool search gets them as ordinary
+      # tools. A deferred tool is gated exactly like any other.
+      def tools(*list, capability: nil, defer: nil)
         return @tools || [] if list.empty?
 
-        @tools = (@tools || []) + list.flatten.map { |tool| {tool: tool, capability: capability} }
+        @tools = (@tools || []) + list.flatten.map { |tool| {tool: tool, capability: capability, defer: defer} }
       end
 
       # Declares an MCP server for this agent (Spec 6). Accumulating: multiple
@@ -288,6 +293,12 @@ module Nexo
       #   mcp :fetch, transport: :sse,   url: "http://localhost:8080/sse"
       # end
       # ```
+      #
+      # Two options are Nexo's own (0.16): `defer: true` keeps this server's tool
+      # definitions out of the model's context until the provider's tool search
+      # asks for them, and `resources: true` attaches `list_mcp_resources` and
+      # `read_mcp_resource` (see MCP::ReadResource) for what the server offers to
+      # read. Both resource tools are gated like any MCP tool.
       def mcp(name = nil, **opts)
         return @mcp || [] if name.nil? && opts.empty?
 
@@ -335,6 +346,11 @@ module Nexo
     # Sandbox and Permissions, the system instructions, and the injected Loop.
     attr_reader :cwd, :model, :provider, :assume_model_exists, :sandbox, :permissions, :instructions, :loop
 
+    # The answers this agent was given for questions its tools ask (0.16) — a
+    # Hash of Nexo::InputRequired.key_for → value. Empty unless `answers:` was
+    # passed.
+    attr_reader :answers
+
     # Every argument is optional; each resolves arg -> class macro -> config.
     # Symbol shorthands (:virtual/:local, :read_only/:auto/:ask/:approve) and
     # pre-built Sandbox/Permissions instances are both accepted. `loop:` injects
@@ -351,9 +367,15 @@ module Nexo
     #
     # `mcp_owner:` (0.15) is whose OAuth credentials this agent's `oauth:` MCP
     # servers use — a user record, or a stable String/Integer id.
+    #
+    # `answers:` (0.16) answers questions a tool asks the person — an MCP
+    # server's, or a tool calling `ask` — keyed as Nexo::InputRequired reports
+    # them. A value answers a one-field question, a Hash a form, `false` declines.
+    # A question with no answer raises Nexo::InputRequired from #prompt.
     def initialize(cwd: Dir.pwd, model: nil, sandbox: nil, permissions: nil, decision: nil, decisions: nil,
-      mcp_owner: nil, loop: Loops::RubyLLM.new)
+      mcp_owner: nil, answers: nil, loop: Loops::RubyLLM.new)
       @mcp_owner = mcp_owner
+      @answers = (answers || {}).to_h.transform_keys(&:to_s)
       @cwd = cwd
       @model = model || self.class.model || Nexo.config.default_model
       if @model.nil?
@@ -418,9 +440,16 @@ module Nexo
     # loop body that used to live here is now in Loops::RubyLLM (the default),
     # so swapping `loop:` swaps the engine without touching this class. The
     # optional `&on_event` block receives `(type, payload)` progress events.
-    def prompt(text, max_turns: 25, &on_event)
+    #
+    # `cancel:` (0.16) is a callable the loop asks around every tool call; when
+    # it answers true the prompt stops with `RubyLLM::CancelledError`. It is
+    # passed on only when given, so a loop backend of your own that does not
+    # take it keeps working.
+    def prompt(text, max_turns: 25, cancel: nil, &on_event)
       verify_environment!
-      @loop.run(agent: self, prompt: text, max_turns: max_turns, &on_event)
+      options = {agent: self, prompt: text, max_turns: max_turns}
+      options[:cancel] = cancel if cancel
+      @loop.run(**options, &on_event)
     end
 
     # Checks the agent's declared ::requires against its sandbox, once, before the
@@ -654,11 +683,36 @@ module Nexo
       return if self.class.mcp.empty?
 
       require_mcp_authorization!
-      gated = mcp_clients.flat_map(&:tools).select { |tool| attachable_mcp_tool?(tool) }.map do |tool|
-        wrap_mcp_tool(Nexo::MCP::GatedTool.new(tool: tool, permissions: @permissions))
+      self.class.mcp.zip(mcp_clients).group_by { |cfg, _| cfg[:defer] }.each do |defer, servers|
+        gated = servers.flat_map { |cfg, client| gated_mcp_tools(cfg, client) }
+        refuse_mcp_name_clash!(chat, gated)
+        next if gated.empty?
+
+        defer.nil? ? chat.with_tools(*gated) : chat.with_tools(*gated, defer: defer)
       end
-      refuse_mcp_name_clash!(chat, gated)
-      chat.with_tools(*gated) unless gated.empty?
+      apply_mcp_resources(chat)
+    end
+
+    # One server's tools the model may call and the gate could allow, each
+    # behind MCP::GatedTool and then the #wrap_mcp_tool hook.
+    def gated_mcp_tools(cfg, client)
+      client.tools.select { |tool| attachable_mcp_tool?(tool) }.map do |tool|
+        wrap_mcp_tool(Nexo::MCP::GatedTool.new(tool: tool, permissions: @permissions, server: cfg[:name]))
+      end
+    end
+
+    # Attaches `list_mcp_resources` and `read_mcp_resource` over the servers
+    # declared with `resources: true`, each behind the MCP gate — and, like an
+    # MCP tool, left out when `:read_only` could never allow it.
+    def apply_mcp_resources(chat)
+      servers = self.class.mcp.zip(mcp_clients).select { |cfg, _| cfg[:resources] }
+        .to_h { |cfg, client| [cfg[:name].to_s, client] }
+      return if servers.empty?
+
+      tools = [Nexo::MCP::ListResources, Nexo::MCP::ReadResource].map { |tool| tool.new(servers: servers) }
+        .reject { |tool| @permissions.never_allows_mcp?(tool.name) }
+        .map { |tool| Nexo::MCP::GatedTool.new(tool: tool, permissions: @permissions) }
+      chat.with_tools(*tools) unless tools.empty?
     end
 
     # Raises ConfigurationError when an MCP tool has the name of a tool already
@@ -762,15 +816,22 @@ module Nexo
     # `capability:` is wrapped in Nexo::GatedTool, and skipped altogether when the
     # gate could never authorize it.
     def apply_host_tools(chat)
-      built = self.class.tools.flat_map do |entry|
-        capability = entry[:capability]
-        next [] if capability && @permissions.never_allows?(capability)
+      self.class.tools.group_by { |entry| entry[:defer] }.each do |defer, entries|
+        built = entries.flat_map { |entry| gated_host_tools(entry) }
+        next if built.empty?
 
-        build_host_tools(entry[:tool]).map do |tool|
-          capability ? Nexo::GatedTool.new(tool: tool, permissions: @permissions, capability: capability) : tool
-        end
+        defer.nil? ? chat.with_tools(*built) : chat.with_tools(*built, defer: defer)
       end
-      chat.with_tools(*built) unless built.empty?
+    end
+
+    # The tools of one `tools` declaration, gated when it names a capability.
+    def gated_host_tools(entry)
+      capability = entry[:capability]
+      return [] if capability && @permissions.never_allows?(capability)
+
+      build_host_tools(entry[:tool]).map do |tool|
+        capability ? Nexo::GatedTool.new(tool: tool, permissions: @permissions, capability: capability) : tool
+      end
     end
 
     # A declared tool is a class, an instance, or a lambda taking the agent. The
