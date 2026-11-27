@@ -90,6 +90,22 @@ module Nexo
         offload { Dir.glob(full) }.select { |match| real_within?(match) }
       end
 
+      # Every regular file under `cwd`, relative to it. `Dir.glob` skips dotfiles
+      # by default, and a symlink whose target is outside the sandbox is left out.
+      def files
+        offload do
+          Dir.glob("**/*", base: @cwd).select do |path|
+            full = File.join(@cwd, path)
+            File.file?(full) && real_within?(full)
+          end.sort
+        end
+      end
+
+      # The size of `path` in bytes, without reading it.
+      def file_size(path)
+        File.size(absolute(path))
+      end
+
       def write(path, content)
         offload do
           full = absolute(path)

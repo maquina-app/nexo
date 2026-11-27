@@ -32,6 +32,26 @@ module Nexo
       raise NotImplementedError
     end
 
+    # Every regular file under the sandbox root, as paths relative to it,
+    # skipping dotfiles and anything inside a dot-directory. This is what a file
+    # listing is built from (see SandboxFileStore).
+    #
+    # The default asks the sandbox's own shell, which is right for a container or
+    # a remote box and costs one command; Virtual and Local answer from memory and
+    # the filesystem. A sandbox with neither raises `NotImplementedError`.
+    def files
+      raise NotImplementedError, "#{self.class} cannot list its files" unless supports?(:shell)
+
+      out = shell("find . -type f -not -path '*/.*'")
+      out[:stdout].to_s.split("\n").map { |path| path.delete_prefix("./") }.reject(&:empty?).sort
+    end
+
+    # The size of the file at `path` in bytes. The default reads the file;
+    # sandboxes that can answer without reading override it.
+    def file_size(path)
+      read(path).bytesize
+    end
+
     # Releases any resources the sandbox holds. No-op by default.
     def close
       nil

@@ -79,6 +79,11 @@ module Nexo
     # workflow jobs to a dedicated queue.
     attr_accessor :job_queue
 
+    # The file tools an agent gets when it does not say (see the `file_tools`
+    # macro): `:nexo` (default) for Nexo's own three, `:core` for `ruby_llm`'s five
+    # over the agent's sandbox. `:core` becomes the default in 1.0.
+    attr_accessor :file_tools
+
     # What happens when the model calls a tool Nexo did not attach — one a host
     # added to the chat itself, outside the `tools` macro, so no permission gate
     # ever saw it. `false` (default in 0.14) runs it and warns once per tool;
@@ -102,6 +107,7 @@ module Nexo
       @broadcast_events = false # safe default: opt in to the Turbo mirror
       @run_store = nil # nil → the automatic choice (ActiveRecord under Rails, else Memory)
       @job_queue = nil # nil → ActiveJob's default queue
+      @file_tools = :nexo # ruby_llm's own (:core) are opt-in until 1.0
       @strict_tools = false # warn, do not refuse; flips to true in 1.0
     end
 

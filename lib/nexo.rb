@@ -36,17 +36,6 @@ module Nexo
   # image or the sandbox wiring rather than in the Ruby.
   class EnvironmentError < ConfigurationError; end
 
-  # Control-flow signal raised by the `:approve` permission gate (Spec 16) when a
-  # capability needs a human decision and none has been threaded in yet. Unlike
-  # Permissions::Denied ("no, adapt" — tools rescue it into `{error:}`),
-  # `ApprovalRequired` means "pause and ask a human": tools must **not** rescue
-  # it, so it propagates out of the `ruby_llm` tool loop and out of
-  # Agent#prompt, where Workflow#run_agent catches it and turns it into a
-  # durable Workflow#suspend!. It subclasses `StandardError` directly (not
-  # Error), mirroring Permissions::Denied's base — it is a signal, not a
-  # library-misuse error. Carries the pending call's `capability`, `detail` (the
-  # tool/path), and `args` so a host can render the approval prompt from
-  # `run.state["__approval__"]`.
   # Raised when an agent is about to use an MCP server that a person has not
   # authorized yet (an `oauth:` server on the authorization-code grant). Carries
   # the `server` so a host can send the user to
@@ -63,6 +52,17 @@ module Nexo
     end
   end
 
+  # Control-flow signal raised by the `:approve` permission gate (Spec 16) when a
+  # capability needs a human decision and none has been threaded in yet. Unlike
+  # Permissions::Denied ("no, adapt" — tools rescue it into `{error:}`),
+  # `ApprovalRequired` means "pause and ask a human": tools must **not** rescue
+  # it, so it propagates out of the `ruby_llm` tool loop and out of
+  # Agent#prompt, where Workflow#run_agent catches it and turns it into a
+  # durable Workflow#suspend!. It subclasses `StandardError` directly (not
+  # Error), mirroring Permissions::Denied's base — it is a signal, not a
+  # library-misuse error. Carries the pending call's `capability`, `detail` (the
+  # tool/path), and `args` so a host can render the approval prompt from
+  # `run.state["__approval__"]`.
   class ApprovalRequired < StandardError
     # The pending call's capability (e.g. `:write`), its `detail` (the tool/path),
     # and the tool `args` — enough for a host to render the approval prompt.

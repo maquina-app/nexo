@@ -25,7 +25,7 @@ module Nexo
     CONFIG_IVARS = %i[
       @model @assume_model_exists @provider @sandbox @permissions @instructions
       @skills @mcp @mcp_allow @fetch_allow @search_backend @requires @produces @tools
-      @context_budget
+      @context_budget @file_tools
     ].freeze
 
     class << self
@@ -89,6 +89,25 @@ module Nexo
       # prompt (default `nil`); with a value it records it.
       def instructions(value = nil)
         value.nil? ? @instructions : (@instructions = value)
+      end
+
+      # Which file tools the agent gets. With no argument it reads the choice
+      # (default: Nexo.config.file_tools, which is `:nexo`).
+      #
+      # * `:nexo` — Nexo's own `ReadFile`, `WriteFile` and `Glob`.
+      # * `:core` — `ruby_llm`'s `list_files`, `read_file`, `search_files`,
+      #   `write_file` and `edit_file`, over the agent's sandbox (see
+      #   SandboxFileStore). Adds editing part of a file, searching contents, and
+      #   a read-before-write guard that works on every sandbox.
+      #
+      # Either way the tools are behind the same permission gate: reading and
+      # listing are `:read`, writing and editing are `:write`, and under
+      # `:read_only` the writing tools are not attached at all. The two sets use
+      # different tool names and return different shapes, so a skill that names
+      # `nexo--tools--write_file`, or a host that reads tool events, must be
+      # updated when switching. `:core` is planned as the default in 1.0.
+      def file_tools(value = nil)
+        value.nil? ? (@file_tools || Nexo.config.file_tools) : (@file_tools = value)
       end
 
       # Keeps tool results within shares of the model's context window — a
@@ -344,21 +363,7 @@ module Nexo
       c = base || RubyLLM.chat(**chat_model_options)
       c = apply_instructions(c)
 
-      # One ReadTracker per chat, shared by ReadFile (records) and WriteFile
-      # (enforces the read-before-write + stale guard) — R4.
-      tracker = ReadTracker.new
-      # A sandbox tool is attached only when the agent could actually use it, on
-      # BOTH axes: the sandbox has to support the capability (R2 — a :virtual
-      # sandbox has no shell) and the gate must not deny it statically (a
-      # :read_only agent can never be authorized for :write or :shell). Otherwise
-      # a guaranteed failure sits in the tool schema on every turn and models do
-      # try it. This is the same attach-time gating apply_fetch/apply_search
-      # already apply; #authorize! stays the actual boundary either way.
-      tools = [Tools::ReadFile.new(sandbox: @sandbox, permissions: @permissions, tracker: tracker)]
-      unless @permissions.never_allows?(:write)
-        tools << Tools::WriteFile.new(sandbox: @sandbox, permissions: @permissions, tracker: tracker)
-      end
-      tools << Tools::Glob.new(sandbox: @sandbox, permissions: @permissions)
+      tools = file_tool_set
       if @sandbox.supports?(:shell) && !@permissions.never_allows?(:shell)
         tools << Tools::Shell.new(sandbox: @sandbox, permissions: @permissions)
       end
@@ -628,6 +633,52 @@ module Nexo
     # Whether the model may call this MCP tool. Only MCP App tools restrict it.
     def model_callable?(tool)
       !tool.respond_to?(:visibility) || tool.visibility.include?(:model)
+    end
+
+    # The agent's file tools, per the `file_tools` declaration.
+    #
+    # A tool is attached only when the agent could actually use it: the gate must
+    # not deny it statically (a :read_only agent can never be authorized for
+    # :write), otherwise a guaranteed failure sits in the tool schema on every
+    # turn and models do try it. #authorize! stays the actual boundary either way.
+    def file_tool_set
+      case self.class.file_tools
+      when :nexo then nexo_file_tools
+      when :core then core_file_tools
+      else raise ConfigurationError, "unknown file_tools #{self.class.file_tools.inspect} (use :nexo or :core)"
+      end
+    end
+
+    # Nexo's own file tools. One ReadTracker per chat, shared by ReadFile (records)
+    # and WriteFile (enforces the read-before-write + stale guard).
+    def nexo_file_tools
+      tracker = ReadTracker.new
+      tools = [Tools::ReadFile.new(sandbox: @sandbox, permissions: @permissions, tracker: tracker)]
+      unless @permissions.never_allows?(:write)
+        tools << Tools::WriteFile.new(sandbox: @sandbox, permissions: @permissions, tracker: tracker)
+      end
+      tools << Tools::Glob.new(sandbox: @sandbox, permissions: @permissions)
+    end
+
+    # `ruby_llm`'s file tools over one SandboxFileStore per chat, each behind
+    # Nexo::GatedTool. They are built here and attached with `with_tools` — NOT
+    # with `chat.with_file_store`, which would attach them with no place for the
+    # gate. The gate is told the path the call acts on, like Nexo's own tools.
+    #
+    # VERIFIED (ruby_llm 2.2.3): `FileStore::Tools.classes(names)` returns the
+    # tool classes for `:read` (list, read, search), `:write` and `:edit`, each
+    # built with `store:` (a callable). These are internal to `ruby_llm`; the
+    # real-loop tests are what catches a change.
+    def core_file_tools
+      store = SandboxFileStore.new(@sandbox)
+      groups = {read: :read}
+      groups = groups.merge(write: :write, edit: :write) unless @permissions.never_allows?(:write)
+      groups.flat_map do |group, capability|
+        ::RubyLLM::FileStore::Tools.classes([group]).map do |tool|
+          Nexo::GatedTool.new(tool: tool.new(store: -> { store }), permissions: @permissions,
+            capability: capability, detail: ->(arguments) { arguments[:path] })
+        end
+      end
     end
 
     # Attaches the tools declared with the `tools` macro. One declared with a

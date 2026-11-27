@@ -25,10 +25,16 @@ module Nexo
   class GatedTool
     # Wraps `tool` so every call is authorized for `capability` (one of the
     # Permissions capabilities, e.g. `:write`) through `permissions` first.
-    def initialize(tool:, permissions:, capability:)
+    #
+    # `detail:` is an optional `->(arguments)` returning what the gate is told the
+    # call acts on — a path, say. Without it, or when it returns `nil`, the detail
+    # is the tool name and its arguments as JSON, so two different calls are never
+    # mistaken for one when an approval is recorded.
+    def initialize(tool:, permissions:, capability:, detail: nil)
       @tool = tool
       @permissions = permissions
       @capability = capability
+      @detail = detail
     end
 
     # Authorizes the call, then delegates to the wrapped tool. A denial is
@@ -80,7 +86,8 @@ module Nexo
     # approval is the tool name and its arguments, so a human can tell one call
     # from another.
     def authorize!(arguments)
-      @permissions.authorize!(@capability, "#{name} #{JSON.generate(arguments)}")
+      detail = @detail&.call(arguments) || "#{name} #{JSON.generate(arguments)}"
+      @permissions.authorize!(@capability, detail)
     end
   end
 end
