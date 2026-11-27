@@ -107,8 +107,8 @@ is meant for (a CLI's own history) and is wrong for a busy multi-worker queue â€
 is what the ActiveRecord backend is for. `claim_for_resume!` re-reads from disk, so a
 stale in-memory copy cannot win a claim, but it is atomic **within** a process only.
 Runs are never pruned: retention is the host's policy and `dir` is a plain directory
-it can manage. `Workflow.reconcile_interrupted!` sweeps the Memory and ActiveRecord
-stores only.
+it can manage. `Workflow.reconcile_interrupted!` sweeps this store too (since 0.16), so a CLI
+killed mid-run can mark its run `"interrupted"` on the next start and `Workflow.retry` it.
 
 ## Input staging and artifacts
 

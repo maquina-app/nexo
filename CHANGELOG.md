@@ -1,5 +1,12 @@
 ## [Unreleased]
 
+### Fixed
+
+- Docs only: `docs/workflows.md` said the interrupted-run sweep skips the Disk store,
+  `docs/loops.md` still described the removed `:turn_limit_exceeded` event, and
+  `examples/mcp_filesystem.rb` said an unlisted MCP tool returns an error when it is not
+  attached at all.
+
 ## [0.16.1] - 2026-11-27
 
 ### Added
