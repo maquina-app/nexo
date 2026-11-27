@@ -33,6 +33,15 @@ module Nexo
     # Distinct from #concurrency, which governs how Nexo itself runs blocking work.
     attr_accessor :tool_concurrency
 
+    # The most tool calls ONE model response may run, default `20`. A model can
+    # ask for any number of calls in a single response, and `max_turns` counts
+    # responses, not calls — so without this a single round is unbounded. Calls
+    # past the limit are answered with an error straight away and never run; the
+    # model sees that and can ask again. `nil` removes the limit. Must be 2 or
+    # more (to `ruby_llm`, `1` means "ask the provider for one call at a time").
+    # Passed to `ruby_llm` as `with_tool_options(calls:)`.
+    attr_accessor :tool_calls_per_round
+
     # Max in-flight tasks for Nexo.concurrent fan-out (Spec 5), default `8`.
     # The single most important knob for staying under provider rate limits.
     attr_accessor :max_in_flight
@@ -87,6 +96,7 @@ module Nexo
       @skills_path = default_skills_path
       @concurrency = :threaded # async is opt-in; :threaded stays the default
       @max_in_flight = 8
+      @tool_calls_per_round = 20 # with max_turns 25: at most 500 tool calls a prompt
       @buffer_workflow_events = false
       @session_chat_model = "Chat" # ruby_llm's own default acts_as_chat host
       @broadcast_events = false # safe default: opt in to the Turbo mirror
