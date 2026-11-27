@@ -74,9 +74,8 @@ class AgentTest < Minitest::Test
     chat = PermissiveVirtualAgent.new.chat
     tool_classes = chat.tools.values.map(&:class)
 
-    assert_includes tool_classes, Nexo::Tools::ReadFile
-    assert_includes tool_classes, Nexo::Tools::WriteFile
-    assert_includes tool_classes, Nexo::Tools::Glob
+    assert_equal %i[edit_file list_files read_file search_files write_file], chat.tools.keys.sort
+    assert(chat.tools.values.all?(Nexo::GatedTool), "every file tool is behind the gate")
     # The :virtual sandbox has no shell, so Shell is not attached (Spec 14 R2)
     # even though this agent's gate would permit it.
     refute_includes tool_classes, Nexo::Tools::Shell
@@ -92,12 +91,10 @@ class AgentTest < Minitest::Test
   # Previously they were attached and failed at call time, which cost a round trip
   # per attempt and described the agent inaccurately to the model.
   def test_read_only_agent_does_not_advertise_write_or_shell
-    tool_classes = LocalAgent.new(cwd: Dir.pwd).chat.tools.values.map(&:class)
+    tools = LocalAgent.new(cwd: Dir.pwd).chat.tools
 
-    assert_includes tool_classes, Nexo::Tools::ReadFile
-    assert_includes tool_classes, Nexo::Tools::Glob
-    refute_includes tool_classes, Nexo::Tools::WriteFile
-    refute_includes tool_classes, Nexo::Tools::Shell
+    assert_equal %i[list_files read_file search_files], tools.keys.sort
+    refute_includes tools.values.map(&:class), Nexo::Tools::Shell
   end
 
   # :ask and :approve decide per call, so neither is statically deniable and both
@@ -110,10 +107,11 @@ class AgentTest < Minitest::Test
         sandbox :local
         permissions Nexo::Permissions.new(mode: mode, on_ask: ->(*) { true })
       end
-      tool_classes = klass.new(cwd: Dir.pwd).chat.tools.values.map(&:class)
+      tools = klass.new(cwd: Dir.pwd).chat.tools
 
-      assert_includes tool_classes, Nexo::Tools::WriteFile, "#{mode} should keep WriteFile"
-      assert_includes tool_classes, Nexo::Tools::Shell, "#{mode} should keep Shell"
+      assert_includes tools.keys, :write_file, "#{mode} should keep write_file"
+      assert_includes tools.keys, :edit_file, "#{mode} should keep edit_file"
+      assert_includes tools.values.map(&:class), Nexo::Tools::Shell, "#{mode} should keep Shell"
     end
   end
 

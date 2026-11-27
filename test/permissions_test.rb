@@ -103,7 +103,7 @@ class PermissionsTest < Minitest::Test
   # denied must in fact raise for every mode/capability pair.
   def test_never_allows_never_contradicts_authorize
     Nexo::Permissions::MODES.each do |mode|
-      perms = Nexo::Permissions.new(mode: mode, on_ask: ->(*) { true }, decision: {approved: true})
+      perms = Nexo::Permissions.new(mode: mode, on_ask: ->(*) { true })
 
       (Nexo::Permissions::PRIVILEGED + %i[read glob]).each do |cap|
         next unless perms.never_allows?(cap)

@@ -42,6 +42,11 @@ module Nexo
     # Passed to `ruby_llm` as `with_tool_options(calls:)`.
     attr_accessor :tool_calls_per_round
 
+    # How long, in seconds, a prompt waits for an MCP server's long-running tool
+    # call (a task, see the `mcp` macro's `tasks:`) before it cancels the task and
+    # fails. Default `300`.
+    attr_accessor :mcp_task_timeout
+
     # Max in-flight tasks for Nexo.concurrent fan-out (Spec 5), default `8`.
     # The single most important knob for staying under provider rate limits.
     attr_accessor :max_in_flight
@@ -80,16 +85,15 @@ module Nexo
     attr_accessor :job_queue
 
     # The file tools an agent gets when it does not say (see the `file_tools`
-    # macro): `:nexo` (default) for Nexo's own three, `:core` for `ruby_llm`'s five
-    # over the agent's sandbox. `:core` becomes the default in 1.0.
+    # macro): `:core` (the default) for `ruby_llm`'s five over the agent's
+    # sandbox, or `:none`. Nexo's own three (`:nexo`) were removed in 0.16.
     attr_accessor :file_tools
 
     # What happens when the model calls a tool Nexo did not attach — one a host
     # added to the chat itself, outside the `tools` macro, so no permission gate
-    # ever saw it. `false` (default in 0.14) runs it and warns once per tool;
-    # `true` refuses it, and the model is told the call did not run. Declare host
-    # tools with `tools` on the agent and turn this on. It becomes the default
-    # in 1.0.
+    # ever saw it. `true` (default since 0.16) refuses it: the model is told the
+    # call did not run, and Nexo warns once per tool. `false` runs it and warns.
+    # Declare host tools with the `tools` macro on the agent.
     attr_accessor :strict_tools
 
     # Seeds the safe, provider-neutral defaults (no model, `:virtual` sandbox,
@@ -107,8 +111,9 @@ module Nexo
       @broadcast_events = false # safe default: opt in to the Turbo mirror
       @run_store = nil # nil → the automatic choice (ActiveRecord under Rails, else Memory)
       @job_queue = nil # nil → ActiveJob's default queue
-      @file_tools = :nexo # ruby_llm's own (:core) are opt-in until 1.0
-      @strict_tools = false # warn, do not refuse; flips to true in 1.0
+      @file_tools = :core # ruby_llm's file tools over the sandbox
+      @strict_tools = true # a tool no gate saw does not run
+      @mcp_task_timeout = 300 # seconds a prompt waits on an MCP task
     end
 
     private

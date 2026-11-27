@@ -80,7 +80,7 @@ access until you explicitly opt in.
 | [Getting started](docs/getting-started.md) | install, configuration, first agent |
 | [Sandboxes](docs/sandboxes.md) | Virtual / Local / Remote / Container + hardened defaults |
 | [Permissions](docs/permissions.md) | modes, the gate, MCP gate, :ask |
-| [Tools](docs/tools.md) | ReadFile / WriteFile / Shell / Glob |
+| [Tools](docs/tools.md) | File tools, Shell, tools of your own, `strict_tools` |
 | [The loop](docs/loops.md) | the default loop, `max_turns` as a hard cap |
 | [Workflows](docs/workflows.md) | lifecycle, staging, artifacts, run_agent |
 | [Durable workflows](docs/durable-workflows.md) | checkpoint / suspend / resume |

@@ -29,6 +29,17 @@ class ContainerRunnerTest < Minitest::Test
     assert_equal %w[alpine echo hi], args.last(3)
   end
 
+  # VERIFIED live on Apple `container` 1.7.1: it rejects --security-opt and
+  # --pids-limit, and writes progress to stderr unless told not to.
+  def test_the_apple_runtime_gets_only_the_flags_its_cli_accepts
+    args = argv(runner(runtime: :apple), "echo", "hi")
+
+    assert_equal %w[container run --rm --name nexo-run-x --network none --cap-drop ALL --progress none], args.first(11)
+    refute_includes args, "--security-opt"
+    refute_includes args, "--pids-limit"
+    assert_includes args, "--read-only"
+  end
+
   def test_one_string_is_a_shell_command
     assert_equal ["alpine", "sh", "-c", "echo hi | wc -c"], argv(runner, "echo hi | wc -c").last(4)
   end
@@ -68,7 +79,11 @@ class ContainerRunnerTest < Minitest::Test
 
   def live_runner
     skip "set NEXO_LIVE=1 to run live container smoke tests" unless ENV["NEXO_LIVE"] == "1"
-    built = runner(image: ENV["NEXO_CONTAINER_IMAGE"] || "alpine")
+    # On a Linux host the bind mounts keep their host ownership, and a container's
+    # root without capabilities cannot write to them: run as the host's user. A
+    # macOS runtime (OrbStack, Docker Desktop) maps ownership itself.
+    user = "#{Process.uid}:#{Process.gid}" if RbConfig::CONFIG["host_os"].include?("linux")
+    built = runner(image: ENV["NEXO_CONTAINER_IMAGE"] || "alpine", **{user: user}.compact)
     skip "docker is not available" unless built.supported?
     built
   end

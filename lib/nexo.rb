@@ -44,39 +44,103 @@ module Nexo
     # The `mcp` macro name of the server that needs authorizing.
     attr_reader :server
 
-    # Builds the error for the MCP server declared as `server`.
-    def initialize(server)
+    # The scopes the server asked for when it refused a call for want of one
+    # (0.16), as Strings. Empty for a server that was never authorized.
+    attr_reader :scopes
+
+    # Builds the error for the MCP server declared as `server`. With `scopes:`
+    # it reports a server that refused a call because the stored grant lacks
+    # them: the fix is the same — send the user through the authorization URL
+    # again, which asks for the wider grant.
+    def initialize(server, scopes: [])
       @server = server.to_sym
-      super("MCP server :#{server} is not authorized — send the user to " \
+      @scopes = Array(scopes).map(&:to_s)
+      reason = @scopes.empty? ? "is not authorized" : "needs more access (#{@scopes.join(", ")})"
+      super("MCP server :#{server} #{reason} — send the user to " \
         "agent.mcp_server(:#{server}).authorization_url(redirect_uri:) first")
     end
   end
 
-  # Control-flow signal raised by the `:approve` permission gate (Spec 16) when a
-  # capability needs a human decision and none has been threaded in yet. Unlike
-  # Permissions::Denied ("no, adapt" — tools rescue it into `{error:}`),
-  # `ApprovalRequired` means "pause and ask a human": tools must **not** rescue
-  # it, so it propagates out of the `ruby_llm` tool loop and out of
-  # Agent#prompt, where Workflow#run_agent catches it and turns it into a
-  # durable Workflow#suspend!. It subclasses `StandardError` directly (not
-  # Error), mirroring Permissions::Denied's base — it is a signal, not a
-  # library-misuse error. Carries the pending call's `capability`, `detail` (the
-  # tool/path), and `args` so a host can render the approval prompt from
-  # `run.state["__approval__"]`.
+  # Raised when a tool asked the person something and nobody has answered yet
+  # (0.16) — an MCP server's question (elicitation), or a `RubyLLM::Tool` that
+  # calls `ask`. Like ApprovalRequired it is a signal, not a failure:
+  # Workflow#run_agent turns it into a durable suspend, and a direct caller can
+  # rescue it, put the #questions to the person, and prompt again with
+  # `Agent.new(answers:)`.
+  class InputRequired < StandardError
+    # One question, reduced to plain data so it survives a run store: the `key`
+    # an answer is filed under, the `tool` that asked, the `message` to show,
+    # the `fields` to collect (each a Hash of name, type, title, required,
+    # choices), and a `url` when the person is asked to visit a page instead.
+    Question = Struct.new(:key, :tool, :message, :fields, :url) do
+      # The question as a String-keyed Hash, for a run's state.
+      def to_h = {"key" => key, "tool" => tool, "message" => message, "fields" => fields, "url" => url}.compact
+    end
+
+    # The unanswered questions, each a Question.
+    attr_reader :questions
+
+    # Builds the signal for `questions` (Question structs).
+    def initialize(questions)
+      @questions = questions
+      super("input required: #{questions.map(&:message).compact.join(" / ")}")
+    end
+
+    # The key an answer to `question` (a `RubyLLM::Question`) is filed under:
+    # the tool that asked, then the question's own key. The same call asking
+    # the same thing on a later run gets the same key.
+    def self.key_for(question)
+      "#{question.tool_call&.name}:#{question.key}"
+    end
+
+    # Reduces a `RubyLLM::Question` to a Question struct.
+    def self.reduce(question)
+      fields = Array(question.fields).map do |field|
+        {"name" => field.name.to_s, "type" => field.type, "title" => field.title,
+         "required" => field.required, "choices" => field.choices}.compact
+      end
+      Question.new(key_for(question), question.tool_call&.name.to_s, question.message,
+        fields, (question.url if question.url?))
+    end
+  end
+
+  # Raised from Agent#prompt when a call under an `:approve` gate needs a
+  # person's decision and none is recorded. Unlike Permissions::Denied ("no,
+  # adapt"), it means "pause and ask a human": Workflow#run_agent turns it into
+  # a durable Workflow#suspend!, and a direct caller can rescue it, ask, and
+  # prompt again with `Agent.new(decisions:)`.
+  #
+  # Since 0.16 the pause itself is `ruby_llm`'s (see Approvable): the model's
+  # tool calls are held before any of them runs, and the loop raises this for
+  # the first undecided one, with every undecided call of that response in
+  # #pending. The gate inside a tool still raises it for a call that reached the
+  # tool undecided some other way. It subclasses `StandardError` directly (not
+  # Error), like Permissions::Denied — it is a signal, not a library-misuse
+  # error.
   class ApprovalRequired < StandardError
     # The pending call's capability (e.g. `:write`), its `detail` (the tool/path),
     # and the tool `args` — enough for a host to render the approval prompt.
     attr_reader :capability, :detail, :args
 
+    # Every call waiting for a decision, this one first: an Array of
+    # String-keyed Hashes with `"capability"`, `"tool"` (the detail), `"args"`
+    # and the `"key"` to record a decision under.
+    attr_reader :pending
+
     # The key this call is decided under — see Permissions::approval_key.
     def key = Permissions.approval_key(capability, detail, args)
 
+    # This call as a String-keyed Hash, the shape of one #pending entry.
+    def to_h = {"capability" => capability.to_s, "tool" => detail.to_s, "args" => args, "key" => key}
+
     # Builds the signal for `capability` acting on `detail` with `args`; the
-    # message reads "approval required for <capability> (<detail>)".
-    def initialize(capability, detail = nil, args = nil)
+    # message reads "approval required for <capability> (<detail>)". `pending:`
+    # lists every waiting call when there are several (see #pending).
+    def initialize(capability, detail = nil, args = nil, pending: nil)
       @capability = capability
       @detail = detail
       @args = args
+      @pending = pending || [to_h]
       super("approval required for #{capability} (#{detail})")
     end
   end
@@ -107,17 +171,33 @@ module Nexo
     end
 
     # Warns, once per tool name, that the model called a tool Nexo did not attach
-    # (see Configuration#strict_tools). Called from the tool backstop, possibly on
-    # several tool threads at once, hence the lock.
-    def warn_undeclared_tool(name, agent_class)
-      @undeclared_tools_lock.synchronize do
-        return if @undeclared_tools.include?(name)
+    # (see Configuration#strict_tools), and says whether the call was refused.
+    # Called from the tool backstop, possibly on several tool threads at once,
+    # hence the lock.
+    def warn_undeclared_tool(name, agent_class, refused: false)
+      return unless first_warning?(:"tool:#{name}")
 
-        @undeclared_tools << name
+      outcome = refused ? "The call was refused" : "The call ran with no permission gate"
+      notice "[nexo] #{agent_class}: the model called `#{name}`, a tool added to the chat outside " \
+        "the `tools` macro. #{outcome} (Nexo.config.strict_tools is #{refused}). Declare it " \
+        "with `tools` on the agent, optionally with `capability:`."
+    end
+
+    # Writes one operational notice to standard error. Not `Kernel#warn`: that
+    # prints nothing when Ruby runs with `-W0`, and a refused tool call or a
+    # removal notice is not a language warning to be silenced with those.
+    def notice(message)
+      $stderr.write("#{message}\n")
+    end
+
+    # Whether `key` is being warned about for the first time in this process.
+    def first_warning?(key)
+      @undeclared_tools_lock.synchronize do
+        return false if @undeclared_tools.include?(key)
+
+        @undeclared_tools << key
+        true
       end
-      warn "[nexo] #{agent_class} ran the tool `#{name}`, which was added to the chat outside " \
-        "the `tools` macro, so no permission gate saw the call. Declare it with `tools` " \
-        "(optionally `capability:`); Nexo.config.strict_tools = true refuses such calls."
     end
 
     # Returns a fresh run id as a time-ordered UUID v7 string (Ruby 3.3+).

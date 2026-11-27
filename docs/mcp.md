@@ -29,6 +29,191 @@ are attached to the chat after the sandbox tools and skills, and fire the same
 `before_tool_call`/`after_tool_result` observability callbacks, so MCP calls appear in a
 run's event log automatically.
 
+## Connecting to a server — pick your case
+
+Four questions decide how a server is declared: where it runs, whether it needs a
+credential, whose credential that is, and how the server learns who your application is.
+
+| The server… | Declare it with | Section |
+|---|---|---|
+| is a program on this machine | `transport: :stdio, command:` | [Stdio](#stdio-servers-environment-and-stderr) |
+| is a URL and needs no credential | `transport: :http, url:` | below |
+| is a URL and takes one API key or a token you already have | `transport: :http, url:, token:` | [Bearer token](#http-servers--a-bearer-token) |
+| is a URL and signs each user in (OAuth) | `transport: :http, url:, oauth:` | [OAuth](#http-servers--oauth) |
+
+Then, in every case, list the tools the agent may call with `mcp_allow` — nothing is callable
+until you do — and call `agent.close` when you are done with a long-lived agent.
+
+### 1. A local program
+
+```ruby
+class Notes < Nexo::Agent
+  model ENV.fetch("NEXO_MODEL")
+  mcp :files, transport: :stdio, command: "npx", args: %w[-y @modelcontextprotocol/server-filesystem /data],
+              env: {LOG_LEVEL: "error"}
+  mcp_allow "read_text_file", "list_directory"
+  file_tools :none   # this server's tools are named like Nexo's file tools; see the Tools guide
+end
+```
+
+The process starts on the first prompt and gets a short environment, so pass what it needs
+with `env:`.
+
+### 2. A URL with a key or a token
+
+```ruby
+class Tracker < Nexo::Agent
+  model ENV.fetch("NEXO_MODEL")
+  mcp :issues, transport: :http, url: "https://mcp.example.com/mcp", token: ENV.fetch("ISSUES_API_KEY")
+  mcp_allow "list_issues", "get_issue"
+end
+```
+
+`token:` is also where a per-user token goes when your application already runs the sign-in
+itself: `token: -> { Current.user.issues_access_token }` is read again for every request.
+
+### 3. A URL that signs each user in
+
+Use this when the server speaks OAuth and you want `ruby_llm` to run the flow. There are four
+pieces, and a host application writes all four once.
+
+**a. Declare the server and where its tokens are kept.**
+
+```ruby
+class Assistant < Nexo::Agent
+  model ENV.fetch("NEXO_MODEL")
+  mcp :linear, transport: :http, url: "https://mcp.linear.app/mcp", oauth: true
+  mcp_allow "list_issues"
+end
+
+# config/initializers/nexo.rb — Rails with `rails g ruby_llm:install` needs nothing here:
+# ruby_llm keeps the tokens in its own encrypted table. Anywhere else:
+RubyLLM.configure do |config|
+  config.mcp_credential_store = Nexo::MCP::CredentialStore.new(
+    dir: "/var/lib/my-app/mcp", key: ENV.fetch("MCP_STORE_KEY")
+  )
+end
+```
+
+**b. Say who your application is.** Try `oauth: true` first: most servers register a client
+by themselves. If the server answers "does not register clients", it wants one of the other
+two — a client you registered by hand (`oauth: {client_id:, client_secret:}`), or a Client ID
+Metadata Document your application serves (see [below](#http-servers--oauth)).
+
+**c. Send the user to sign in, and take the callback.**
+
+```ruby
+class McpConnectionsController < ApplicationController
+  def new       # GET /mcp/linear/connect
+    server = Assistant.new(mcp_owner: Current.user).mcp_server(:linear)
+    redirect_to server.authorization_url(redirect_uri: mcp_callback_url), allow_other_host: true
+  end
+
+  def callback  # GET /mcp/callback?code=…&state=…
+    Assistant.new(mcp_owner: Current.user).mcp_server(:linear).authorize(params.permit!.to_h)
+    redirect_to root_path, notice: "Linear is connected."
+  rescue RubyLLM::MCP::Error => e
+    redirect_to root_path, alert: "Linear was not connected: #{e.message}"
+  end
+
+  def destroy   # DELETE /mcp/linear
+    Assistant.new(mcp_owner: Current.user).mcp_server(:linear).deauthorize
+    redirect_to root_path, notice: "Linear is disconnected."
+  end
+end
+```
+
+**d. Use the agent, and send a user who has not signed in to step c.**
+
+```ruby
+agent = Assistant.new(mcp_owner: Current.user)
+agent.prompt("What is assigned to me?")
+rescue Nexo::AuthorizationRequired => e
+  redirect_to mcp_connect_path(e.server)   # raised before any request reaches the server
+ensure
+  agent&.close
+```
+
+Tokens are refreshed for you. A user is asked again only after `deauthorize`, or when the
+server revokes the grant.
+
+A terminal program does the same with a one-shot listener on `127.0.0.1` in place of the
+controller: [`examples/mcp_oauth.rb`](https://github.com/maquina-app/nexo/blob/main/examples/mcp_oauth.rb).
+
+### When it does not connect
+
+| What you see | Cause |
+|---|---|
+| The model says it has no such tool | The tool is not in `mcp_allow` (under `:read_only` an unlisted tool is not attached). |
+| `Nexo::AuthorizationRequired` | This owner has not signed in to that server yet. |
+| `… does not register clients` | The server wants a client id or a Client ID Metadata Document. |
+| `Nexo::ConfigurationError` naming `read_file` or another tool | The server's tool has the name of one of the agent's own; declare `file_tools :none` or drop it from `mcp_allow`. |
+| `The authorization state does not match` | The callback did not come from the sign-in you started, or it was used twice. |
+| `OAuth endpoints must use HTTPS` | Only a server on `127.0.0.1`/`localhost` may use plain `http`. |
+| A stdio server exits at once | It needs a variable that was not passed with `env:`; its stderr is in your terminal. |
+
+## More than tools
+
+**Resources.** A server can offer things to read — files, records, documents — besides tools
+to call. Ask for them per server, and allow the two tools that reach them:
+
+```ruby
+mcp :docs, transport: :http, url: "https://mcp.example.com/mcp", resources: true
+mcp_allow "list_mcp_resources", "read_mcp_resource"
+```
+
+`list_mcp_resources` prints server, uri, name and type; `read_mcp_resource` returns a
+resource's text, up to 200 KB (a binary one is an error result). Both are on the MCP
+permission axis, because the read happens in the server: allowing `read_mcp_resource` lets
+the model read **any** resource those servers offer.
+
+**A server that asks the user something.** Some tools stop to ask (MCP calls it elicitation).
+`prompt` raises `Nexo::InputRequired` with the questions; a workflow suspends and resumes with
+the answers. See [the loop guide](loops.md) and [durable workflows](durable-workflows.md).
+
+**A call refused for want of a scope.** When a server answers that the stored grant lacks a
+scope, the call raises `Nexo::AuthorizationRequired` — the same error as "never signed in" —
+with the scopes it asked for:
+
+```ruby
+rescue Nexo::AuthorizationRequired => e
+  e.server   # => :github
+  e.scopes   # => ["repo"]      (empty when the user never signed in)
+  redirect_to mcp_connect_path(e.server)   # the authorization URL asks for the wider grant
+```
+
+**A server with many tools.** `mcp :name, …, defer: true` keeps its tool definitions out of
+the model's context until the provider's tool search asks for them.
+
+**A server's prompts.** A server can offer prompts it wrote — a code review, a triage — that
+take arguments. You pick one; the model does not, so no permission applies to the prompt
+itself (the tools the model then calls are gated as always):
+
+```ruby
+agent.mcp_prompts(:github).map(&:name)         # => ["code_review", …]
+agent.prompt(agent.mcp_prompt(:github, :code_review, code: diff))
+```
+
+In a workflow the agent is built inside `run_agent`, so pass a callable:
+
+```ruby
+run_agent(->(agent) { agent.mcp_prompt(:github, :code_review, code: diff) }, mcp_owner: user_id)
+```
+
+**A call the server finishes later (tasks).** A server may answer a tool call with a task
+and do the work in the background. Say the agent accepts that:
+
+```ruby
+mcp :builds, transport: :http, url: "https://mcp.example.com/mcp", tasks: true
+```
+
+The prompt then waits for the task, checking at the interval the server asks for; the
+server's status messages arrive as `:tool_progress` events. After
+`Nexo.config.mcp_task_timeout` seconds (default `300`) the task is cancelled and the prompt
+raises `Nexo::Error`. `Workflow.cancel` cancels the task too. The task is held in memory: if
+the process dies while it waits, a retry makes the call again and the server starts a new
+task. Without `tasks: true` the extension is not declared and a server answers in one go.
+
 ## Every MCP tool call is gated — and fails closed
 
 MCP tools obey a **second permission axis**, separate from the sandbox capability axis,
@@ -41,11 +226,12 @@ exact-match allow-list threaded into the agent's permissions:
 | `:ask` | call `on_ask.call(:mcp, {tool:, args:})`; a truthy return allows, else deny |
 | `:approve` | names in `mcp_allow` are pre-approved; any other tool needs a human decision — undecided **suspends the run** (`Nexo::ApprovalRequired`), `approved: true` allows, `approved: false` denies (the durable sibling of `:ask`) |
 
+| `:auto` | allow every MCP tool |
+
 Under `:read_only` an MCP tool that is not in `mcp_allow` is not attached at all (0.14): the
 model never sees a tool it could not call. Under `:approve` each call is decided on its own —
 the tool name and its arguments identify it — so approving one `send_email` does not approve
 the next.
-| `:auto` | allow every MCP tool |
 
 `mcp_allow` defaults to `[]`, so attaching a powerful server under `:read_only` with no
 allow-list denies **every** tool — a misconfigured agent fails closed, not open. A denied
@@ -130,8 +316,9 @@ too; the bearer token wins the `Authorization` header.
 request carries the new value — no reconnect needed. (Under `ruby_llm` 1.x a callable was
 resolved once per connection and a rotation needed `agent.close`; that caveat is gone.)
 
-**Nexo does not own the OAuth flow.** It performs no authorization-code exchange, no
-token refresh, and keeps no token store — that is your app or an OAuth library. The token
+**With `token:` the sign-in is yours.** Nexo performs no authorization-code exchange and no
+token refresh for a `token:` server — that is your app or an OAuth library; to have
+`ruby_llm` run the flow, use [`oauth:`](#http-servers--oauth) instead. The token
 is never logged, persisted, placed in a URL/query string, or emitted in an event (the
 event path carries only tool `name`/`args` and return values — never connection config).
 
@@ -143,9 +330,6 @@ deny-all). Attaching an authenticated server adds no permission surface.
 server-side — a leaked bearer is a real compromise. Nexo keeps it out of logs, events,
 persisted `WorkflowRun` records, and URLs; your host code must do the same. Nexo does
 not police `ruby_llm`'s own debug logging (`RUBYLLM_DEBUG`) — that boundary is yours.
-
-`ruby_llm` can also run a full per-user OAuth flow for an MCP server
-(`oauth owner:` on a `RubyLLM::MCP` class). Nexo's `mcp` macro does not expose it yet.
 
 > **Upgrading from 0.12:** remove `gem "ruby_llm-mcp"` from your Gemfile. It defines the
 > same `RubyLLM::MCP` constant as `ruby_llm` 2.x and the two cannot be bundled together.
@@ -196,6 +380,59 @@ Assistant.new(mcp_owner: current_user).mcp_server(:linear).authorize(params)
 
 `#deauthorize` forgets the owner's credentials.
 
+**From a workflow.** `run_agent` takes the owner too (0.16). Pass an id that is in the run's
+payload, so a resumed or retried run finds the same owner:
+
+```ruby
+def call(payload)
+  run_agent("Summarise my open issues", mcp_owner: payload[:user_id])
+end
+```
+
+**How the server learns who the client is.** Three ways, chosen by what the server supports:
+
+- *It registers clients itself* (dynamic client registration): nothing to configure.
+- *You registered a client by hand*: pass `oauth: {client_id: "...", client_secret: "..."}`.
+- *It takes a Client ID Metadata Document* — the client id is the `https` URL of a small JSON
+  file you host, listing your name and redirect URIs. Set it once for the process:
+
+  ```ruby
+  RubyLLM.configure { |config| config.mcp_client_id = "https://example.com/oauth/client.json" }
+  ```
+
+  ```json
+  {
+    "client_id": "https://example.com/oauth/client.json",
+    "client_name": "My App",
+    "redirect_uris": ["https://example.com/mcp/callback"],
+    "grant_types": ["authorization_code", "refresh_token"],
+    "response_types": ["code"],
+    "token_endpoint_auth_method": "none"
+  }
+  ```
+
+  The application that signs users in is the one that serves this file — it is that
+  application's identity, and its `redirect_uris` are that application's callback URLs. In
+  Rails it is one route:
+
+  ```ruby
+  # config/routes.rb
+  get "oauth/client.json", to: "oauth_clients#show"
+
+  # app/controllers/oauth_clients_controller.rb
+  def show
+    render json: {
+      client_id: oauth_client_url(format: :json), client_name: "My App",
+      redirect_uris: [mcp_callback_url], grant_types: %w[authorization_code refresh_token],
+      response_types: %w[code], token_endpoint_auth_method: "none"
+    }
+  end
+  ```
+
+  The server fetches it itself, so it must be reachable over `https`, answer with a JSON
+  content type, and carry a `client_id` equal to its own URL. A server that supports only
+  this and gets no `mcp_client_id` fails with "does not register clients".
+
 **Before it is authorized.** Building the chat raises `Nexo::AuthorizationRequired`, whose
 `#server` names the one to authorize. It is raised before any request is made, from the
 credential store alone. Servers on the `client_credentials` or JWT-bearer grant need no
@@ -211,14 +448,32 @@ RubyLLM.configure do |config|
 end
 ```
 
-⚠️ These files hold live access and refresh tokens as plain JSON. They are not encrypted.
-The directory is created `0700` and each file `0600`, which is the protection an SSH key
-has and no more. Do not put the directory anywhere shared or synced.
+⚠️ These files hold live access and refresh tokens. The directory is created `0700` and each
+file `0600`. Without a key they are plain JSON, which is the protection an SSH key has and
+no more: acceptable for a personal CLI, wrong for a shared, synced or backed-up directory.
+Pass a `key:` and every file is encrypted with AES-256-GCM (0.16):
+
+```ruby
+Nexo::MCP::CredentialStore.generate_key   # => 64 hex characters; do this once
+Nexo::MCP::CredentialStore.new(dir: "/var/lib/my-app/mcp", key: ENV.fetch("MCP_STORE_KEY"))
+```
+
+Keep the key out of the directory (an environment variable, a keychain, a secrets manager).
+A file that does not decrypt — a wrong key, a tampered file, a file copied from another
+owner — reads as "not authorized", never as an error. Plain files written before a key was
+set are still read, and are encrypted the next time they are written.
 
 The permission gate is unchanged by any of this: an OAuth server's tools are still denied
 unless `mcp_allow` lists them, and under `:approve` each call still asks.
 
-> Not verified end to end. The settings, the owner key, the authorization check and the
+> **Verified over real HTTP (0.16).** `test/mcp_oauth_roundtrip_test.rb` runs the whole flow
+> through `ruby_llm`'s client against an authorization server and MCP server on `127.0.0.1`:
+> discovery, dynamic registration and a Client ID Metadata Document, PKCE, bearer requests,
+> token refresh, per-owner reuse from the encrypted store, a forged callback, and
+> `deauthorize`. [`examples/mcp_oauth.rb`](https://github.com/maquina-app/nexo/blob/main/examples/mcp_oauth.rb)
+> signs in to a real server from a terminal. A sign-in against a third-party server has not
+> been run from Nexo: the one tried takes only a Client ID Metadata Document, which is the
+> host application's to serve.
 > store are tested against `ruby_llm`'s real MCP class; a full sign-in against a live
 > authorization server has not been run from Nexo.
 

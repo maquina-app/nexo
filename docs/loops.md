@@ -34,13 +34,11 @@ one prompt, however many calls each response holds. Nexo passes it to `ruby_llm`
 
 When the cap is reached, `ruby_llm` raises `RubyLLM::ToolRoundLimitError` instead of
 asking the model again. Every tool call that ran has its result, so the conversation
-stays valid. Nexo emits a `:turn_limit_exceeded` event and lets the error propagate:
+stays valid. The error propagates:
 
 ```ruby
 begin
-  agent.prompt("Triage the inbox", max_turns: 10) do |type, payload|
-    warn "over budget: #{payload}" if type == :turn_limit_exceeded
-  end
+  agent.prompt("Triage the inbox", max_turns: 10)
 rescue RubyLLM::ToolRoundLimitError
   # the run used its 10 rounds — decide whether to retry with a larger budget
 end
@@ -64,6 +62,56 @@ Things to know:
   arrive before the round cap trips. It is a warning; the raise is the stop.
 - The cap counts rounds, not time or tokens. Bound those inside your own tools (a read
   tool that accepts at most N ids) or with your provider's limits.
+
+## What the block receives
+
+`Agent#prompt` yields `(type, payload)` as the prompt runs:
+
+| Event | Payload | When |
+|---|---|---|
+| `:tool_call` | `RubyLLM::ToolCall` | before each tool call |
+| `:tool_progress` | `{tool_call:, progress:}` — a `RubyLLM::Progress` (`message`, `value`, `total`) | when a tool reports progress (0.16) |
+| `:tool_result` | the tool's return value | after each tool call |
+| `:fallback` | `RubyLLM::Fallback` (`from`, `to`, `error`) | after a request moved to a fallback model declared in the `llm` block (0.16) |
+| `:done` | the final `RubyLLM::Message` | when the prompt ends |
+| `:usage` | `{tokens: {input_tokens:, output_tokens:, …}, cost:}` | once per prompt, last, **even when the prompt raises** (0.16) |
+
+`:usage` is what this prompt added, so it is right for a session's long-lived chat too. `cost`
+is `nil` when `ruby_llm` has no price for the model. The `:turn_limit_exceeded` event was
+removed in 0.16: rescue `RubyLLM::ToolRoundLimitError`. A call declined under `:approve` emits
+no tool events, because `ruby_llm` answers it without entering the tool.
+
+`:fallback` was run live in 0.16 (`test/live_smoke_test.rb`): a primary model whose provider
+could not be reached, falling back to a model on Ollama.
+
+A tool of your own reports progress with `progress "Reading page 3 of 9", value: 3, total: 9`
+and ends the turn with `halt "Filed as billing"` — both `RubyLLM::Tool` methods, and both work
+through the permission gate.
+
+### Stopping a prompt
+
+`prompt(text, cancel: -> { stop_requested? })` asks the callable around every tool call. When
+it answers true the chat is cancelled and the prompt raises `RubyLLM::CancelledError` before
+the next tool call or model request; a request already in flight finishes first. A workflow
+does this for you — see [`Workflow.cancel`](durable-workflows.md).
+
+### A tool that asks the person something
+
+A tool can stop and ask: an MCP server's question, or a `RubyLLM::Tool` that calls `ask`.
+`prompt` then raises `Nexo::InputRequired`, whose `questions` say what to collect (`key`,
+`tool`, `message`, `fields`). Put them to the person and prompt again with the answers:
+
+```ruby
+begin
+  Booker.new.prompt("Book me a seat to Lisbon")
+rescue Nexo::InputRequired => e
+  answers = e.questions.to_h { |q| [q.key, ask_the_person(q)] }
+  Booker.new(answers: answers).prompt("Book me a seat to Lisbon")
+end
+```
+
+A value answers a one-field question, a Hash a form, `false` declines. Inside a workflow the
+run suspends and resumes with the answers instead.
 
 ## Verified against
 

@@ -150,7 +150,8 @@ class AgentHostToolsTest < Minitest::Test
     assert_includes names, ARCHIVE
   end
 
-  def test_an_undeclared_tool_runs_with_one_warning_by_default
+  def test_an_undeclared_tool_runs_with_one_warning_when_strict_tools_is_off
+    Nexo.config.strict_tools = false
     stub_replies tool_call(ARCHIVE, run: "r1"), tool_call(ARCHIVE, run: "r2"), "Done."
     Nexo.instance_variable_get(:@undeclared_tools).clear
 
@@ -160,9 +161,10 @@ class AgentHostToolsTest < Minitest::Test
     assert_equal 1, err.scan("outside the `tools` macro").size
   end
 
-  def test_an_undeclared_tool_is_refused_under_strict_tools
-    Nexo.config.strict_tools = true
-    stub_replies tool_call(ARCHIVE, run: "r1"), "Done."
+  def test_an_undeclared_tool_is_refused_by_default
+    assert Nexo.config.strict_tools, "refusing is the default since 0.16"
+    Nexo.instance_variable_get(:@undeclared_tools).clear
+    stub_replies tool_call(ARCHIVE, run: "r1"), tool_call(ARCHIVE, run: "r2"), "Done."
     results = []
 
     _out, err = capture_io do
@@ -171,19 +173,19 @@ class AgentHostToolsTest < Minitest::Test
 
     assert_empty Archive.calls
     assert_match(/did not run/, results.first[:error])
-    refute_match(/tools. macro/, err, "refusing is the signal; no warning on top")
+    assert_equal 1, err.scan("The call was refused").size, "says why, once per tool"
   end
 
   def test_strict_tools_lets_every_tool_nexo_attached_through
-    Nexo.config.strict_tools = true
     agent = CanWrite.new
     agent.sandbox.write("a.txt", "A")
-    stub_replies tool_call(:"nexo--tools--read_file", path: "a.txt"), tool_call(TODAY), tool_call(ARCHIVE, run: "r1"), "Done."
+    stub_replies tool_call(:read_file, path: "a.txt"), tool_call(TODAY), tool_call(ARCHIVE, run: "r1"), "Done."
     results = []
 
     agent.prompt("Go") { |type, payload| results << payload if type == :tool_result }
 
-    assert_equal ["A", "2026-11-26", "archived r1"], results
+    assert_match(/A\z/, results[0])
+    assert_equal ["2026-11-26", "archived r1"], results[1..]
   end
 
   def test_the_backstop_is_registered_once_on_a_reused_chat

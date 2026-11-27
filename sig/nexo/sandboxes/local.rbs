@@ -5,13 +5,13 @@ module Nexo
 
       attr_reader isolation: untyped
 
-      def initialize: (?cwd: String, ?env: Hash[untyped, String], ?isolation: untyped, ?readable: Array[String]) -> void
+      def self.ruby_paths: () -> Array[String]
+      def initialize: (?cwd: String, ?env: Hash[untyped, String], ?isolation: untyped, ?readable: (Array[String | Symbol] | Symbol | String)) -> void
       def confined?: () -> bool
       def hardening_gaps: () -> Array[String]
       def shell: (String command, ?timeout: Numeric) -> Hash[Symbol, untyped]
       def instructions: () -> String
       def supports?: (Symbol cap) -> bool
-      def mtime: (String path) -> Time?
     end
   end
 end

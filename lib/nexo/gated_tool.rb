@@ -6,8 +6,9 @@ module Nexo
   # Wraps any tool so every call is authorized through Nexo::Permissions before it
   # runs. A denied call returns `{ error: ... }` (recoverable) and never raises
   # into the loop — the same authorize → act → rescue-`Denied` → `{error:}` shape
-  # as Nexo's own sandbox tools. Nexo::ApprovalRequired is NOT rescued: under an
-  # `:approve` gate it has to leave the loop so Workflow#run_agent can suspend.
+  # as Nexo's own sandbox tools. Under an `:approve` gate the call pauses before it
+  # gets here (see Approvable); Nexo::ApprovalRequired from the gate itself, for a
+  # call that reached it undecided some other way, is not rescued.
   #
   # This is how a tool the host wrote gets the same gate as Nexo's own: declare it
   # with a capability (`tools ArchiveRun, capability: :write`) and Agent#chat wraps
@@ -23,6 +24,8 @@ module Nexo
   # delegating wrapper is accepted; `method_missing` forwards every reader the
   # chat and the provider renderers ask for.
   class GatedTool
+    include Approvable
+
     # Wraps `tool` so every call is authorized for `capability` (one of the
     # Permissions capabilities, e.g. `:write`) through `permissions` first.
     #
@@ -30,11 +33,15 @@ module Nexo
     # call acts on — a path, say. Without it, or when it returns `nil`, the detail
     # is the tool name and its arguments as JSON, so two different calls are never
     # mistaken for one when an approval is recorded.
-    def initialize(tool:, permissions:, capability:, detail: nil)
+    #
+    # `prepare:` is an optional `->(arguments)` returning the arguments the gate
+    # and the tool should see instead — used to normalize a path, for instance.
+    def initialize(tool:, permissions:, capability:, detail: nil, prepare: nil)
       @tool = tool
       @permissions = permissions
       @capability = capability
       @detail = detail
+      @prepare = prepare
     end
 
     # Authorizes the call, then delegates to the wrapped tool. A denial is
@@ -46,6 +53,7 @@ module Nexo
     def call(args = nil, **kwargs)
       arguments = (args || {}).to_h.merge(kwargs).transform_keys(&:to_sym)
       authorize!(arguments.except(:tool_call))
+      arguments = @prepare.call(arguments) if @prepare
       @tool.call(**arguments)
     rescue Nexo::Permissions::Denied => e
       {error: e.message}
@@ -80,14 +88,20 @@ module Nexo
       end
     end
 
+    # What a call is authorized and decided under: the capability and the detail
+    # handed to `ask_when`/`on_ask` and recorded with an approval — the `detail:`
+    # callable's answer, or the tool name and its arguments, so a human can tell
+    # one call from another.
+    def approval_subject(arguments)
+      arguments = @prepare.call(arguments) if @prepare
+      [@capability, @detail&.call(arguments) || "#{name} #{JSON.generate(arguments)}"]
+    end
+
     private
 
-    # The gate. The detail handed to `ask_when`/`on_ask` and recorded with an
-    # approval is the tool name and its arguments, so a human can tell one call
-    # from another.
+    # The gate.
     def authorize!(arguments)
-      detail = @detail&.call(arguments) || "#{name} #{JSON.generate(arguments)}"
-      @permissions.authorize!(@capability, detail)
+      @permissions.authorize!(*approval_subject(arguments))
     end
   end
 end

@@ -18,15 +18,19 @@ module Nexo
       # arguments) with exactly the environment `env` — nothing is inherited — and
       # returns `[stdout, stderr, exit_status]`. Raises `Timeout::Error` after
       # `timeout` seconds, with the process group already killed. `chdir:` sets
-      # the working directory.
-      def capture(env, *argv, timeout:, chdir: nil)
+      # the working directory; `stdin_data:` is written to the command's standard
+      # input, which is otherwise empty.
+      def capture(env, *argv, timeout:, chdir: nil, stdin_data: nil)
         out_read, out_write = IO.pipe
         err_read, err_write = IO.pipe
-        options = {in: File::NULL, out: out_write, err: err_write, pgroup: true, unsetenv_others: true}
+        in_read, in_write = IO.pipe if stdin_data
+        options = {in: in_read || File::NULL, out: out_write, err: err_write, pgroup: true, unsetenv_others: true}
         options[:chdir] = chdir if chdir
         pid = Process.spawn(env, *argv, **options)
         out_write.close
         err_write.close
+        in_read&.close
+        writer = feeder(in_write, stdin_data) if stdin_data
         readers = [out_read, err_read].map { |io| reader(io) }
         _, status = Timeout.timeout(timeout) { Process.wait2(pid) }
         [readers[0].value.to_s, readers[1].value.to_s, status.exitstatus]
@@ -34,7 +38,19 @@ module Nexo
         kill_group(pid)
         raise Timeout::Error, "command timed out after #{timeout}s and was killed"
       ensure
-        [out_read, out_write, err_read, err_write].each { |io| io&.close unless io&.closed? }
+        writer&.kill
+        [out_read, out_write, err_read, err_write, in_read, in_write].each { |io| io&.close unless io&.closed? }
+      end
+
+      # Feeds `data` to the command on its own thread, so a command that reads
+      # slowly — or never — cannot block the caller past the timeout.
+      def feeder(io, data)
+        Thread.new do
+          io.write(data)
+          io.close
+        rescue IOError, Errno::EPIPE
+          nil
+        end.tap { |thread| thread.report_on_exception = false }
       end
 
       # Drains one pipe on its own thread so a chatty command cannot fill the

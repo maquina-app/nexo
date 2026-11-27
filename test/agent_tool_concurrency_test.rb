@@ -65,25 +65,28 @@ class AgentToolConcurrencyTest < Minitest::Test
     Nexo.configure { |c| c.tool_calls_per_round = previous }
   end
 
-  # --- 0.15: the context_budget macro -----------------------------------------
+  # --- the context budget is a model option (the macro was removed in 0.16) ----
 
   class Budgeted < Agent
-    context_budget per_result: 0.25, per_request: 0.7, window: 32_000
+    llm { context_budget per_result: 0.25, per_request: 0.7, window: 32_000 }
   end
 
   def test_context_budget_is_passed_to_the_chat_and_inherited
     assert_equal({per_result: 0.25, per_request: 0.7, window: 32_000}, Budgeted.new.chat.context_budget)
-    assert_equal Budgeted.context_budget, Class.new(Budgeted).context_budget
+    assert_equal({per_result: 0.25, per_request: 0.7, window: 32_000}, Class.new(Budgeted).new.chat.context_budget)
   end
 
   def test_no_declaration_leaves_the_chat_budget_alone
-    assert_nil Agent.context_budget
     assert_nil Agent.new.chat.context_budget
   end
 
-  def test_an_invalid_budget_is_refused_when_the_chat_is_built
-    bad = Class.new(Agent) { context_budget per_result: 2 }
+  def test_an_invalid_budget_is_refused
+    assert_raises(ArgumentError) { Class.new(Agent) { llm { context_budget per_result: 2 } }.new.chat }
+  end
 
-    assert_raises(ArgumentError) { bad.new.chat }
+  def test_the_removed_macro_points_at_the_llm_block
+    error = assert_raises(Nexo::ConfigurationError) { Class.new(Agent) { context_budget per_result: 0.25 } }
+
+    assert_match(/llm \{ context_budget/, error.message)
   end
 end

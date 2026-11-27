@@ -159,6 +159,67 @@ class McpOauthTest < Minitest::Test
     end
   end
 
+  # --- encryption at rest (0.16) ----------------------------------------------
+
+  def test_with_a_key_the_file_holds_no_token_and_still_round_trips
+    Dir.mktmpdir do |dir|
+      store = Nexo::MCP::CredentialStore.new(dir: dir, key: Nexo::MCP::CredentialStore.generate_key)
+      store.write("u1@https://x", {"access_token" => "SECRET-TOKEN", "refresh_token" => "SECRET-REFRESH"})
+
+      raw = File.read(Dir[File.join(dir, "*.json")].first)
+
+      assert_predicate store, :encrypted?
+      refute_includes raw, "SECRET"
+      assert_equal "SECRET-TOKEN", store.read("u1@https://x")["access_token"]
+    end
+  end
+
+  def test_the_wrong_key_no_key_or_a_tampered_file_reads_as_not_authorized
+    Dir.mktmpdir do |dir|
+      Nexo::MCP::CredentialStore.new(dir: dir, key: "a" * 64).write("k", {"access_token" => "T"})
+      file = Dir[File.join(dir, "*.json")].first
+
+      assert_nil Nexo::MCP::CredentialStore.new(dir: dir, key: "b" * 64).read("k")
+      assert_nil Nexo::MCP::CredentialStore.new(dir: dir).read("k")
+
+      envelope = JSON.parse(File.read(file))
+      envelope["data"] = [envelope["data"].unpack1("m0").tap { |bytes| bytes.setbyte(0, bytes.getbyte(0) ^ 1) }].pack("m0")
+      File.write(file, JSON.generate(envelope))
+      assert_nil Nexo::MCP::CredentialStore.new(dir: dir, key: "a" * 64).read("k")
+    end
+  end
+
+  def test_an_encrypted_file_copied_onto_another_key_does_not_decrypt
+    Dir.mktmpdir do |dir|
+      store = Nexo::MCP::CredentialStore.new(dir: dir, key: "a" * 64)
+      store.write("alice@https://x", {"access_token" => "ALICE"})
+      store.write("bob@https://x", {"access_token" => "BOB"})
+      alice, bob = %w[alice@https://x bob@https://x].map { |key| store.send(:path, key) }
+
+      FileUtils.cp(alice, bob)
+
+      assert_nil store.read("bob@https://x")
+    end
+  end
+
+  def test_plain_files_are_still_read_and_are_encrypted_on_the_next_write
+    Dir.mktmpdir do |dir|
+      Nexo::MCP::CredentialStore.new(dir: dir).write("k", {"access_token" => "OLD"})
+      keyed = Nexo::MCP::CredentialStore.new(dir: dir, key: "a" * 64)
+
+      assert_equal "OLD", keyed.read("k")["access_token"]
+      keyed.write("k", keyed.read("k"))
+      refute_includes File.read(Dir[File.join(dir, "*.json")].first), "OLD"
+    end
+  end
+
+  def test_a_key_of_the_wrong_size_is_a_configuration_error
+    Dir.mktmpdir do |dir|
+      assert_raises(Nexo::ConfigurationError) { Nexo::MCP::CredentialStore.new(dir: dir, key: "short") }
+      assert_predicate Nexo::MCP::CredentialStore.new(dir: dir, key: SecureRandom.random_bytes(32)), :encrypted?
+    end
+  end
+
   def test_synchronize_runs_the_block_and_returns_its_value
     Dir.mktmpdir do |dir|
       assert_equal 42, Nexo::MCP::CredentialStore.new(dir: dir).synchronize("k") { 42 }

@@ -59,7 +59,7 @@ on Linux — through `ruby_llm`'s sandbox contract. A confined command can write
 gem "mxc"   # a soft dependency: Nexo loads it only for a confined shell
 
 class Builder < Nexo::Agent
-  sandbox :local, isolation: :confined, readable: [RbConfig::CONFIG["prefix"]]
+  sandbox :local, isolation: :confined, readable: :ruby
   permissions Nexo::Permissions.new(mode: :read_only, allow: %i[read glob write shell])
 end
 ```
@@ -69,6 +69,10 @@ Things to know:
 - **A confined command cannot read outside `cwd` either.** That includes a Ruby, Node or Python
   installed under your home directory: `ruby` starts but cannot load its gems. Grant the
   toolchain with `readable:`. Tools that link Homebrew libraries need those paths too.
+- **`readable: :ruby` grants the Ruby this process runs on** (0.16): the interpreter's prefix
+  and every gem path, from `Nexo::Sandboxes::Local.ruby_paths`. It can be mixed with paths of
+  your own — `readable: [:ruby, "/opt/homebrew/opt/libyaml"]`. For a different interpreter
+  than the running one, list its install directory.
 - **It never falls back.** If the sandbox cannot run on the machine, the first `shell` raises
   `Nexo::ConfigurationError` with the reason. A missing `mxc` gem raises
   `Nexo::MissingDependencyError`.
@@ -79,7 +83,7 @@ Things to know:
   outside `cwd`, a read of a file outside it and a network connection were all refused. A
   Linux host must allow unprivileged user namespaces for Bubblewrap; GitHub's Ubuntu runners
   do.
-- Unconfined remains the default in 0.14. Use a [container](#container-sandbox--docker--apple-container)
+- Unconfined remains the default. Use a [container](#container-sandbox--docker--apple-container)
   when you need a different filesystem, not only a fence.
 
 ### A container per command — `ContainerRunner`
@@ -101,8 +105,19 @@ RubyLLM.configure { |config| config.sandbox = runner }   # or for ruby_llm's own
 The working directory is bound into the container at its own path, read-write, and nothing
 else of the host is visible. Each command pays a container start. It cannot honour a host
 allow-list: every run has the network the runner was built with, none by default. Verified
-on Docker 29: a command wrote inside the workspace, could not read a file outside it, had
-no network, and was killed at its timeout.
+on Docker 29 and on Apple `container` 1.7.1 (`runtime: :apple`): a command wrote inside the
+workspace, could not read a file outside it, had no network, and was killed at its timeout.
+
+**On a Linux host, pass `user:`.** A bind mount keeps its host ownership there, and the
+container's root runs with every capability dropped, so it cannot write into a directory
+owned by your user:
+
+```ruby
+Nexo::Sandboxes::ContainerRunner.new(image: "ruby:3.3-slim", user: "#{Process.uid}:#{Process.gid}")
+```
+
+On macOS, OrbStack and Docker Desktop map ownership themselves and need nothing. (Found by
+the CI job added in 0.16, which is the first time this ran on Linux.)
 
 ### Two fixes in 0.14 that change behaviour
 
@@ -113,6 +128,10 @@ no network, and was killed at its timeout.
 - **A timeout now stops the command.** Before 0.14 `Timeout::Error` was raised only after the
   command had finished on its own. Now the command's whole process group is killed, and the
   `Shell` tool reports the timeout to the model as `{error: ...}` instead of failing the run.
+
+The container sandbox got the same fix in 0.16: until then a timed-out command kept running
+inside the container. Each `exec` now carries a marker, and a timeout kills every process in
+the container that has it.
 
 ## Safety refinements — safer, more legible real-FS sandboxes
 
@@ -138,10 +157,10 @@ scope; none widens authority silently.
      four; `Virtual` supports everything but `:shell`, so a `:virtual` agent has no `Shell`.
   2. *The permission gate does not deny it statically* (`Permissions#never_allows?`). Under
      `:read_only`, `:write` and `:shell` can never be authorized unless listed in `allow:`, so
-     neither `WriteFile` nor `Shell` is attached. `:auto`, `:ask` and `:approve` decide per call
-     and always attach — `:approve` in particular *must* reach the gate so it can suspend the run.
+     neither the writing tools (`write_file`, `edit_file`) nor `Shell` are attached. `:auto`,
+     `:ask` and `:approve` decide per call and always attach.
 
-  `ReadFile` and `Glob` are always attached. This is a cost and description-accuracy measure, not
+  The reading tools (`list_files`, `read_file`, `search_files`) are always attached. This is a cost and description-accuracy measure, not
   a security boundary: `Permissions#authorize!` remains the gate and still denies at call time.
 
 - **Shell output truncation (`Nexo::OutputTruncator`).** Unbounded command output (`npm install`,
@@ -152,16 +171,11 @@ scope; none widens authority silently.
   The integer `status` passes through untouched. Pure line/char truncation — **no tokenizer**;
   configurable via the kwargs only (no global config, no per-agent macro).
 
-- **Read-before-write + stale guard (real-FS only).** Within a session, the agent is blocked from
-  overwriting a file it never read, or one that changed underneath it. `Agent#chat` builds one
-  `Nexo::ReadTracker` per chat and threads it into `ReadFile` (records `(path, mtime)` on a
-  successful read) and `WriteFile` (enforces): overwriting an existing, un-read file returns
-  `{error: "read <path> before overwriting it"}`; a file whose mtime changed since the read returns
-  `{error: "stale: <path> changed since you read it"}`; a new file writes freely. The guard is
-  **real-FS only** — skipped entirely on `Virtual` (nil `mtime`) and when no tracker is passed
-  (direct tool construction). Best-effort: mtime-based, so a sub-second external edit may slip past
-  the stale check (read-before-write is the primary guard). Clobber-safety within a session only —
-  no versioning, locking, or VCS semantics.
+- **Read-before-write guard, on every sandbox.** The file tools are `ruby_llm`'s, over
+  `Nexo::SandboxFileStore`. `write_file` and `edit_file` refuse a file the agent has not read in
+  this chat, or one whose content changed since it was read. The check compares content
+  digests, so it works on `Virtual` too. A new file is written freely. (Nexo's own
+  modification-time guard, `ReadTracker`, and `Sandbox#mtime` were removed in 0.16.)
 
 - **Scoped `:ask` predicate (`ask_when`).** Under `:ask`, `Permissions.new(ask_when: ->(cap, detail)
   { … })` scopes *which* actions actually prompt a human. When the predicate returns falsey the
@@ -352,81 +366,42 @@ the host dir enters only through a `binds:` entry.
 largely shared; where the CLIs diverge the class branches on the runtime. An unknown
 runtime raises `Nexo::ConfigurationError`.
 
-**Apple `container` parity is now verified** against `container` 1.2.2 on macOS. Three
-flags docker accepts are rejected outright, so they are omitted for `:apple`:
+**Apple `container` is verified live** — last against `container` 1.7.1 on macOS 27 (arm64),
+with the same test files that run against Docker. Two flags Docker accepts are rejected
+outright, so they are omitted for `:apple`:
 
 | Knob | `:docker` | `:apple` |
 |---|---|---|
 | `--security-opt no-new-privileges` | applied | **rejected** (`Unknown option`) — omitted |
 | `--pids-limit` | applied (`512`) | **rejected** (`Unknown option`) — omitted |
-| `--read-only` + `--tmpfs <cwd>:rw` | scratch is writable | flags accepted, but **the scratch is NOT writable** |
 
-Everything else — `--network` (including `none`), `--cap-drop ALL`, `--memory`,
-`--cpus`, `--user`, `-v` binds, `-e` env, `-w`, `exec -i` — is honored identically.
-
-> **`readonly_rootfs: true` is the default, and on `:apple` it leaves you with no
-> writable workspace.** Apple accepts `--tmpfs /workspace:rw` but under `--read-only`
-> the mount is still read-only, so every `write` fails. Pass `readonly_rootfs: false`,
-> or mount a `:rw` bind, when using the `:apple` runtime.
+Everything else — `--network` (including `none`), `--cap-drop ALL`, `--read-only` with a
+writable `--tmpfs`, `--memory`, `--cpus`, `--user`, `-v` binds, `-e` env, `-w`, `exec -i` — is
+honored identically.
 
 Because omitting a hardening flag means *weaker isolation than you asked for*, the
 difference is reported rather than hidden:
 
 ```ruby
-sandbox = Nexo::Sandboxes::Container.new(image: "…", runtime: :apple, network: :none)
+sandbox = Nexo::Sandboxes::Container.new(image: "…", runtime: :apple)
 sandbox.hardening_gaps
 # => ["--security-opt no-new-privileges is not supported by apple",
-#     "--pids-limit is not supported by apple",
-#     "apple has no 'none' network; using 'default' instead"]
+#     "--pids-limit is not supported by apple"]
 ```
 
 `hardening_gaps` is empty on `:docker`. If your threat model requires one of those knobs,
 check it and refuse rather than assuming every runtime honors every flag.
 
-Two practical notes for Apple `container`:
+Practical notes for Apple `container`:
 
-- It resolves its **init image through the keychain** and fails in a non-interactive
-  shell (`errSecAuthFailed`, status `-25293`). Pinning an already-pulled tag avoids the
-  lookup: `container run --init-image ghcr.io/apple/containerization/vminit:<tag> …`.
+- Its service must be running: `container system start` (or `brew services start container`).
+- **On `container` 1.2 a `--tmpfs` under `--read-only` was not writable**, so the default
+  read-only rootfs left no writable workspace. That is fixed in 1.7; on an older version pass
+  `readonly_rootfs: false` or mount a `:rw` bind.
 - Containers are **VM-backed**, so infrastructure failures surface differently — e.g.
   `no available interface strategy for network default, plugin=container-network-vmnet`
   when the network service needs restarting (`container system stop && container system
   start`).
-
-### Hardened by default — every knob an explicit opt-out
-
-All of the following are applied to the `run` argv by default and individually invertible:
-
-| Concern | Default | Loosen with |
-|---|---|---|
-| Network | `--network none` (no egress) | `network: :bridge` / `:host` / a network name |
-| Capabilities | `--cap-drop ALL` | `cap_add: %w[NET_BIND_SERVICE ...]` |
-| Rootfs | `--read-only` | `readonly_rootfs: false` |
-| Writable scratch | `--tmpfs <cwd>:rw` (ephemeral), only when `readonly_rootfs` | a `:rw` host bind for persistence |
-| Privilege escalation | `--security-opt no-new-privileges` | (not exposed) |
-| PIDs | `--pids-limit 512` (fork-bomb guard) | `pids_limit:` (`nil` omits the flag) |
-| Memory / CPU | unset (host decides) | `memory:` / `cpus:` |
-| User / uid | left to the image | `user:` (opt-in defense-in-depth) |
-| Host binds | **read-only** (`:ro`) | per-bind `{ to:, mode: :rw }` |
-| Env vars | none | `env: { "KEY" => "val" }` → one `-e KEY=val` per entry |
-
-Bind spec forms:
-
-```ruby
-binds: { "/host/proj" => "/workspace/proj" }                       # -> :ro
-binds: { "/host/proj" => { to: "/workspace/proj", mode: :rw } }    # -> :rw
-```
-
-**Non-root is not forced.** The image's own uid is respected; `user:` is an opt-in. The other
-hardening (`--cap-drop ALL`, `--security-opt no-new-privileges`, `--read-only`,
-`--network none`) applies **regardless of uid**.
-
-Every argument is passed to `Open3` as an **array**, never string-interpolated, so file
-contents and commands can't break out of the argv. Paths are expanded against the container
-`cwd` and a path that escapes raises `SecurityError`. A denied/failed **tool** op surfaces as
-`{ error: ... }` through the gated tool layer; the **sandbox** itself raises only on misuse —
-a missing binary (`Nexo::ConfigurationError` naming the binary), a path escape (`SecurityError`),
-or a container start failure (`Nexo::Error`).
 
 ### Lifecycle — ephemeral by default, opt-in reconnect
 
@@ -440,8 +415,10 @@ The container starts **lazily** on first tool use and its id is memoized.
   `Workflow.execute`'s `ensure` (on done, suspended, or failed), never per `run_agent` call.
 - **Reconnect (`name:` + `reconnect: true`):** every container is tagged at `run` with an
   **exact identity label** — `--label nexo.sandbox.id=<name>`. On start the sandbox looks up
-  that container by the **exact label filter** (`docker ps -aq --no-trunc -f label=nexo.sandbox.id=<name>`),
-  **not** a name substring, and reuses/restarts it instead of creating a new one; `close`
+  that container by its **exact label** — on Docker with a filter
+  (`docker ps -aq --no-trunc -f label=nexo.sandbox.id=<name>`), on Apple by listing every
+  container as JSON and comparing the label (`container list` has no filter) — **not** a name
+  substring, and reuses/restarts it instead of creating a new one; `close`
   leaves it running/stopped so a later sandbox with the same name reattaches. The default
   container name is `nexo-<run-id>`.
   - **Exact match, never a substring.** A container merely *named* `<name>x` is never
@@ -465,41 +442,34 @@ The container starts **lazily** on first tool use and its id is memoized.
   `:rw` bind (this is where staged files and artifacts land).
 - **Non-root is recommended, not forced.** The default hardening holds regardless of uid; set
   `user:` for defense-in-depth.
-- **Apple `container` needs `readonly_rootfs: false`.** The default read-only rootfs makes the
-  `--tmpfs` scratch unwritable on Apple, so an agent cannot write to its own workspace. The
-  parity table below records what was verified.
-- **Reconnect is Docker-only today.** `reconnect: true` combined with `runtime: :apple` raises
-  `Nexo::ConfigurationError` at the point reconnect would run. Apple's `container` CLI has no
-  **live-verified** exact `label=` filter, and a name-substring match is unsafe (it can attach
-  the wrong container), so reconnect refuses rather than risk it. Use `runtime: :docker` for
-  reconnect, or run an ephemeral `:apple` sandbox (`reconnect: false`). If a future Group 0 run
-  confirms an exact-identity mechanism on Apple, wire that verified mechanism instead of raising.
+#### Apple `container` parity table
 
-#### Apple `container` parity table (Group 0)
-
-Filled from live Group 0 runs against **Apple `container` 1.2.2 on macOS (arm64)** and
-**Docker 29.4.0**, image `ubuntu:24.04`. Rows marked _unverified_ have not been run.
+From live runs against **Apple `container` 1.7.1 on macOS 27 (arm64)** and **Docker 29**
+(OrbStack), image `alpine`, in 0.16. An earlier pass used `container` 1.2.2; where the two
+differ it is noted.
 
 | Subcommand / flag | Docker | Apple `container` | Divergence → action |
 |---|---|---|---|
 | `run -d` | ✓ | ✓ | same |
 | `exec -i` (stdin reaches the process) | ✓ | ✓ | same — this is what `#write` uses |
+| `exec -e KEY=val` | ✓ | ✓ | same — carries the timeout marker |
 | `stop` / `start <id>` | ✓ | ✓ | same |
 | `rm -f <id>` | ✓ | ✓ | same |
-| `ps -aqf label=` | ✓ (exact) | ✗ `Plugin 'container-ps' not found` | Apple has `list`, not `ps` → **reconnect raises `ConfigurationError`** |
-| `--network` (incl. `none`) | ✓ | ✓ | same — `--network none` runs |
+| find by label | `ps -aq -f label=` (exact) | `list --all --format json`, label compared in Ruby | Apple has `list`, not `ps`, and no filter → **reconnect works on both** |
+| daemon check | `version` | `system status` | `version` is not an Apple subcommand |
+| `--network` (incl. `none`) | ✓ | ✓ | same — `--network none` has no network |
 | `--cap-drop ALL` | ✓ | ✓ | same |
 | `--read-only` | ✓ | ✓ | rootfs is read-only on both |
-| `--tmpfs <cwd>:rw` | ✓ writable | ✗ **not writable under `--read-only`** | → omit `--read-only` (`readonly_rootfs: false`) or use a `:rw` bind |
+| `--tmpfs <cwd>:rw` | ✓ writable | ✓ writable (was **not** on 1.2.2) | same on 1.7.1 |
 | `--security-opt no-new-privileges` | ✓ | ✗ `Unknown option` | → omitted for `:apple`, reported in `#hardening_gaps` |
 | `--pids-limit` | ✓ | ✗ `Unknown option` | → omitted for `:apple`, reported in `#hardening_gaps` |
 | `-v host:ctr:ro` | ✓ | ✓ | same |
-| `-e KEY=val` | ✓ | ✓ | same |
 | `-w <dir>` | ✓ | ✓ | same |
 | `--user` | ✓ | ✓ | same |
 | `--memory` / `--cpus` | ✓ | ✓ | same |
+| `--progress none` | n/a | ✓ | Apple prints start progress on stderr without it; `ContainerRunner` passes it |
 
-Two operational notes for Apple, both hit during verification:
+Two operational notes for Apple, both hit during the 1.2.2 verification:
 
 - It resolves its **init image via the keychain** and fails in a non-interactive shell
   (`errSecAuthFailed`, `-25293`). Pin an already-pulled tag to skip the lookup:

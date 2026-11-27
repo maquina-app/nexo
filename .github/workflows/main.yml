@@ -61,3 +61,24 @@ jobs:
           bundler-cache: true
       - name: Fail on any undocumented public API
         run: bundle exec rake doc:coverage
+
+  container:
+    runs-on: ubuntu-latest
+    name: Container sandbox (live, Docker)
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '4.0'
+          bundler-cache: true
+      - name: Run the live container tests against the runner's Docker
+        env:
+          NEXO_LIVE: '1'
+        run: |
+          docker pull alpine
+          for file in container_live_test container_reconnect_smoke container_runner_test; do
+            bundle exec ruby -Itest "test/sandboxes/$file.rb"
+          done

@@ -12,7 +12,7 @@ class LoopsRubyLLMTest < Minitest::Test
   class VirtualAgent < Nexo::Agent
     model TEST_MODEL
     sandbox :virtual
-    # :write is granted so WriteFile is actually attached. Under the default
+    # :write is granted so write_file is actually attached. Under the default
     # :read_only gate it is statically denied and therefore correctly left out
     # of the schema — this test is about the LOOP's wiring, not about gating.
     permissions Nexo::Permissions.new(mode: :read_only, allow: %i[read glob write])
@@ -63,11 +63,9 @@ class LoopsRubyLLMTest < Minitest::Test
 
     assert_instance_of Nexo::Loops::RubyLLM, agent.loop
 
-    tool_classes = agent.chat.tools.values.map(&:class)
-    assert_includes tool_classes, Nexo::Tools::ReadFile
-    assert_includes tool_classes, Nexo::Tools::WriteFile
-    assert_includes tool_classes, Nexo::Tools::Glob
-    refute_includes tool_classes, Nexo::Tools::Shell
+    tools = agent.chat.tools
+    assert_equal %i[edit_file list_files read_file search_files write_file], tools.keys.sort
+    refute_includes tools.values.map(&:class), Nexo::Tools::Shell
 
     response = agent.prompt("Review it")
     assert_equal "review complete", response.content
@@ -115,50 +113,6 @@ class LoopsRubyLLMTest < Minitest::Test
 
     assert_equal "ok", response
     assert_equal [[:done, "ok"]], events
-  end
-
-  # The hard cap is ruby_llm's `rounds:` (see test/real_loop_test.rb). Separately,
-  # the loop counts tool CALLS and reports the first time they pass max_turns —
-  # a round can hold several calls, so this can fire before the cap trips.
-  def test_exceeding_max_turns_emits_a_single_event
-    chat = FakeChat.new
-    events = []
-    Nexo::Loops::RubyLLM.new.run(agent: FakeAgent.new(chat), prompt: "go", max_turns: 2) do |type, payload|
-      events << [type, payload]
-    end
-    4.times { |i| chat.fire_tool_call("call-#{i}") }
-
-    exceeded = events.filter_map { |event| event.last if event.first == :turn_limit_exceeded }
-
-    assert_equal 1, exceeded.size
-    assert_equal({turns: 3, max_turns: 2}, exceeded.first)
-  end
-
-  def test_staying_within_max_turns_emits_nothing
-    chat = FakeChat.new
-    events = []
-    Nexo::Loops::RubyLLM.new.run(agent: FakeAgent.new(chat), prompt: "go", max_turns: 5) do |type, payload|
-      events << [type, payload]
-    end
-    3.times { |i| chat.fire_tool_call("call-#{i}") }
-
-    refute_includes events.map(&:first), :turn_limit_exceeded
-  end
-
-  # A continuing Session runs the loop repeatedly over ONE chat; each prompt gets its
-  # own budget rather than inheriting the previous prompt's count.
-  def test_the_turn_count_resets_per_prompt
-    chat = FakeChat.new
-    loop_runner = Nexo::Loops::RubyLLM.new
-    events = []
-    collect = ->(type, payload) { events << [type, payload] }
-
-    loop_runner.run(agent: FakeAgent.new(chat), prompt: "one", max_turns: 2, &collect)
-    2.times { |i| chat.fire_tool_call("a-#{i}") }
-    loop_runner.run(agent: FakeAgent.new(chat), prompt: "two", max_turns: 2, chat: chat, &collect)
-    2.times { |i| chat.fire_tool_call("b-#{i}") }
-
-    refute_includes events.map(&:first), :turn_limit_exceeded
   end
 
   def test_tool_call_observability_still_fires

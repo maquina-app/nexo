@@ -110,6 +110,94 @@ step runs), and do **not** call `suspend!` inside a step (undefined — unsuppor
 > re-submits only the still-missing names — A is skipped, B re-runs. Do **not** treat
 > a batch as all-or-nothing.
 
+## Run a failed run again — `Workflow.retry`
+
+`resume` continues a run that paused on purpose. `retry` (0.16) does the same for one that
+stopped by accident: a run that raised (`"failed"`), or one whose process died
+(`"interrupted"`). It re-enters `#call` from the top with the original payload, and every
+checkpoint the run finished before it stopped is returned from its state — including the
+finished steps of a `checkpoint_all` batch.
+
+```ruby
+begin
+  run = Triage.run(inbox: "work")
+rescue => e
+  # three inboxes were read and checkpointed; building the digest raised
+end
+
+Triage.retry(run_id)   # reads no inbox again; goes straight back to the digest
+```
+
+The run keeps its id, its events and its artifacts; its `error` is cleared when the retry
+starts. A retry that fails again leaves the run `"failed"` and re-raises, and can be retried
+again. Any other status raises `Nexo::Error`.
+
+A process that is killed leaves its run `"running"`. `Nexo::Workflow.reconcile_interrupted!`
+marks those `"interrupted"` — call it once at boot, or before offering a retry. Since 0.16
+it covers the Disk run store as well as ActiveRecord and the in-memory one; before that a CLI
+on the Disk store that was killed mid-run could never be picked up.
+
+Like `resume`, this is re-entry, not replay: code outside a checkpoint runs again.
+
+## Stop a run — `Workflow.cancel`
+
+```ruby
+Nexo::Workflow.cancel(run_id)
+```
+
+- A run that is not executing (`"pending"`, `"queued"`, `"suspended"`) becomes `"cancelled"` at
+  once, and a queued job that later picks it up does nothing.
+- A `"running"` run is **asked** to stop. The request is left in the run store, and the process
+  executing the run sees it at its next `checkpoint`, at the start of a `run_agent`, or around
+  the agent's next tool call. It then ends `"cancelled"`. The model request in flight finishes
+  first, so stopping takes as long as that request.
+
+Nothing is rolled back: events, artifacts and finished checkpoints stay, and what the agents
+used up to that point is still recorded. A cancelled run is final — it can be neither resumed
+nor retried. Cancelling a run that already ended raises `Nexo::Error`.
+
+It works across processes on the ActiveRecord store (the run reads `"cancelling"` until it
+stops) and on the Disk store (an empty `<id>.cancel` file beside the run's document). A run
+store of your own needs `request_cancel!(run)`, `cancel_requested?(run)` and `clear_cancel!(run)`.
+
+Code outside a checkpoint and outside `run_agent` is not interrupted. A long step of your own
+can ask `cancel_requested?` and return early.
+
+## What a run used — `Workflow.usage`
+
+Every `run_agent` records an `agent_usage` event with the tokens and cost its prompt added.
+`Nexo::Workflow.usage(run)` totals them:
+
+```ruby
+Nexo::Workflow.usage(run)
+# => {"tokens" => {"input_tokens" => 18_230, "output_tokens" => 2_114}, "cost" => 0.0412, "prompts" => 3}
+```
+
+`"cost"` is `nil` when any prompt ran on a model `ruby_llm` has no price for (a local model,
+say): a partial total would read as the whole bill. A retried or resumed run adds to the same
+log, so the total is what the run cost altogether.
+
+## A tool that asks the person — suspend, answer, resume
+
+When a tool the agent calls asks the person something (an MCP server's question, or a
+`RubyLLM::Tool` calling `ask`), `run_agent` suspends the run, exactly as it does for an
+approval. The questions are in the run's state:
+
+```ruby
+run = Booking.run(user_id: 7)
+run.status                    # => "suspended"
+run.state["__input__"]
+# => [{"key" => "book:seat", "tool" => "book", "message" => "Window or aisle?",
+#      "fields" => [{"name" => "seat", "type" => "string", "required" => true}]}]
+
+Booking.resume(run.id, answers: {"book:seat" => "aisle"})
+```
+
+Answers accumulate on the run (`"__answers__"`), like approvals: a later, different question
+suspends it again. Resume re-runs the prompt, so the model has to ask for the tool again; when
+it does, the stored answer is sent and the turn carries on. An answer for a key that was not
+asked is ignored.
+
 ## Durable **agent** approval — `:approve` (bridge a mid-run gate to a suspend)
 
 The example above suspends at an **explicit** `suspend!` the workflow author placed.
@@ -151,21 +239,32 @@ resumed = ApprovedWrite.resume(run.id, approved: true)
 resumed.status                                 # => "done" (the gate allowed the write)
 ```
 
+- **The pause is `ruby_llm`'s own (0.16).** Before a tool runs, `ruby_llm` asks it whether
+  the call needs approval and what was decided; Nexo's tools answer both from the agent's
+  `Permissions` (`Nexo::Approvable`). An undecided call is held **before the tool is entered**,
+  and `Agent#prompt` raises `Nexo::ApprovalRequired`, which `run_agent` turns into the suspend.
+  Before 0.16 the signal was an exception raised inside the tool, so a host's catch-all
+  `rescue_from StandardError` on a tool swallowed it. That can no longer happen.
 - **`Nexo::ApprovalRequired`** is a signal, **distinct from `Permissions::Denied`**:
-  `Denied` means "no, adapt" (tools rescue it into `{error:}`); `ApprovalRequired` means
-  "pause and ask a human", so tools must **not** rescue it — it propagates out of the
-  tool loop and out of `Agent#prompt`, where `run_agent` catches it.
+  `Denied` means "no, adapt"; `ApprovalRequired` means "pause and ask a human".
+- **Every waiting call is listed.** A model response can ask for several gated calls at
+  once. `run.state["__approvals_pending__"]` lists each one (`"capability"`, `"tool"`,
+  `"args"`, `"key"`); `"__approval__"` is still the first. Answer several in one resume with
+  `resume(run.id, approvals: {key => true, other_key => false})`; `approved: true` answers
+  the first, as before. A key that was not pending is ignored.
+- **A tool of your own that declares `requires_approval`** (the `ruby_llm` macro) is decided
+  the same way, under the capability `tool`.
 - **Undecided ⇒ suspend, `approved: false` ⇒ deny.** The default stays safe: an
-  unresolved approval never silently allows, and a denial on resume makes the tool return
-  `{error:}` (the model adapts) — the run still finishes `"done"`, **without** the gated
+  unresolved approval never silently allows, and a denial on resume has `ruby_llm` answer the
+  call with a refusal (the model adapts) — the run still finishes `"done"`, **without** the gated
   effect, never `"failed"`.
-- **Scope which actions need approval** with the same `ask_when` predicate as `:ask`
-  (aliased `approve_when:` for readability) — unset means every gated action needs a
-  decision; a falsey predicate auto-allows without one:
+- **Scope which actions need approval** with the same `ask_when` predicate as `:ask` —
+  unset means every gated action needs a decision; a falsey predicate auto-allows without
+  one. (The `approve_when:` alias was removed in 0.16.)
 
   ```ruby
   Nexo::Permissions.new(mode: :approve,
-    approve_when: ->(cap, detail) { cap == :write && detail.to_s.start_with?("/protected") })
+    ask_when: ->(cap, detail) { cap == :write && detail.to_s.start_with?("/protected") })
   ```
 - **Synchronous `:ask` is untouched.** `:ask` (in-process `on_ask`) is still the right
   choice with a human at the keyboard during a synchronous `run`; `:approve` is its
@@ -187,17 +286,14 @@ resumed.status                                 # => "done" (the gate allowed the
   `a.txt`, that is a new call and the run suspends for it. This is the safe direction.
 - **`approved:` with nothing pending approves nothing.** An answer is recorded only when a call
   is waiting.
-- **A catch-all tool handler breaks it.** `RubyLLM::Tool.rescue_from StandardError` in the host
-  swallows the approval signal, and the call is reported to the model as an error instead of
-  suspending the run. Rescue specific classes.
 - **Cross-process approval needs the ActiveRecord store + ActiveJob** (like all durable resume).
   In-process `resume` works with the Memory store; a Memory run does not survive the process.
-- **Branch depends on upstream `ruby_llm`.** This works because `ruby_llm`'s tool loop lets a
-  tool `execute` exception propagate out of `chat.ask` (verified on 2.2.3 through the real
-  loop, `test/real_loop_test.rb`). A host that registers a catch-all
-  `RubyLLM::Tool.rescue_from StandardError` would swallow the approval signal. If a future
-  `ruby_llm` swallows tool exceptions, tool-triggered approval would be constrained — a
-  genuine upstream dependency, stated plainly.
+- **It depends on `ruby_llm`'s approval hooks.** The chat asks the registered tool
+  `requires_approval?(tool_call)` and reads its `approval_resolver` (verified on 2.2.3 through
+  the real loop, `test/approval_pause_test.rb`). Nexo's wrapper around a tool is not a
+  `RubyLLM::Tool`, so this relies on `ruby_llm` calling those two methods on whatever was
+  attached — a genuine upstream dependency, stated plainly. The gate inside each tool is the
+  net under it: a call that got through undecided is still refused there.
 
 See [`examples/approval_agent.rb`](https://github.com/maquina-app/nexo/blob/main/examples/approval_agent.rb) for the live flow
 (`NEXO_LIVE=1 NEXO_MODEL=… ruby -Ilib examples/approval_agent.rb`).

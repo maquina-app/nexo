@@ -1,5 +1,5 @@
 # Tools
-Nexo attaches four sandbox-backed tools — `ReadFile`, `WriteFile`, `Shell`, and `Glob` — each gated by the [sandbox](sandboxes.md) and [permission](permissions.md) seams.
+Nexo attaches file tools and a `Shell` tool, each gated by the [sandbox](sandboxes.md) and [permission](permissions.md) seams. Since 0.16 the file tools are `ruby_llm`'s own — `list_files`, `read_file`, `search_files`, `write_file` and `edit_file` — working on the agent's sandbox; see [File tools](#file-tools) below.
 
 Which tools attach depends on what the sandbox supports *and* on what the permission mode could
 ever allow:
@@ -12,23 +12,26 @@ ever allow:
      four; `Virtual` supports everything but `:shell`, so a `:virtual` agent has no `Shell`.
   2. *The permission gate does not deny it statically* (`Permissions#never_allows?`). Under
      `:read_only`, `:write` and `:shell` can never be authorized unless listed in `allow:`, so
-     neither `WriteFile` nor `Shell` is attached. `:auto`, `:ask` and `:approve` decide per call
-     and always attach — `:approve` in particular *must* reach the gate so it can suspend the run.
+     neither the writing tools (`write_file`, `edit_file`) nor `Shell` are attached. `:auto`, `:ask` and `:approve` decide per call
+     and always attach.
 
   The same rule covers a host tool declared with `capability:` and, since 0.14, an MCP tool:
   under `:read_only` one that is not in `mcp_allow` is not attached.
 
-  `ReadFile` and `Glob` are always attached. This is a cost and description-accuracy measure, not
+  The reading tools (`list_files`, `read_file`, `search_files`) are always attached. This is a cost and description-accuracy measure, not
   a security boundary: `Permissions#authorize!` remains the gate and still denies at call time.
 
 To bound what **any** tool returns — an MCP tool, one of your own — declare a context
-budget. It is `ruby_llm`'s `with_context_budget`, per agent:
+budget. It is `ruby_llm`'s own, one of the model options in the `llm` block:
 
 ```ruby
 class Researcher < Nexo::Agent
-  context_budget per_result: 0.25, per_request: 0.7
+  llm { context_budget per_result: 0.25, per_request: 0.7 }
 end
 ```
+
+(Before 0.16 this was a `context_budget` macro on the agent. It was a pass-through and was
+removed; the macro now raises `Nexo::ConfigurationError` pointing here.)
 
 `per_result:` cuts a single result longer than that share of the model's context window;
 `per_request:` leaves the oldest results out of a request that would exceed its share. Both
@@ -45,57 +48,77 @@ unregistered model add `window: 128_000`, or the budget does nothing.
   The integer `status` passes through untouched. Pure line/char truncation — **no tokenizer**;
   configurable via the kwargs only (no global config, no per-agent macro).
 
-`WriteFile` enforces a read-before-write guard so the agent can't clobber files blindly:
+## File tools
 
-- **Read-before-write + stale guard (real-FS only).** Within a session, the agent is blocked from
-  overwriting a file it never read, or one that changed underneath it. `Agent#chat` builds one
-  `Nexo::ReadTracker` per chat and threads it into `ReadFile` (records `(path, mtime)` on a
-  successful read) and `WriteFile` (enforces): overwriting an existing, un-read file returns
-  `{error: "read <path> before overwriting it"}`; a file whose mtime changed since the read returns
-  `{error: "stale: <path> changed since you read it"}`; a new file writes freely. The guard is
-  **real-FS only** — skipped entirely on `Virtual` (nil `mtime`) and when no tracker is passed
-  (direct tool construction). Best-effort: mtime-based, so a sub-second external edit may slip past
-  the stale check (read-before-write is the primary guard). Clobber-safety within a session only —
-  no versioning, locking, or VCS semantics.
-
-## `file_tools :core` — `ruby_llm`'s file tools over your sandbox
-
-`ruby_llm` 2.2 has its own file tools. Nexo can attach those in place of its own three,
-over the same sandbox and behind the same permission gate:
+An agent's file tools are `ruby_llm`'s own, attached over the agent's sandbox and behind the
+permission gate. This is the default since 0.16; before that it was opt-in as
+`file_tools :core`.
 
 ```ruby
 class Editor < Nexo::Agent
   sandbox :local
-  file_tools :core
   permissions Nexo::Permissions.new(mode: :read_only, allow: %i[read glob write])
 end
-```
 
-| | `:nexo` (default) | `:core` |
-|---|---|---|
-| Tools | `read_file`, `write_file`, `glob` (as `nexo--tools--…`) | `list_files`, `read_file`, `search_files`, `write_file`, `edit_file` |
-| Change part of a file | no, rewrite the whole file | yes, `edit_file` |
-| Search file contents | no | yes, `search_files` |
-| Read-before-write guard | by modification time, real filesystems only | by content digest, on every sandbox including `:virtual` |
-| Large files | whole file, capped at 200 KB | paged: 1,000 lines or 20,000 characters a call |
-| Dotfiles | listed | hidden |
+Editor.new.chat.tools.keys
+# => [:list_files, :read_file, :search_files, :write_file, :edit_file]
+```
 
 Reading, listing and searching are `:read`; writing and editing are `:write`, and under
 `:read_only` the two writing tools are not attached. Under `:approve`, a write suspends the
 run with the file's path as the detail.
 
-Things to know before switching:
-
-- **The tool names and result shapes differ.** A skill that names `nexo--tools--write_file`,
-  or a host that reads tool events, needs updating.
+- **Read before write.** The model cannot overwrite or edit a file it has not read in this
+  chat, or one that changed since it read it. The check compares content digests, so it works
+  on every sandbox, `:virtual` included. A new file is written freely.
+- **Large files are paged**: 1,000 lines or 20,000 characters a call.
+- **Dotfiles are not listed.**
 - **Listing goes through the sandbox.** `:virtual` and `:local` answer directly. A container
   or remote sandbox runs one `find`, and reads each file to report its size.
 - **There is no delete**, because a sandbox has none.
 - The tool classes are internal to `ruby_llm`; Nexo's tests drive them through the real
   loop, which is what will catch a change there.
 
-Set `Nexo.config.file_tools = :core` to switch every agent. `:core` is planned as the
-default in 1.0.
+The `file_tools` macro chooses the set per agent, and `Nexo.config.file_tools` for every agent:
+
+| `file_tools` | What the agent gets |
+|---|---|
+| `:core` (default) | `list_files`, `read_file`, `search_files`, `write_file`, `edit_file` |
+| `:none` | No file tools. For an agent whose files come from somewhere else, such as a filesystem MCP server. |
+
+### An MCP server with the same tool names
+
+A filesystem MCP server usually calls its tools `read_file`, `write_file` and `search_files`
+too. Two tools cannot share a name, so an agent that allows one of them raises a
+`Nexo::ConfigurationError` naming the clash when its chat is built. Pick one side:
+
+```ruby
+class RemoteFiles < Nexo::Agent
+  file_tools :none                       # the server's tools are the file tools
+  mcp :files, transport: :stdio, command: "npx", args: %w[-y @modelcontextprotocol/server-filesystem /data]
+  mcp_allow "read_file", "search_files"
+end
+```
+
+Or keep Nexo's and leave the clashing names out of `mcp_allow`.
+
+### Upgrading from Nexo's own file tools
+
+| Before 0.16 | Since 0.16 |
+|---|---|
+| `nexo--tools--read_file` | `read_file` (answers with line numbers, paged) |
+| `nexo--tools--write_file` | `write_file`, or `edit_file` to change part of a file |
+| `nexo--tools--glob` | `list_files` (with `pattern:`), or `search_files` for contents |
+
+A skill or prompt that names an old tool, and a host that reads tool events by name, need the
+new names. Nexo's own three (`Tools::ReadFile`, `Tools::WriteFile`, `Tools::Glob`) and
+`file_tools :nexo` were removed in 0.16; `:nexo` raises `Nexo::ConfigurationError`.
+
+A path may be relative to the sandbox's working directory or absolute inside it:
+`/workspace/notes.md` in a container whose working directory is `/workspace` is `notes.md`.
+`ruby_llm` treats every path as relative, so Nexo makes that translation before the gate and
+the tool see the call. The `:glob` capability is still accepted in `allow:`, but nothing asks
+for it any more: listing and searching are `:read`.
 
 ## Tools of your own — the `tools` macro
 
@@ -106,7 +129,7 @@ class Archivist < Nexo::Agent
   model ENV.fetch("NEXO_MODEL")
 
   tools Today, SumPayments                    # no side effects: no gate
-  tools ArchiveRun, capability: :write        # gated exactly like WriteFile
+  tools ArchiveRun, capability: :write        # gated exactly like write_file
   tools ->(agent) { Lookup.new(root: agent.cwd) }
 end
 ```
@@ -123,21 +146,35 @@ name followed by its arguments as JSON.
 
 Without `capability:` the tool runs ungated. That is right only for a tool with no side effects.
 
+### A long catalogue — `defer: true`
+
+```ruby
+tools(*Catalog.tools, capability: :read, defer: true)
+```
+
+A deferred tool's definition stays out of the model's context until the provider's tool search
+loads it (0.16, `ruby_llm`'s `with_tools(defer:)`). A provider without tool search gets it as
+an ordinary tool. Deferring changes what the model is told up front, not what it may do: a
+deferred tool is gated exactly like any other. `mcp :name, …, defer: true` does the same for
+a server's tools.
+
 ### `strict_tools` — refuse what was never declared
 
 A tool added to the chat any other way — typically by overriding `#chat` and calling
 `with_tools` — is one no permission gate ever saw. Nexo catches those calls with a single
 `around_tool_call` block:
 
-- By default the call runs and Nexo warns once per tool name.
-- With `Nexo.config.strict_tools = true` the call is refused, and the model is told the call did
-  not run.
+- By default (since 0.16) the call is **refused**: the model is told the call did not run, and
+  Nexo prints one notice per tool name saying which agent and which tool.
+- With `Nexo.config.strict_tools = false` the call runs, with the same notice. That was the
+  default before 0.16.
 
 ```ruby
-Nexo.configure { |config| config.strict_tools = true }
+Nexo.configure { |config| config.strict_tools = false } # only while you move tools to the macro
 ```
 
-Declare your tools with the macro and turn this on. It becomes the default in 1.0. The block is a
+A name that is not on the chat at all — a tool the model made up — is not Nexo's to refuse:
+`ruby_llm` answers it with its own "There is no tool named…" error and nothing runs. The block is a
 backstop, not the gate: a refused call can only carry `ruby_llm`'s fixed "did not run" text, so
 the gate that explains itself stays with the tool.
 

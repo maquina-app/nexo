@@ -25,7 +25,7 @@ module Nexo
     CONFIG_IVARS = %i[
       @model @assume_model_exists @provider @sandbox @permissions @instructions
       @skills @mcp @mcp_allow @fetch_allow @search_backend @requires @produces @tools
-      @context_budget @file_tools
+      @file_tools
     ].freeze
 
     class << self
@@ -42,6 +42,7 @@ module Nexo
           value = value.dup if value.is_a?(Array) || value.is_a?(Hash)
           subclass.instance_variable_set(ivar, value)
         end
+        subclass.instance_variable_set(:@llm, Class.new(@llm)) if @llm
       end
 
       # Each macro is a reader with no argument and a writer with one. Unset
@@ -91,48 +92,69 @@ module Nexo
         value.nil? ? @instructions : (@instructions = value)
       end
 
-      # Which file tools the agent gets. With no argument it reads the choice
-      # (default: Nexo.config.file_tools, which is `:nexo`).
+      # Declares model options through `ruby_llm`'s own agent DSL (0.16). The
+      # block is evaluated on a private `RubyLLM::Agent` subclass (see
+      # ModelOptions) and every chat this agent builds is built through it, so
+      # anything `RubyLLM::Agent` can declare about the model works here:
       #
-      # * `:nexo` — Nexo's own `ReadFile`, `WriteFile` and `Glob`.
+      # ```ruby
+      # class Reviewer < Nexo::Agent
+      #   model "claude-sonnet-5-5"
+      #
+      #   llm do
+      #     thinking effort: :high
+      #     temperature 0.2
+      #     fallbacks "claude-haiku-5-5"
+      #     schema ReviewSchema
+      #   end
+      # end
+      # ```
+      #
+      # Several `llm` blocks add up, and a subclass starts from its parent's
+      # declarations. What Nexo owns — the model, the instructions, tools, MCP
+      # servers, skills — is refused inside the block with a
+      # ConfigurationError naming the Nexo macro to use: those are the things
+      # the sandbox and the permission gate depend on. With no block it reads
+      # the class the declarations live on (`nil` when there are none).
+      def llm(&block)
+        return @llm unless block
+
+        @llm ||= Class.new(ModelOptions)
+        @llm.class_eval(&block)
+        @llm
+      end
+
+      # Which file tools the agent gets. With no argument it reads the choice
+      # (default: Nexo.config.file_tools, which is `:core` since 0.16).
+      #
       # * `:core` — `ruby_llm`'s `list_files`, `read_file`, `search_files`,
       #   `write_file` and `edit_file`, over the agent's sandbox (see
-      #   SandboxFileStore). Adds editing part of a file, searching contents, and
-      #   a read-before-write guard that works on every sandbox.
+      #   SandboxFileStore): editing part of a file, searching contents, and a
+      #   read-before-write guard that works on every sandbox.
+      # * `:none` — no file tools: for an agent that reaches its files another
+      #   way, such as a filesystem MCP server whose tools carry the same names.
       #
-      # Either way the tools are behind the same permission gate: reading and
-      # listing are `:read`, writing and editing are `:write`, and under
-      # `:read_only` the writing tools are not attached at all. The two sets use
-      # different tool names and return different shapes, so a skill that names
-      # `nexo--tools--write_file`, or a host that reads tool events, must be
-      # updated when switching. `:core` is planned as the default in 1.0.
+      # The tools are behind the permission gate: reading, listing and searching
+      # are `:read`, writing and editing are `:write`, and under `:read_only` the
+      # writing tools are not attached at all. A path may be relative to the
+      # sandbox's working directory or absolute inside it. Nexo's own `ReadFile`,
+      # `WriteFile` and `Glob` (`:nexo`) were removed in 0.16.
       def file_tools(value = nil)
         value.nil? ? (@file_tools || Nexo.config.file_tools) : (@file_tools = value)
       end
 
-      # Keeps tool results within shares of the model's context window — a
-      # pass-through to `ruby_llm`'s `Chat#with_context_budget`. With no argument
-      # it reads the declared budget (default `nil`: `ruby_llm`'s own
-      # `config.context_budget`, which is off unless you set it).
+      # Removed in 0.16: the budget is one of the model options, declared in the
+      # `llm` block, where it reaches `ruby_llm`'s own `context_budget`. Whatever
+      # is passed (`_budget`, `_shares`) raises ConfigurationError saying so.
       #
       # ```ruby
       # class Researcher < Nexo::Agent
-      #   context_budget per_result: 0.25, per_request: 0.7
+      #   llm { context_budget per_result: 0.25, per_request: 0.7 }
       # end
       # ```
-      #
-      # `per_result:` cuts a single tool result longer than that share and tells
-      # the model to ask for less; `per_request:` leaves the oldest tool results
-      # out of a request that would exceed that share. Both need the model's
-      # context window, which `ruby_llm` knows only for models in its registry —
-      # for a local or unregistered model pass `window:` (tokens), or the budget
-      # does nothing and `ruby_llm` warns once. This bounds what ANY tool returns,
-      # including MCP tools and tools of your own; OutputTruncator still bounds
-      # shell output by lines, with or without a known window.
-      def context_budget(budget = nil, **shares)
-        return @context_budget if budget.nil? && shares.empty?
-
-        @context_budget = (budget || {}).to_h.merge(shares)
+      def context_budget(_budget = nil, **_shares)
+        raise ConfigurationError, "the `context_budget` macro was removed in 0.16 — declare it in the `llm` block: " \
+          "`llm { context_budget per_result: 0.25 }`"
       end
 
       # Declares the skills attached to this agent. With no args it returns the
@@ -234,10 +256,15 @@ module Nexo
       # Declare tools here instead of overriding `#chat` to call `with_tools`: a
       # tool added that way is unknown to Nexo, which warns about it, and refuses
       # it under `Nexo.config.strict_tools`.
-      def tools(*list, capability: nil)
+      #
+      # `defer: true` (0.16) keeps the tools' definitions out of the model's
+      # context until the provider's tool search loads the ones it needs — for a
+      # long catalogue. A provider without tool search gets them as ordinary
+      # tools. A deferred tool is gated exactly like any other.
+      def tools(*list, capability: nil, defer: nil)
         return @tools || [] if list.empty?
 
-        @tools = (@tools || []) + list.flatten.map { |tool| {tool: tool, capability: capability} }
+        @tools = (@tools || []) + list.flatten.map { |tool| {tool: tool, capability: capability, defer: defer} }
       end
 
       # Declares an MCP server for this agent (Spec 6). Accumulating: multiple
@@ -252,6 +279,12 @@ module Nexo
       #   mcp :fetch, transport: :sse,   url: "http://localhost:8080/sse"
       # end
       # ```
+      #
+      # Two options are Nexo's own (0.16): `defer: true` keeps this server's tool
+      # definitions out of the model's context until the provider's tool search
+      # asks for them, and `resources: true` attaches `list_mcp_resources` and
+      # `read_mcp_resource` (see MCP::ReadResource) for what the server offers to
+      # read. Both resource tools are gated like any MCP tool.
       def mcp(name = nil, **opts)
         return @mcp || [] if name.nil? && opts.empty?
 
@@ -299,25 +332,35 @@ module Nexo
     # Sandbox and Permissions, the system instructions, and the injected Loop.
     attr_reader :cwd, :model, :provider, :assume_model_exists, :sandbox, :permissions, :instructions, :loop
 
+    # The answers this agent was given for questions its tools ask (0.16) — a
+    # Hash of Nexo::InputRequired.key_for → value. Empty unless `answers:` was
+    # passed.
+    attr_reader :answers
+
     # Every argument is optional; each resolves arg -> class macro -> config.
     # Symbol shorthands (:virtual/:local, :read_only/:auto/:ask/:approve) and
     # pre-built Sandbox/Permissions instances are both accepted. `loop:` injects
     # the engine that drives a prompt — the provider-neutral Loops::RubyLLM by
     # default, or a backend of your own.
     #
-    # `decisions:` (0.14, default `nil`) are the per-call approval answers for an
+    # `decisions:` (default `nil`) are the per-call approval answers for an
     # `:approve` gate — a Hash of Permissions::approval_key → `true`/`false`. A
-    # call found there runs or is denied; any other call raises
-    # Nexo::ApprovalRequired. They only supply *answers* to an already-`:approve`
-    # gate — they never widen capability. Workflow#run_agent passes the approvals
-    # recorded on the run. `decision:` is the deprecated global form (one
-    # `{approved:}` answer for every gated call).
+    # call found there runs or is refused; any other call pauses and #prompt
+    # raises Nexo::ApprovalRequired. They only supply *answers* to an
+    # already-`:approve` gate — they never widen capability. Workflow#run_agent
+    # passes the approvals recorded on the run.
     #
     # `mcp_owner:` (0.15) is whose OAuth credentials this agent's `oauth:` MCP
     # servers use — a user record, or a stable String/Integer id.
-    def initialize(cwd: Dir.pwd, model: nil, sandbox: nil, permissions: nil, decision: nil, decisions: nil,
-      mcp_owner: nil, loop: Loops::RubyLLM.new)
+    #
+    # `answers:` (0.16) answers questions a tool asks the person — an MCP
+    # server's, or a tool calling `ask` — keyed as Nexo::InputRequired reports
+    # them. A value answers a one-field question, a Hash a form, `false` declines.
+    # A question with no answer raises Nexo::InputRequired from #prompt.
+    def initialize(cwd: Dir.pwd, model: nil, sandbox: nil, permissions: nil, decisions: nil,
+      mcp_owner: nil, answers: nil, loop: Loops::RubyLLM.new)
       @mcp_owner = mcp_owner
+      @answers = (answers || {}).to_h.transform_keys(&:to_s)
       @cwd = cwd
       @model = model || self.class.model || Nexo.config.default_model
       if @model.nil?
@@ -337,19 +380,18 @@ module Nexo
       # sharing the run's sandbox) is BORROWED — closing it would strand the owner.
       @owns_sandbox = sandbox.nil?
       @sandbox = resolve_sandbox(sandbox || self.class.sandbox)
-      @permissions = resolve_permissions(permissions || self.class.permissions, decision: decision,
-        decisions: decisions)
+      @permissions = resolve_permissions(permissions || self.class.permissions, decisions: decisions)
       @instructions = self.class.instructions
       @loop = loop
     end
 
-    # Builds a configured chat with the four sandbox-backed tools attached as
+    # Builds a configured chat with the file and shell tools attached as
     # instances bound to this agent's sandbox and permissions, then layers on the
     # instructions of every declared skill.
     #
     # `base:` lets a Nexo::Session pass a persisted `acts_as_chat` record
     # (hydrated via ruby_llm's `#to_llm` delegation) so the very same wiring —
-    # instructions, the four sandbox tools, skills, MCP, fetch — is applied onto
+    # instructions, the sandbox tools, skills, MCP, fetch — is applied onto
     # the continuing thread instead of a fresh chat. When `base` is nil the path
     # is byte-for-byte the standalone-agent build: a fresh `RubyLLM.chat`. A
     # session therefore changes only *memory/persistence*, never authority or
@@ -360,7 +402,7 @@ module Nexo
     # stored `role: :system` messages rather than appending, so the thread keeps
     # exactly one copy across resumes (VERIFIED, ruby_llm 2.2.3).
     def chat(base: nil)
-      c = base || RubyLLM.chat(**chat_model_options)
+      c = build_chat(base)
       c = apply_instructions(c)
 
       tools = file_tool_set
@@ -373,7 +415,6 @@ module Nexo
       apply_fetch(c)
       apply_search(c)
       apply_tool_options(c)
-      apply_context_budget(c)
       apply_tool_backstop(c)
       c
     end
@@ -382,9 +423,18 @@ module Nexo
     # loop body that used to live here is now in Loops::RubyLLM (the default),
     # so swapping `loop:` swaps the engine without touching this class. The
     # optional `&on_event` block receives `(type, payload)` progress events.
-    def prompt(text, max_turns: 25, &on_event)
+    #
+    # `text` is the prompt, or an MCP server's prompt from #mcp_prompt.
+    #
+    # `cancel:` (0.16) is a callable the loop asks around every tool call; when
+    # it answers true the prompt stops with `RubyLLM::CancelledError`. It is
+    # passed on only when given, so a loop backend of your own that does not
+    # take it keeps working.
+    def prompt(text, max_turns: 25, cancel: nil, &on_event)
       verify_environment!
-      @loop.run(agent: self, prompt: text, max_turns: max_turns, &on_event)
+      options = {agent: self, prompt: text, max_turns: max_turns}
+      options[:cancel] = cancel if cancel
+      @loop.run(**options, &on_event)
     end
 
     # Checks the agent's declared ::requires against its sandbox, once, before the
@@ -484,6 +534,22 @@ module Nexo
       mcp_clients[index]
     end
 
+    # The prompts the MCP server declared as `name` offers — reusable messages
+    # the server wrote, each with a `name`, a `description` and the `arguments`
+    # it takes.
+    def mcp_prompts(name) = mcp_server(name).prompts
+
+    # Fills in the server's prompt `prompt` with `arguments` and returns it,
+    # ready for #prompt, which sends its messages in place of a text of yours:
+    #
+    # ```ruby
+    # agent.prompt(agent.mcp_prompt(:github, :code_review, code: diff))
+    # ```
+    #
+    # The developer picks the prompt, not the model, so no permission gate
+    # applies; the tools the model then calls are gated as always.
+    def mcp_prompt(name, prompt, **arguments) = mcp_server(name).prompt(prompt, **arguments)
+
     # Releases any MCP server connections held by this agent instance. Clients are
     # memoized on the instance and reused across prompts (Spec 6 lifecycle default),
     # so a long-lived agent holding stdio/SSE servers should call `#close` when
@@ -517,6 +583,25 @@ module Nexo
     end
 
     private
+
+    # The chat everything else is layered on: `base` (a session's record) or a
+    # fresh one. An agent with an `llm` block gets it through that block's
+    # `RubyLLM::Agent` class, which applies the declared model options; one
+    # without is built exactly as before.
+    #
+    # VERIFIED (ruby_llm 2.2.3): `SomeAgent.chat(**options)` forwards the
+    # options to `RubyLLM.chat` and returns the configured chat;
+    # `SomeAgent.new(chat: existing, persist_instructions: false)` applies the
+    # same declarations onto an existing chat or record and leaves its messages
+    # and tools alone.
+    def build_chat(base)
+      options = self.class.llm
+      return base || RubyLLM.chat(**chat_model_options) unless options
+      return options.chat(**chat_model_options) unless base
+
+      options.new(chat: base, persist_instructions: false)
+      base
+    end
 
     # Builds the `RubyLLM.chat` options conditionally so the default agent's
     # call is byte-for-byte what it was before this feature: `{model: @model}`.
@@ -582,7 +667,7 @@ module Nexo
 
     # Lazily connects the declared MCP servers and attaches their tools, each
     # wrapped in a MCP::GatedTool so every invocation is authorized through this
-    # agent's Permissions first. Attached after the four sandbox tools and the
+    # agent's Permissions first. Attached after the sandbox tools and the
     # skills, so MCP tools fire the chat's `before_tool_call`/`after_tool_result`
     # callbacks (wired in Loops::RubyLLM) and appear in the run's event log with
     # no extra wiring. Returns early when no server is declared.
@@ -599,10 +684,54 @@ module Nexo
       return if self.class.mcp.empty?
 
       require_mcp_authorization!
-      gated = mcp_clients.flat_map(&:tools).select { |tool| attachable_mcp_tool?(tool) }.map do |tool|
-        wrap_mcp_tool(Nexo::MCP::GatedTool.new(tool: tool, permissions: @permissions))
+      self.class.mcp.zip(mcp_clients).group_by { |cfg, _| cfg[:defer] }.each do |defer, servers|
+        gated = servers.flat_map { |cfg, client| gated_mcp_tools(cfg, client) }
+        refuse_mcp_name_clash!(chat, gated)
+        next if gated.empty?
+
+        defer.nil? ? chat.with_tools(*gated) : chat.with_tools(*gated, defer: defer)
       end
-      chat.with_tools(*gated) unless gated.empty?
+      apply_mcp_resources(chat)
+    end
+
+    # One server's tools the model may call and the gate could allow, each
+    # behind MCP::GatedTool and then the #wrap_mcp_tool hook.
+    def gated_mcp_tools(cfg, client)
+      client.tools.select { |tool| attachable_mcp_tool?(tool) }.map do |tool|
+        wrap_mcp_tool(Nexo::MCP::GatedTool.new(tool: tool, permissions: @permissions, server: cfg[:name]))
+      end
+    end
+
+    # Attaches `list_mcp_resources` and `read_mcp_resource` over the servers
+    # declared with `resources: true`, each behind the MCP gate — and, like an
+    # MCP tool, left out when `:read_only` could never allow it.
+    def apply_mcp_resources(chat)
+      servers = self.class.mcp.zip(mcp_clients).select { |cfg, _| cfg[:resources] }
+        .to_h { |cfg, client| [cfg[:name].to_s, client] }
+      return if servers.empty?
+
+      tools = [Nexo::MCP::ListResources, Nexo::MCP::ReadResource].map { |tool| tool.new(servers: servers) }
+        .reject { |tool| @permissions.never_allows_mcp?(tool.name) }
+        .map { |tool| Nexo::MCP::GatedTool.new(tool: tool, permissions: @permissions) }
+      chat.with_tools(*tools) unless tools.empty?
+    end
+
+    # Raises ConfigurationError when an MCP tool has the name of a tool already
+    # on the chat. `ruby_llm`'s file tools have plain names (`read_file`,
+    # `write_file`...), and so do the tools of a typical filesystem MCP server;
+    # left alone the clash surfaces later as an ArgumentError from inside
+    # `ruby_llm` that names neither the server nor the way out.
+    def refuse_mcp_name_clash!(chat, gated)
+      return unless chat.respond_to?(:tools)
+
+      taken = chat.tools.keys.map(&:to_s)
+      clash = gated.map { |tool| tool.name.to_s } & taken
+      return if clash.empty?
+
+      raise ConfigurationError,
+        "#{self.class}: an MCP server offers #{clash.map { |name| "`#{name}`" }.join(", ")}, " \
+        "which this agent already has as a tool of its own. If the agent should use the server's, " \
+        "declare `file_tools :none`; otherwise leave those names out of `mcp_allow`."
     end
 
     # The agent's MCP servers, built once from the `mcp` declarations (with this
@@ -643,27 +772,24 @@ module Nexo
     # turn and models do try it. #authorize! stays the actual boundary either way.
     def file_tool_set
       case self.class.file_tools
-      when :nexo then nexo_file_tools
       when :core then core_file_tools
-      else raise ConfigurationError, "unknown file_tools #{self.class.file_tools.inspect} (use :nexo or :core)"
+      when :none then []
+      when :nexo
+        raise ConfigurationError, "`file_tools :nexo` was removed in 0.16: Nexo's ReadFile, WriteFile and Glob " \
+          "are gone. Use `:core` (the default: read_file, list_files, search_files, write_file, edit_file) or `:none`"
+      else raise ConfigurationError, "unknown file_tools #{self.class.file_tools.inspect} (use :core or :none)"
       end
-    end
-
-    # Nexo's own file tools. One ReadTracker per chat, shared by ReadFile (records)
-    # and WriteFile (enforces the read-before-write + stale guard).
-    def nexo_file_tools
-      tracker = ReadTracker.new
-      tools = [Tools::ReadFile.new(sandbox: @sandbox, permissions: @permissions, tracker: tracker)]
-      unless @permissions.never_allows?(:write)
-        tools << Tools::WriteFile.new(sandbox: @sandbox, permissions: @permissions, tracker: tracker)
-      end
-      tools << Tools::Glob.new(sandbox: @sandbox, permissions: @permissions)
     end
 
     # `ruby_llm`'s file tools over one SandboxFileStore per chat, each behind
     # Nexo::GatedTool. They are built here and attached with `with_tools` — NOT
     # with `chat.with_file_store`, which would attach them with no place for the
-    # gate. The gate is told the path the call acts on, like Nexo's own tools.
+    # gate. The gate is told the path the call acts on.
+    #
+    # `ruby_llm` treats every path as relative to the store, so `/workspace/a.md`
+    # would be looked up as `workspace/a.md`. The sandbox tells the model an
+    # absolute working directory, so an absolute path inside it is made relative
+    # before the gate and the tool see it (#sandbox_relative).
     #
     # VERIFIED (ruby_llm 2.2.3): `FileStore::Tools.classes(names)` returns the
     # tool classes for `:read` (list, read, search), `:write` and `:edit`, each
@@ -676,24 +802,45 @@ module Nexo
       groups.flat_map do |group, capability|
         ::RubyLLM::FileStore::Tools.classes([group]).map do |tool|
           Nexo::GatedTool.new(tool: tool.new(store: -> { store }), permissions: @permissions,
-            capability: capability, detail: ->(arguments) { arguments[:path] })
+            capability: capability, detail: ->(arguments) { arguments[:path] },
+            prepare: ->(arguments) { sandbox_relative(arguments) })
         end
       end
+    end
+
+    # `arguments` with an absolute `:path` inside the sandbox's working directory
+    # made relative to it. The directory itself becomes no path at all, which the
+    # listing and search tools read as "everything". Any other path is left alone.
+    def sandbox_relative(arguments)
+      path = arguments[:path]
+      root = @sandbox.cwd.to_s.chomp("/") if @sandbox.respond_to?(:cwd)
+      return arguments unless path.is_a?(String) && root && !root.empty?
+      return arguments.except(:path) if path.chomp("/") == root
+      return arguments unless path.start_with?("#{root}/")
+
+      arguments.merge(path: path.delete_prefix("#{root}/"))
     end
 
     # Attaches the tools declared with the `tools` macro. One declared with a
     # `capability:` is wrapped in Nexo::GatedTool, and skipped altogether when the
     # gate could never authorize it.
     def apply_host_tools(chat)
-      built = self.class.tools.flat_map do |entry|
-        capability = entry[:capability]
-        next [] if capability && @permissions.never_allows?(capability)
+      self.class.tools.group_by { |entry| entry[:defer] }.each do |defer, entries|
+        built = entries.flat_map { |entry| gated_host_tools(entry) }
+        next if built.empty?
 
-        build_host_tools(entry[:tool]).map do |tool|
-          capability ? Nexo::GatedTool.new(tool: tool, permissions: @permissions, capability: capability) : tool
-        end
+        defer.nil? ? chat.with_tools(*built) : chat.with_tools(*built, defer: defer)
       end
-      chat.with_tools(*built) unless built.empty?
+    end
+
+    # The tools of one `tools` declaration, gated when it names a capability.
+    def gated_host_tools(entry)
+      capability = entry[:capability]
+      return [] if capability && @permissions.never_allows?(capability)
+
+      build_host_tools(entry[:tool]).map do |tool|
+        capability ? Nexo::GatedTool.new(tool: tool, permissions: @permissions, capability: capability) : tool
+      end
     end
 
     # A declared tool is a class, an instance, or a lambda taking the agent. The
@@ -709,9 +856,9 @@ module Nexo
     # The fail-closed backstop behind the gate. Every tool Nexo attached is on the
     # chat by now; one `around_tool_call` block lets those run and catches any
     # other — a tool the host added to the chat itself, which no gate ever saw.
-    # Under `Nexo.config.strict_tools` such a call is skipped (`ruby_llm` then
-    # tells the model the call did not run); otherwise it runs with a one-time
-    # warning.
+    # Under `Nexo.config.strict_tools` (the default) such a call is skipped —
+    # `ruby_llm` then tells the model the call did not run; with it off the call
+    # runs. Either way Nexo warns once per tool.
     #
     # This is a backstop, not the gate: a skipped call can only produce
     # `ruby_llm`'s fixed "did not run" text, so the gate that explains itself
@@ -729,12 +876,15 @@ module Nexo
 
       chat.instance_variable_set(:@nexo_backstop, true)
       chat.around_tool_call do |tool_call, &run|
-        name = tool_call.name.to_s
-        if chat.instance_variable_get(:@nexo_known_tools).include?(name)
+        name = (tool_call.respond_to?(:qualified_name) ? tool_call.qualified_name : tool_call.name).to_s
+        if chat.instance_variable_get(:@nexo_known_tools).include?(name) || !chat.tools.key?(name.to_sym)
+          # Known to Nexo — or not on the chat at all, in which case nothing runs
+          # and `ruby_llm` answers the model with its own "no tool named" error.
           run.call
-        elsif !Nexo.config.strict_tools
-          Nexo.warn_undeclared_tool(name, self.class)
-          run.call
+        else
+          refused = Nexo.config.strict_tools
+          Nexo.warn_undeclared_tool(name, self.class, refused: refused)
+          run.call unless refused
         end
       end
     end
@@ -748,12 +898,6 @@ module Nexo
 
       options = {concurrency: Nexo.config.tool_concurrency, calls: Nexo.config.tool_calls_per_round}.compact
       chat.with_tool_options(**options) unless options.empty?
-    end
-
-    # Applies the agent's `context_budget` declaration, when there is one.
-    def apply_context_budget(chat)
-      budget = self.class.context_budget
-      chat.with_context_budget(budget) if budget && chat.respond_to?(:with_context_budget)
     end
 
     # Hook: called once per MCP tool, AFTER it is wrapped in a permission-gating
@@ -825,15 +969,13 @@ module Nexo
     # by `:local`; container tiers keep their own `/workspace` default).
     def resolve_sandbox(value) = Sandboxes.resolve(value, cwd: @cwd)
 
-    def resolve_permissions(value, decision: nil, decisions: nil)
+    # Resolves the agent's permissions declaration (a mode Symbol or a
+    # Permissions) into a Permissions carrying this run's approval `decisions`.
+    def resolve_permissions(value, decisions: nil)
       # A user-supplied Permissions sets its own mcp_allow: — leave it untouched.
       # Thread the run's approval answers through a non-mutating copy (Spec 16)
       # so a shared, class-level :approve instance is never clobbered.
-      if value.is_a?(Permissions)
-        value = value.with_decision(decision) if decision
-        value = value.with_decisions(decisions) if decisions
-        return value
-      end
+      return (decisions ? value.with_decisions(decisions) : value) if value.is_a?(Permissions)
 
       # Thread the class-level mcp_allow into each symbol branch (Spec 6) so the
       # MCP capability axis is populated alongside the sandbox axis.
@@ -842,7 +984,7 @@ module Nexo
       when :read_only then Permissions.new(mode: :read_only, mcp_allow: allow)
       when :auto then Permissions.new(mode: :auto, allow: %i[read glob write shell fetch search], mcp_allow: allow)
       when :ask then Permissions.new(mode: :ask, mcp_allow: allow) # pass a Permissions with on_ask for a real gate
-      when :approve then Permissions.new(mode: :approve, mcp_allow: allow, decision: decision, decisions: decisions)
+      when :approve then Permissions.new(mode: :approve, mcp_allow: allow, decisions: decisions)
       else raise ConfigurationError, "unknown permissions: #{value.inspect}"
       end
     end

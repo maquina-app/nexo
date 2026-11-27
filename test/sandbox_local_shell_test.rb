@@ -194,6 +194,40 @@ class SandboxLocalShellTest < Minitest::Test
     end
   end
 
+  # `readable: :ruby` is the difference between a confined Ruby that cannot
+  # load its own standard library and one that runs a script.
+  def test_confined_shell_runs_ruby_with_the_ruby_preset
+    skip "mxc is not installed" unless mxc_available?
+
+    Dir.mktmpdir do |dir|
+      script = %(#{RbConfig.ruby} -e 'require "json"; puts JSON.generate(ok: true)' 2>&1)
+      granted = Nexo::Sandboxes::Local.new(cwd: dir, isolation: :confined, readable: :ruby).shell(script)
+
+      assert_equal %({"ok":true}\n), granted[:stdout]
+    end
+  end
+
+  def test_the_ruby_preset_expands_to_the_interpreter_and_gem_paths
+    Dir.mktmpdir do |dir|
+      sandbox = Nexo::Sandboxes::Local.new(cwd: dir, readable: [:ruby, dir, :ruby])
+      readable = sandbox.instance_variable_get(:@readable)
+
+      assert_includes readable, File.expand_path(RbConfig::CONFIG["prefix"])
+      Gem.path.each { |path| assert_includes readable, File.expand_path(path) }
+      assert_equal readable.uniq, readable
+      assert_includes readable, File.expand_path(dir)
+    end
+  end
+
+  def test_subprocess_feeds_stdin_and_still_times_out
+    out, = Nexo::Sandboxes::Subprocess.capture({"PATH" => ENV["PATH"]}, "cat", timeout: 5, stdin_data: "fed")
+    assert_equal "fed", out
+
+    assert_raises(Timeout::Error) do
+      Nexo::Sandboxes::Subprocess.capture({"PATH" => ENV["PATH"]}, "sleep", "30", timeout: 1, stdin_data: "x" * 200_000)
+    end
+  end
+
   private
 
   def mxc_available?

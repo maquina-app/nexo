@@ -89,13 +89,13 @@ class ContainerArgvTest < Minitest::Test
     assert_includes gaps, "--pids-limit"
   end
 
-  # Apple accepts --tmpfs but the mount is NOT writable under --read-only, so a
-  # read-only rootfs leaves the agent with no writable workspace at all. Verified live.
-  def test_apple_reports_that_a_read_only_rootfs_has_no_writable_scratch
+  # On `container` 1.2 a --tmpfs under --read-only was not writable; on 1.7.1 it
+  # is (verified live), so a read-only rootfs is no longer reported as a gap.
+  def test_apple_no_longer_reports_a_read_only_rootfs_as_a_gap
     gaps = build(runtime: :apple, readonly_rootfs: true).hardening_gaps.join(" ")
 
-    assert_includes gaps, "--tmpfs is not writable"
-    assert_includes gaps, "readonly_rootfs: false"
+    refute_includes gaps, "--tmpfs"
+    assert_includes build(runtime: :apple).send(:run_argv).join(" "), "--read-only --tmpfs /workspace:rw"
   end
 
   def test_apple_reports_no_scratch_gap_when_the_rootfs_is_writable
@@ -178,6 +178,20 @@ class ContainerArgvTest < Minitest::Test
 
     assert_equal %w[docker exec abc123 cat -- /workspace/x], sandbox.send(:exec_argv, "cat", "--", "/workspace/x")
     assert_equal %w[docker exec -i abc123 sh], sandbox.send(:exec_argv, "sh", interactive: true)
+  end
+
+  # Each exec is tagged in its environment so a timeout can find and kill what
+  # it started inside the container (killing the runtime's client does not).
+  def test_exec_argv_carries_the_marker_and_the_kill_argv_finds_it
+    sandbox = build
+    sandbox.instance_variable_set(:@cid, "abc123")
+
+    assert_equal %w[docker exec -e NEXO_EXEC=m1 abc123 sh -c x], sandbox.send(:exec_argv, "sh", "-c", "x", marker: "m1")
+
+    kill = sandbox.send(:kill_argv, "m1")
+    assert_equal %w[docker exec abc123 sh -c], kill.first(5)
+    assert_equal ["sh", "m1"], kill.last(2)
+    refute_includes kill[5], "m1", "the marker is a positional argument, never part of the script"
   end
 
   def test_supports_shell_unlike_virtual

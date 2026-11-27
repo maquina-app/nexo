@@ -1,6 +1,8 @@
 # frozen_string_literal: true
 
+require "json"
 require "open3"
+require "securerandom"
 require "timeout"
 
 module Nexo
@@ -40,20 +42,22 @@ module Nexo
       RUNTIMES = {docker: "docker", apple: "container"}.freeze
 
       # What each runtime's CLI can actually express. Verified live against
-      # `container` 1.2.2 on macOS and Docker 29.4: Apple's CLI rejects
+      # Docker 29 and Apple `container` 1.7.1 (0.16): Apple's CLI rejects
       # `--security-opt` and `--pids-limit` with "Unknown option", which aborts
       # `container run` before the sandbox ever starts.
       #
-      # `writable_tmpfs` is not about the flag being accepted — Apple accepts
-      # `--tmpfs` — but about what it does: combined with `--read-only` the mount is
-      # NOT writable there, so a read-only rootfs leaves no usable scratch.
+      # `writable_tmpfs` is not about the flag being accepted but about what it
+      # does: on `container` 1.2 a `--tmpfs` under `--read-only` was NOT writable,
+      # which left a read-only rootfs with no usable scratch. It is writable on
+      # 1.7.1, so the gap is no longer reported; on an older `container`, set
+      # `readonly_rootfs: false`.
       #
       # Anything a runtime cannot honor is reported through #hardening_gaps rather
       # than dropped quietly: running with weaker isolation, or with a workspace you
       # cannot write to, must be visible.
       CAPABILITIES = {
         docker: {security_opt: true, pids_limit: true, writable_tmpfs: true},
-        apple: {security_opt: false, pids_limit: false, writable_tmpfs: false}
+        apple: {security_opt: false, pids_limit: false, writable_tmpfs: true}
       }.freeze
 
       # The container working directory (default `/workspace`, a container path),
@@ -129,8 +133,9 @@ module Nexo
       end
 
       # Runs `command` inside the container and returns
-      # `{ stdout:, stderr:, status: }` (status is the integer exit code). The
-      # wall-clock bound lives in `Timeout.timeout` around `Open3.capture3`.
+      # `{ stdout:, stderr:, status: }` (status is the integer exit code). After
+      # `timeout` seconds it raises `Timeout::Error`, with the command — and
+      # whatever it started — already killed inside the container.
       def shell(command, timeout: 30)
         exec!("sh", "-c", command, timeout: timeout)
       end
@@ -173,20 +178,6 @@ module Nexo
       # supported here (a real process runs the command).
       def supports?(cap)
         %i[read write shell glob].include?(cap)
-      end
-
-      # The last-modified time of `path` (guarded) inside the container, read by
-      # shelling `stat -c %Y` (GNU coreutils epoch seconds). Returns a `Time`, or
-      # `nil` when the file is absent — so a new-file write skips the
-      # read-before-write guard. Used only by the R4 clobber guard.
-      def mtime(path)
-        out = exec!("stat", "-c", "%Y", "--", guard_path(path))
-        return nil unless out[:status].zero?
-
-        epoch = out[:stdout].strip
-        epoch.empty? ? nil : Time.at(Integer(epoch))
-      rescue ArgumentError
-        nil
       end
 
       private
@@ -253,29 +244,18 @@ module Nexo
       # * >1 matches -> raise `Nexo::Error`; never guess which one to attach.
       #
       # Only genuinely unexpected errors (a daemon/CLI failure) fail open to the
-      # create path; the ambiguity raise and the Apple-posture `ConfigurationError`
-      # (both `Nexo::Error` subclasses) are re-raised, never swallowed.
+      # create path; the ambiguity raise (a `Nexo::Error`) is re-raised, never
+      # swallowed.
       #
       # Runtime isolation is inherent: the query shells the runtime-specific `@bin`
       # (docker vs. Apple `container`), and each runtime keeps its own id namespace,
       # so a `:docker` container can never be reattached by an `:apple` sandbox or
       # vice versa.
       def reconnect_existing
-        # Apple reconnect posture (Spec 20 R4/Q4): Apple's `container` CLI has no
-        # live-verified exact `label=` filter, and a name substring match is unsafe,
-        # so reconnect on `:apple` raises rather than risk attaching the wrong
-        # container. Wire the verified mechanism here once Group 0 confirms one.
-        if @runtime == :apple
-          raise ConfigurationError,
-            "reconnect: true is not supported on the Apple :container runtime — " \
-            "it has no verified exact label filter (Spec 20 Q4); use runtime: :docker " \
-            "for reconnect, or run an ephemeral :apple sandbox (reconnect: false)"
-        end
-
         out, _err, status = Open3.capture3(*reconnect_argv)
         return nil unless status.success?
 
-        ids = out.strip.split("\n").reject(&:empty?)
+        ids = reconnect_ids(out)
         return nil if ids.empty?
         if ids.size > 1
           raise Nexo::Error, "ambiguous reconnect: #{ids.size} containers labeled #{@name}"
@@ -289,38 +269,79 @@ module Nexo
         nil
       end
 
-      # The exact reconnect query argv, built purely so the offline suite can assert
-      # it with no daemon. Matches by the exact identity label set in `run_argv`
-      # (`label=nexo.sandbox.id=<name>`), NOT a `name=<name>` substring filter.
+      # The reconnect query argv, built purely so the offline suite can assert it
+      # with no daemon. Docker filters by the exact identity label set in
+      # `run_argv` (`label=nexo.sandbox.id=<name>`), NOT a `name=<name>` substring
+      # filter. Apple's `container list` has no filter, so it lists every
+      # container as JSON and #reconnect_ids matches the label exactly.
       def reconnect_argv
+        return [@bin, "list", "--all", "--format", "json"] if @runtime == :apple
+
         [@bin, "ps", "-aq", "--no-trunc", "-f", "label=nexo.sandbox.id=#{@name}"]
       end
 
-      # Runs `cmd` inside the started container, wall-clock bounded. Returns the
-      # `{ stdout:, stderr:, status: }` shape (integer exit code) proven by
-      # Local#shell; `Open3.capture3` has no `timeout:` kwarg on the target Ruby.
+      # The ids of the containers carrying this sandbox's identity label, from the
+      # output of #reconnect_argv. VERIFIED (Apple `container` 1.7.1): each entry
+      # of the JSON list has an `id` and its labels under `configuration.labels`.
+      def reconnect_ids(out)
+        return out.strip.split("\n").reject(&:empty?) unless @runtime == :apple
+
+        JSON.parse(out).select { |entry| entry.dig("configuration", "labels", "nexo.sandbox.id") == @name }
+          .map { |entry| entry["id"] }
+      end
+
+      # Runs `cmd` inside the started container and returns the
+      # `{ stdout:, stderr:, status: }` shape (integer exit code) of Local#shell.
+      # Raises `Timeout::Error` after `timeout` seconds, with the command stopped
+      # on both sides (see #capture!).
       def exec!(*cmd, timeout: 30)
-        ensure_started!
-        out, err, status = Timeout.timeout(timeout) do
-          Open3.capture3(*exec_argv(*cmd))
-        end
-        {stdout: out, stderr: err, status: status.exitstatus}
+        capture!(cmd, timeout: timeout)
       end
 
       # As #exec!, but feeds `data` to the command on stdin (used by `write` so
       # file contents never enter the argv). `-i` keeps stdin open.
       def exec_stdin!(data, *cmd, timeout: 30)
-        ensure_started!
-        out, err, status = Timeout.timeout(timeout) do
-          Open3.capture3(*exec_argv(*cmd, interactive: true), stdin_data: data)
-        end
-        {stdout: out, stderr: err, status: status.exitstatus}
+        capture!(cmd, timeout: timeout, stdin_data: data)
       end
 
-      # The `exec` argv (pure, offline-assertable). `interactive:` inserts `-i`.
-      def exec_argv(*cmd, interactive: false)
+      # Runs one `exec` through Subprocess, which kills the runtime's client
+      # process when the time is up. That alone leaves the command running
+      # INSIDE the container, so each exec carries a marker in its environment
+      # and a timeout also kills every process in the container that has it.
+      def capture!(cmd, timeout:, stdin_data: nil)
+        ensure_started!
+        marker = SecureRandom.hex(8)
+        argv = exec_argv(*cmd, interactive: !stdin_data.nil?, marker: marker)
+        out, err, status = Subprocess.capture(ENV.to_h, *argv, timeout: timeout, stdin_data: stdin_data)
+        {stdout: out, stderr: err, status: status}
+      rescue Timeout::Error
+        kill_marked(marker)
+        raise
+      end
+
+      # Kills every process in the container started by the exec carrying
+      # `marker`. Best-effort and bounded: it must never hide the timeout.
+      def kill_marked(marker)
+        Subprocess.capture(ENV.to_h, *kill_argv(marker), timeout: 10)
+      rescue
+        nil
+      end
+
+      # The argv that kills the processes of one exec (pure, offline-assertable).
+      # The marker is passed as `$1`, never interpolated into the script.
+      def kill_argv(marker)
+        script = "for p in /proc/[0-9]*; do " \
+          'if tr "\0" "\n" < "$p/environ" 2>/dev/null | grep -qx "NEXO_EXEC=$1"; then ' \
+          'kill -9 "${p#/proc/}" 2>/dev/null; fi; done; true'
+        [@bin, "exec", @cid, "sh", "-c", script, "sh", marker]
+      end
+
+      # The `exec` argv (pure, offline-assertable). `interactive:` inserts `-i`;
+      # `marker:` tags the command's environment so a timeout can find it.
+      def exec_argv(*cmd, interactive: false, marker: nil)
         argv = [@bin, "exec"]
         argv << "-i" if interactive
+        argv += ["-e", "NEXO_EXEC=#{marker}"] if marker
         argv += [@cid, *cmd]
         argv
       end

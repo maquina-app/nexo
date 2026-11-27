@@ -2,10 +2,11 @@
 
 require "test_helper"
 
-# Spec 16 — the :approve permission mode. With no decision the gate raises
-# Nexo::ApprovalRequired (→ a durable suspend); with {approved: true} it allows;
-# with {approved: false} it raises Denied. The Spec 14 ask_when predicate scopes
-# which actions need a decision at all (unchanged semantics).
+# The :approve permission mode, at the gate. A call with no recorded decision
+# raises Nexo::ApprovalRequired; one approved in `decisions` is allowed; one
+# declined there raises Denied. `ask_when` scopes which actions need a decision
+# at all. Through a chat the call pauses before it reaches the gate — see
+# test/approval_pause_test.rb.
 class PermissionsApproveTest < Minitest::Test
   def test_approve_mode_is_a_valid_mode
     assert_includes Nexo::Permissions::MODES, :approve
@@ -16,16 +17,6 @@ class PermissionsApproveTest < Minitest::Test
     err = assert_raises(Nexo::ApprovalRequired) { p.authorize!(:write, "/protected/x") }
     assert_equal :write, err.capability
     assert_equal "/protected/x", err.detail
-  end
-
-  def test_approve_with_granted_decision_allows
-    p = Nexo::Permissions.new(mode: :approve, decision: {approved: true})
-    assert p.authorize!(:write, "/protected/x")
-  end
-
-  def test_approve_with_denied_decision_denies
-    p = Nexo::Permissions.new(mode: :approve, decision: {approved: false})
-    assert_raises(Nexo::Permissions::Denied) { p.authorize!(:write, "/protected/x") }
   end
 
   def test_ask_when_scopes_out_auto_allows_without_a_decision
@@ -39,31 +30,13 @@ class PermissionsApproveTest < Minitest::Test
     assert_raises(Nexo::ApprovalRequired) { p.authorize!(:write, "/protected/x") } # in scope ⇒ suspend
   end
 
-  def test_approve_when_alias_maps_onto_the_same_predicate
-    p = Nexo::Permissions.new(
-      mode: :approve,
-      approve_when: ->(cap, _detail) { cap == :write }
-    )
-    assert p.authorize!(:shell, "ls") # not :write ⇒ scoped-out ⇒ auto-allow
-    assert_raises(Nexo::ApprovalRequired) { p.authorize!(:write, "/x") }
-  end
-
-  def test_with_decision_returns_a_copy_leaving_the_receiver_undecided
-    base = Nexo::Permissions.new(mode: :approve)
-    approved = base.with_decision({approved: true})
-
-    assert approved.authorize!(:write, "/x") # the copy is decided
-    assert_nil base.decision # the original is untouched
-    assert_raises(Nexo::ApprovalRequired) { base.authorize!(:write, "/x") }
-  end
-
   def test_approval_required_is_distinct_from_denied
     refute_operator Nexo::ApprovalRequired, :<=, Nexo::Permissions::Denied
     refute_operator Nexo::Permissions::Denied, :<=, Nexo::ApprovalRequired
     assert_operator Nexo::ApprovalRequired, :<, StandardError
   end
 
-  # --- 0.14: per-call decisions ----------------------------------------------
+  # --- per-call decisions ------------------------------------------------------
 
   def approving(decisions) = Nexo::Permissions.new(mode: :approve, decisions: decisions)
 
@@ -83,12 +56,6 @@ class PermissionsApproveTest < Minitest::Test
 
   def test_an_empty_decision_map_asks_about_everything
     assert_raises(Nexo::ApprovalRequired) { approving({}).authorize!(:write, "a.txt") }
-  end
-
-  def test_per_call_decisions_win_over_the_global_decision
-    perms = Nexo::Permissions.new(mode: :approve, decision: {approved: true}, decisions: {})
-
-    assert_raises(Nexo::ApprovalRequired) { perms.authorize!(:write, "a.txt") }
   end
 
   def test_mcp_calls_are_keyed_by_name_and_arguments
@@ -116,5 +83,49 @@ class PermissionsApproveTest < Minitest::Test
     assert copy.authorize!(:write, "a.txt")
     assert_nil shared.decisions
     assert_raises(Nexo::ApprovalRequired) { shared.authorize!(:write, "a.txt") }
+  end
+
+  # --- what Approvable asks before a call runs ---------------------------------
+
+  def test_only_approve_mode_needs_approval
+    %i[auto read_only ask].each do |mode|
+      refute Nexo::Permissions.new(mode: mode).needs_approval?(:write, "a.txt"), mode.to_s
+    end
+    assert Nexo::Permissions.new(mode: :approve).needs_approval?(:write, "a.txt")
+  end
+
+  def test_an_allowed_capability_needs_no_approval
+    perms = Nexo::Permissions.new(mode: :approve, allow: %i[read glob])
+
+    refute perms.needs_approval?(:read, "a.txt")
+    assert perms.needs_approval?(:shell, "ls")
+  end
+
+  def test_ask_when_decides_which_calls_need_approval
+    perms = Nexo::Permissions.new(mode: :approve, ask_when: ->(cap, detail) { cap == :write && detail.start_with?("/etc") })
+
+    assert perms.needs_approval?(:write, "/etc/hosts")
+    refute perms.needs_approval?(:write, "notes.md")
+  end
+
+  def test_an_mcp_tool_needs_approval_unless_it_is_in_mcp_allow
+    perms = Nexo::Permissions.new(mode: :approve, mcp_allow: %w[search])
+
+    refute perms.needs_approval?(:mcp, "search", {q: "x"})
+    assert perms.needs_approval?(:mcp, "send_email", {to: "a"})
+  end
+
+  def test_decision_for_reads_the_recorded_answer
+    perms = approving("write:a.txt" => true, "write:b.txt" => false)
+
+    assert_equal true, perms.decision_for(:write, "a.txt")
+    assert_equal false, perms.decision_for(:write, "b.txt")
+    assert_nil perms.decision_for(:write, "c.txt")
+    assert_nil Nexo::Permissions.new(mode: :approve).decision_for(:write, "a.txt")
+  end
+
+  def test_the_removed_options_are_refused
+    assert_raises(ArgumentError) { Nexo::Permissions.new(mode: :approve, decision: {approved: true}) }
+    assert_raises(ArgumentError) { Nexo::Permissions.new(mode: :approve, approve_when: ->(*) { true }) }
   end
 end

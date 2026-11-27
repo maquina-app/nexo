@@ -29,10 +29,11 @@ module Nexo
     # It needs the `mxc` gem (a soft dependency: add `gem "mxc"` to the host
     # Gemfile). A confined command cannot read outside `cwd` either, which
     # includes a Ruby or Node installed under the home directory — grant those
-    # with `readable:`.
+    # with `readable:`. `readable: :ruby` grants the running Ruby and its gems
+    # (see ::ruby_paths).
     #
     # ```ruby
-    # sandbox :local, isolation: :confined, readable: [RbConfig::CONFIG["prefix"]]
+    # sandbox :local, isolation: :confined, readable: :ruby
     # ```
     #
     # `isolation:` also takes any object answering `ruby_llm`'s sandbox contract
@@ -51,12 +52,27 @@ module Nexo
       # How the shell is isolated: `:none`, `:confined`, or the sandbox object given.
       attr_reader :isolation
 
+      # The directories a confined command must be able to read to run the Ruby
+      # this process runs on, with its standard library and installed gems: the
+      # interpreter's prefix and every gem path. `readable: :ruby` expands to
+      # them, which is what a confined `ruby script.rb` or `bundle exec` needs —
+      # a confined command can otherwise read only `cwd`.
+      #
+      # ```ruby
+      # sandbox :local, isolation: :confined, readable: :ruby
+      # ```
+      def self.ruby_paths
+        [RbConfig::CONFIG["prefix"], *Gem.path, Gem.default_dir]
+          .compact.map { |path| File.expand_path(path) }.uniq
+      end
+
       # Roots the sandbox at `cwd` (expanded, default `Dir.pwd`) and narrows the
       # shell environment to `PATH`/`HOME`/`LANG` plus any explicit `env:` entries.
       #
       # `isolation:` is `:none` (default — the shell is an ordinary host process),
       # `:confined` (an OS sandbox through the `mxc` gem), or a sandbox object.
-      # `readable:` lists extra paths a confined command may read. Raises
+      # `readable:` lists extra paths a confined command may read; the symbol
+      # `:ruby` stands for ::ruby_paths. Raises
       # ConfigurationError for an unknown `isolation:`; a `:confined` sandbox that
       # cannot run on this machine raises on the first #shell, not here.
       def initialize(cwd: Dir.pwd, env: {}, isolation: :none, readable: [])
@@ -67,7 +83,7 @@ module Nexo
         # Deliberately narrow env — never hand a model-driven shell the whole ENV.
         @env = ENV.to_h.slice("PATH", "HOME", "LANG").merge(env.transform_keys(&:to_s))
         @isolation = isolation
-        @readable = Array(readable).map { |path| File.expand_path(path.to_s) }
+        @readable = Array(readable).flat_map { |path| (path == :ruby) ? self.class.ruby_paths : File.expand_path(path.to_s) }.uniq
         return if %i[none confined].include?(isolation) || contract?(isolation) || mxc_sandbox?(isolation)
 
         raise Nexo::ConfigurationError,
@@ -142,14 +158,6 @@ module Nexo
       # the shell command here.
       def supports?(cap)
         %i[read write shell glob].include?(cap)
-      end
-
-      # The last-modified time of `path` (guarded against escaping `cwd`), or
-      # `nil` when the file is absent — so a new-file write skips the
-      # read-before-write guard.
-      def mtime(path)
-        full = absolute(path)
-        File.exist?(full) ? File.mtime(full) : nil
       end
 
       # Runs `command` through `sh`, in `cwd`, with the narrowed environment.

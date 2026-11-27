@@ -53,10 +53,11 @@ class McpPermissionsTest < Minitest::Test
   end
 
   def test_approve_with_decision_allows_and_denies
-    allowed = Nexo::Permissions.new(mode: :approve, decision: {approved: true})
+    key = Nexo::Permissions.approval_key(:mcp, "send_email", {})
+    allowed = Nexo::Permissions.new(mode: :approve, decisions: {key => true})
     assert allowed.authorize_mcp!("send_email")
 
-    denied = Nexo::Permissions.new(mode: :approve, decision: {approved: false})
+    denied = Nexo::Permissions.new(mode: :approve, decisions: {key => false})
     assert_raises(Nexo::Permissions::Denied) { denied.authorize_mcp!("send_email") }
   end
 end
