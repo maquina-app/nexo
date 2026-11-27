@@ -568,7 +568,7 @@ this replaces are gone; do not trust memory of the 1.x API.
   `ruby_llm`'s adapter; unsupported machine ⇒ `ConfigurationError` on first `shell`, missing gem
   ⇒ `MissingDependencyError`. VERIFIED macOS/Seatbelt, mxc 0.4.1: outside write, home read and
   network refused; env is clean; `ruby` starts but cannot load RubyGems unless its prefix is in
-  `readable:` (that is why `:confined` is not the default). Linux/Bubblewrap NOT verified.
+  `readable:` (that is why `:confined` is not the default). Linux/Bubblewrap VERIFIED in CI since 0.15 (the two confined tests run there: same skip count as macOS).
   `mxc` is a Gemfile dev dep only; the one live test skips without it.
 - **Approvals are per call (0.14).** `Workflow#record_approval!` files `resume_input[:approved]`
   under `Permissions.approval_key(capability, detail, args)` in the reserved `"__approvals__"`

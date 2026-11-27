@@ -75,8 +75,10 @@ Things to know:
 - **Bring your own policy.** `isolation:` also takes an `MXC::Sandbox` class or instance, or any
   object answering `supported?` and `run(*command, timeout:, readable:, writable:, directory:,
   env:, network:)`.
-- **Verified on macOS (Seatbelt), `mxc` 0.4.1:** a write outside `cwd`, a read of the home
-  directory and a network request were all refused. Linux (Bubblewrap) is not verified here.
+- **Verified on macOS (Seatbelt) and on Linux (Bubblewrap, in CI), `mxc` 0.4.1:** a write
+  outside `cwd`, a read of a file outside it and a network connection were all refused. A
+  Linux host must allow unprivileged user namespaces for Bubblewrap; GitHub's Ubuntu runners
+  do.
 - Unconfined remains the default in 0.14. Use a [container](#container-sandbox--docker--apple-container)
   when you need a different filesystem, not only a fence.
 

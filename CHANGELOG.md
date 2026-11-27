@@ -46,6 +46,8 @@ on `file_tools :core`, which needs `#files`.
 - The container sandbox and its reconnect path, live against Docker 29 (through OrbStack).
   Both were recorded as unverified since they shipped. Apple `container` parity is still not
   verified.
+- The confined local shell on Linux (Bubblewrap), in CI: a write and a read outside the
+  workspace and a network connection are refused.
 - OAuth is tested against ruby_llm's real MCP class but not against a live authorization
   server.
 
