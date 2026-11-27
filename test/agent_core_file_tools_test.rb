@@ -217,6 +217,7 @@ class AgentCoreFileToolsTest < Minitest::Test
           tool_call(:read_file, path: File.join(File.realpath(other), "secret.md")))
 
         refute_includes read.to_s, "hidden"
+        assert_match(/outside the workspace/, read[:error])
       end
     end
   end

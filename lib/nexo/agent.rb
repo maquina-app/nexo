@@ -261,10 +261,21 @@ module Nexo
       # context until the provider's tool search loads the ones it needs — for a
       # long catalogue. A provider without tool search gets them as ordinary
       # tools. A deferred tool is gated exactly like any other.
-      def tools(*list, capability: nil, defer: nil)
+      #
+      # `detail:` (0.17) says what identifies one call of a gated tool: a callable
+      # given the call's arguments (Symbol keys) and returning a String. It is
+      # what `ask_when`/`on_ask` are told and what an approval is filed under.
+      # Without it the detail is the tool's name and all its arguments, so a
+      # free-text argument makes every call look new:
+      #
+      # ```ruby
+      # tools IssueRefund, capability: :write, detail: ->(args) { "refund #{args[:order]}" }
+      # ```
+      def tools(*list, capability: nil, defer: nil, detail: nil)
         return @tools || [] if list.empty?
+        raise ConfigurationError, "`detail:` needs `capability:` — an ungated tool has no call to identify" if detail && capability.nil?
 
-        @tools = (@tools || []) + list.flatten.map { |tool| {tool: tool, capability: capability, defer: defer} }
+        @tools = (@tools || []) + list.flatten.map { |tool| {tool: tool, capability: capability, defer: defer, detail: detail} }
       end
 
       # Declares an MCP server for this agent (Spec 6). Accumulating: multiple
@@ -430,10 +441,17 @@ module Nexo
     # it answers true the prompt stops with `RubyLLM::CancelledError`. It is
     # passed on only when given, so a loop backend of your own that does not
     # take it keeps working.
-    def prompt(text, max_turns: 25, cancel: nil, &on_event)
+    #
+    # `continue:` (0.17) is the `transcript` of a Nexo::ApprovalRequired or
+    # Nexo::InputRequired this prompt raised earlier. With it the conversation is
+    # restored and the paused tool call carries on, so the model is not asked
+    # again and a tool that already ran does not run twice. `text` is used only
+    # if the transcript cannot be restored.
+    def prompt(text, max_turns: 25, cancel: nil, continue: nil, &on_event)
       verify_environment!
       options = {agent: self, prompt: text, max_turns: max_turns}
       options[:cancel] = cancel if cancel
+      options[:continue] = continue if continue
       @loop.run(**options, &on_event)
     end
 
@@ -810,13 +828,15 @@ module Nexo
 
     # `arguments` with an absolute `:path` inside the sandbox's working directory
     # made relative to it. The directory itself becomes no path at all, which the
-    # listing and search tools read as "everything". Any other path is left alone.
+    # listing and search tools read as "everything". A relative path is left
+    # alone; an absolute one outside the directory is refused, where `ruby_llm`
+    # would quietly look for it inside (0.17).
     def sandbox_relative(arguments)
       path = arguments[:path]
       root = @sandbox.cwd.to_s.chomp("/") if @sandbox.respond_to?(:cwd)
-      return arguments unless path.is_a?(String) && root && !root.empty?
+      return arguments unless path.is_a?(String) && root && !root.empty? && path.start_with?("/")
       return arguments.except(:path) if path.chomp("/") == root
-      return arguments unless path.start_with?("#{root}/")
+      raise Permissions::Denied, "#{path} is outside the workspace (#{root})" unless path.start_with?("#{root}/")
 
       arguments.merge(path: path.delete_prefix("#{root}/"))
     end
@@ -839,7 +859,9 @@ module Nexo
       return [] if capability && @permissions.never_allows?(capability)
 
       build_host_tools(entry[:tool]).map do |tool|
-        capability ? Nexo::GatedTool.new(tool: tool, permissions: @permissions, capability: capability) : tool
+        next tool unless capability
+
+        Nexo::GatedTool.new(tool: tool, permissions: @permissions, capability: capability, detail: entry[:detail])
       end
     end
 
@@ -975,7 +997,9 @@ module Nexo
       # A user-supplied Permissions sets its own mcp_allow: — leave it untouched.
       # Thread the run's approval answers through a non-mutating copy (Spec 16)
       # so a shared, class-level :approve instance is never clobbered.
-      return (decisions ? value.with_decisions(decisions) : value) if value.is_a?(Permissions)
+      # A copy either way: the loop hangs a per-prompt hook on the gate
+      # (Permissions#on_decline), which must not land on a shared instance.
+      return (decisions ? value.with_decisions(decisions) : value.dup) if value.is_a?(Permissions)
 
       # Thread the class-level mcp_allow into each symbol branch (Spec 6) so the
       # MCP capability axis is populated alongside the sandbox axis.

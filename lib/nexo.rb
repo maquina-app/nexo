@@ -80,6 +80,11 @@ module Nexo
     # The unanswered questions, each a Question.
     attr_reader :questions
 
+    # The conversation up to the question, as plain data (0.17). Hand it back
+    # with `prompt(text, continue: error.transcript)` and the paused call carries
+    # on, in place of the prompt being asked again.
+    attr_accessor :transcript
+
     # Builds the signal for `questions` (Question structs).
     def initialize(questions)
       @questions = questions
@@ -126,6 +131,11 @@ module Nexo
     # String-keyed Hashes with `"capability"`, `"tool"` (the detail), `"args"`
     # and the `"key"` to record a decision under.
     attr_reader :pending
+
+    # The conversation up to the held call, as plain data (0.17). Hand it back
+    # with `Agent.new(decisions:).prompt(text, continue: error.transcript)` and
+    # the held call runs (or is refused) without the model being asked again.
+    attr_accessor :transcript
 
     # The key this call is decided under — see Permissions::approval_key.
     def key = Permissions.approval_key(capability, detail, args)

@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "json"
+
 module Nexo
   # Namespace for the loop backends that drive one prompt to completion.
   # Loops::RubyLLM is the default and the only one Nexo ships; a custom backend
@@ -38,14 +40,22 @@ module Nexo
       # `:tool_progress` (a tool's `progress` reports), `:fallback` (a request
       # that moved to a fallback model) and, once per prompt even when it
       # raises, `:usage` with the tokens and cost this prompt added.
-      def run(agent:, prompt:, max_turns: 25, chat: nil, cancel: nil, &on_event)
+      #
+      # `continue:` (0.17) is a transcript saved when an earlier run of this
+      # prompt paused (see Nexo::ApprovalRequired#transcript). The chat is
+      # restored from it and carried on with `complete`: the paused call runs,
+      # nothing before it runs again, and the model is asked only for what comes
+      # next. A transcript that cannot be restored falls back to asking `prompt`.
+      def run(agent:, prompt:, max_turns: 25, chat: nil, cancel: nil, continue: nil, &on_event)
         chat ||= agent.chat
 
         wire_observability(chat, cancel: cancel, &on_event)
+        report_declines(agent, chat)
         chat.with_tool_options(rounds: max_turns) if chat.respond_to?(:with_tool_options)
         before = usage_of(chat)
 
-        response = settle_questions(agent, chat, chat.ask(prompt))
+        first = restore(chat, continue) ? chat.complete : chat.ask(prompt)
+        response = settle_questions(agent, chat, first)
         on_event&.call(:done, response)
         response
       ensure
@@ -53,6 +63,55 @@ module Nexo
       end
 
       private
+
+      # Reports a call a recorded decision refused as `:tool_declined`, once per
+      # call: `ruby_llm` consults a tool's approval more than once, and answers a
+      # refused call itself, so no `:tool_call` or `:tool_result` follows.
+      def report_declines(agent, chat)
+        gate = agent.permissions if agent.respond_to?(:permissions)
+        return unless gate.respond_to?(:on_decline=)
+
+        reported = {}
+        gate.on_decline = lambda do |tool_call|
+          next if reported[tool_call.id]
+
+          reported[tool_call.id] = true
+          chat.instance_variable_get(:@nexo_on_event)&.call(:tool_declined, tool_call)
+        end
+      end
+
+      # Loads a saved transcript into `chat` and answers whether it did. The
+      # transcript is what Message#to_h gave, possibly after a JSON round trip, so
+      # keys are symbolized the way `ruby_llm` reads them: the message's own, and
+      # each tool call's (the calls stay keyed by their String id).
+      def restore(chat, transcript)
+        return false if transcript.nil? || transcript.empty? || !chat.respond_to?(:messages=)
+
+        chat.messages = transcript.map do |message|
+          attributes = message.transform_keys(&:to_sym)
+          calls = attributes[:tool_calls]
+          attributes[:tool_calls] = calls.transform_values { |call| call.transform_keys(&:to_sym) } if calls
+          attributes
+        end
+        true
+      rescue ArgumentError, KeyError, TypeError, NoMethodError
+        false
+      end
+
+      # The chat's conversation as plain data, or nil when it cannot be given
+      # (a chat double, or content that is not plain data).
+      def transcript_of(chat)
+        JSON.parse(JSON.generate(chat.messages.map(&:to_h)))
+      rescue
+        nil
+      end
+
+      # Raises `signal` carrying the conversation so far, so the caller can
+      # carry on from here once the person has answered.
+      def pause(chat, signal)
+        signal.transcript = transcript_of(chat)
+        raise signal
+      end
 
       # Tool-call OBSERVABILITY: these callbacks report tool activity; the cap
       # itself is `with_tool_options(rounds:)` in #run. BOTH callbacks must be
@@ -132,7 +191,7 @@ module Nexo
           break if questions.empty? && approvals.empty? && !await_tasks(chat, deadline)
 
           unanswered = questions.reject { |question| answer(question, answers) }
-          raise Nexo::InputRequired.new(unanswered.map { |q| Nexo::InputRequired.reduce(q) }) unless unanswered.empty?
+          pause(chat, Nexo::InputRequired.new(unanswered.map { |q| Nexo::InputRequired.reduce(q) })) unless unanswered.empty?
 
           response = chat.complete
         end
@@ -148,14 +207,26 @@ module Nexo
         return false if tasks.empty?
 
         remaining = deadline - now
-        unless remaining.positive?
-          tasks.each { |task| cancel_task(task) }
-          raise Nexo::Error, "MCP task #{tasks.map(&:id).join(", ")} did not finish in " \
-            "#{Nexo.config.mcp_task_timeout} seconds and was cancelled"
-        end
+        return give_up_on(chat, tasks) unless remaining.positive?
 
         cancel_if_requested(chat)
         sleep [tasks.filter_map(&:poll_interval).min || 1, remaining].min
+        true
+      end
+
+      # A task outlived Nexo.config.mcp_task_timeout: cancel it and answer its
+      # paused call with an error, so the model hears what happened and the
+      # prompt goes on (0.17). A chat that cannot be answered that way fails the
+      # prompt, as before.
+      def give_up_on(chat, tasks)
+        message = "did not finish in #{Nexo.config.mcp_task_timeout} seconds and was cancelled"
+        tasks.each do |task|
+          cancel_task(task)
+          call = task.tool_call
+          raise Nexo::Error, "MCP task #{task.id} #{message}" unless call && chat.respond_to?(:add_message)
+
+          chat.add_message(role: :tool, tool_call_id: call.id, content: JSON.generate(error: "The #{call.name} task #{message}."))
+        end
         true
       end
 
@@ -181,13 +252,18 @@ module Nexo
           decided = decisions[Nexo::Permissions.approval_key(*subject)]
           next subject if decided.nil?
 
-          decided ? question.approve : question.decline
+          if decided
+            question.approve
+          else
+            question.decline
+            chat.instance_variable_get(:@nexo_on_event)&.call(:tool_declined, question.tool_call)
+          end
           nil
         end
         return if waiting.empty?
 
         pending = waiting.map { |subject| Nexo::ApprovalRequired.new(*subject).to_h }
-        raise Nexo::ApprovalRequired.new(*waiting.first, pending: pending)
+        pause(chat, Nexo::ApprovalRequired.new(*waiting.first, pending: pending))
       end
 
       # What `tool_call` is decided under: the tool's own subject when it is one

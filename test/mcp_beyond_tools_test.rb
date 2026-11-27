@@ -234,15 +234,19 @@ class McpBeyondToolsTest < Minitest::Test
     assert_operator @server.calls.count("tasks/get"), :>=, 2
   end
 
-  def test_a_task_that_outlives_the_timeout_is_cancelled_and_the_prompt_fails
+  # 0.17: the model is told, and the prompt goes on.
+  def test_a_task_that_outlives_the_timeout_is_cancelled_and_answered_with_an_error
     Nexo.config.mcp_task_timeout = 0.05
     agent = signed_in(agent_class("stuck", tasks: true))
-    stub_replies tool_call(:stuck), "never reached"
+    stub_replies tool_call(:stuck), "It timed out."
+    chat = agent.chat
 
-    error = assert_raises(Nexo::Error) { agent.prompt("go") }
+    response = agent.loop.run(agent: agent, prompt: "go", chat: chat)
 
-    assert_match(/did not finish in 0.05 seconds/, error.message)
+    assert_equal "It timed out.", response.content
     assert_equal 1, @server.cancelled_tasks.size
+    answer = chat.messages.find { |message| message.role == :tool }
+    assert_match(/did not finish in 0.05 seconds and was cancelled/, answer.content.to_s)
   end
 
   def test_tasks_is_a_nexo_option_turned_into_the_extension

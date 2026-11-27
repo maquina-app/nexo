@@ -93,11 +93,19 @@ module Nexo
     # callable's answer, or the tool name and its arguments, so a human can tell
     # one call from another.
     def approval_subject(arguments)
-      arguments = @prepare.call(arguments) if @prepare
+      arguments = prepared(arguments)
       [@capability, @detail&.call(arguments) || "#{name} #{JSON.generate(arguments)}"]
     end
 
     private
+
+    # The arguments after `prepare:`, or as given when it refuses them — the
+    # refusal itself is raised from #call, where it becomes the tool's error.
+    def prepared(arguments)
+      @prepare ? @prepare.call(arguments) : arguments
+    rescue Nexo::Permissions::Denied
+      arguments
+    end
 
     # The gate.
     def authorize!(arguments)
