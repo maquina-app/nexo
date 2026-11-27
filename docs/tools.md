@@ -15,6 +15,9 @@ ever allow:
      neither `WriteFile` nor `Shell` is attached. `:auto`, `:ask` and `:approve` decide per call
      and always attach — `:approve` in particular *must* reach the gate so it can suspend the run.
 
+  The same rule covers a host tool declared with `capability:` and, since 0.14, an MCP tool:
+  under `:read_only` one that is not in `mcp_allow` is not attached.
+
   `ReadFile` and `Glob` are always attached. This is a cost and description-accuracy measure, not
   a security boundary: `Permissions#authorize!` remains the gate and still denies at call time.
 
@@ -40,6 +43,50 @@ ever allow:
   (direct tool construction). Best-effort: mtime-based, so a sub-second external edit may slip past
   the stale check (read-before-write is the primary guard). Clobber-safety within a session only —
   no versioning, locking, or VCS semantics.
+
+## Tools of your own — the `tools` macro
+
+Declare a `RubyLLM::Tool` you wrote on the agent, and say what it does in Nexo's terms:
+
+```ruby
+class Archivist < Nexo::Agent
+  model ENV.fetch("NEXO_MODEL")
+
+  tools Today, SumPayments                    # no side effects: no gate
+  tools ArchiveRun, capability: :write        # gated exactly like WriteFile
+  tools ->(agent) { Lookup.new(root: agent.cwd) }
+end
+```
+
+Each entry is a tool class (built with no arguments), an instance, or a lambda that takes the
+agent. The macro accumulates and is inherited.
+
+With `capability:` (`:read`, `:write`, `:shell`, `:fetch` or `:search`) the tool is wrapped in
+`Nexo::GatedTool`, and the agent's permissions decide every call the same way they do for Nexo's
+own tools: refused under `:read_only`, put to `on_ask` under `:ask`, suspended under `:approve`.
+A denied call returns `{error: ...}` and the tool body never runs. A gated tool the mode can never
+allow is left out of the schema. The detail your `on_ask`/`ask_when` hook receives is the tool
+name followed by its arguments as JSON.
+
+Without `capability:` the tool runs ungated. That is right only for a tool with no side effects.
+
+### `strict_tools` — refuse what was never declared
+
+A tool added to the chat any other way — typically by overriding `#chat` and calling
+`with_tools` — is one no permission gate ever saw. Nexo catches those calls with a single
+`around_tool_call` block:
+
+- By default the call runs and Nexo warns once per tool name.
+- With `Nexo.config.strict_tools = true` the call is refused, and the model is told the call did
+  not run.
+
+```ruby
+Nexo.configure { |config| config.strict_tools = true }
+```
+
+Declare your tools with the macro and turn this on. It becomes the default in 1.0. The block is a
+backstop, not the gate: a refused call can only carry `ruby_llm`'s fixed "did not run" text, so
+the gate that explains itself stays with the tool.
 
 These are sandbox refinements as much as tool behavior — see [Sandboxes](sandboxes.md) for the
 guard details behind each capability. The `fetch` tool for reading the web lives in

@@ -3,7 +3,12 @@ module Nexo
     class Local < Sandbox
       attr_reader cwd: String
 
-      def initialize: (?cwd: String, ?env: Hash[String, String]) -> void
+      attr_reader isolation: untyped
+
+      def initialize: (?cwd: String, ?env: Hash[untyped, String], ?isolation: untyped, ?readable: Array[String]) -> void
+      def confined?: () -> bool
+      def hardening_gaps: () -> Array[String]
+      def shell: (String command, ?timeout: Numeric) -> Hash[Symbol, untyped]
       def instructions: () -> String
       def supports?: (Symbol cap) -> bool
       def mtime: (String path) -> Time?

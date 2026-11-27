@@ -11,9 +11,9 @@ and the agent loop continues — it does not raise. A path that escapes the work
 | `:read_only` (default)   | ✅      | ✅      | ❌ `{error}`        | ❌ `{error}`                      | ❌ `{error}` | ❌ `{error}` |
 | `:auto`                  | ✅      | ✅      | ✅                  | ✅                                | ✅         | ✅         |
 | `:ask`                   | ✅      | ✅      | per `on_ask`        | per `on_ask`                      | per `on_ask` | per `on_ask` |
-| `:approve`               | ✅      | ✅      | per `decision`      | per `decision`                    | per `decision` | per `decision` |
+| `:approve`               | ✅      | ✅      | per call            | per call                          | per call   | per call   |
 | `Virtual` sandbox        | ✅      | ✅      | ✅ (in-memory)      | ❌ `NotImplementedError`→`{error}` | ✅ †       | ✅ †       |
-| `Local` sandbox          | ✅ (guarded) | ✅ | ✅ (guarded)        | ✅ (narrowed ENV)                 | ✅ †       | ✅ †       |
+| `Local` sandbox          | ✅ (guarded) | ✅ | ✅ (guarded)        | ✅ (narrowed ENV, unconfined ⚠)   | ✅ †       | ✅ †       |
 | `Container` sandbox      | ✅ (guarded) | ✅ | ✅ (guarded, scratch) | ✅ (in container)               | ✅ †       | ✅ †       |
 
 `:read`/`:glob` are auto-allowed under **every** mode (they sit in the default
@@ -26,10 +26,11 @@ only by the capability gate above plus `fetch_allow` / the injected backend.
 - **`Virtual`** (default) — in-memory, zero host access. `#shell` raises
   `NotImplementedError` on purpose: in-memory means no command execution. That is the
   safety property, not a gap.
-- **`Local`** — host filesystem + shell, for trusted dev/CI. Two guards: every path is
-  expanded against `cwd` and must stay inside it (else `SecurityError`), and the shell sees
-  only `PATH`, `HOME`, `LANG` (plus explicit `env:` additions) — never the full process
-  environment.
+- **`Local`** — host filesystem + shell, for trusted dev/CI. Every file path is expanded
+  against `cwd` and must stay inside it (else `SecurityError`). The shell sees only `PATH`,
+  `HOME`, `LANG` (plus explicit `env:` additions), and a command that outlives its timeout is
+  killed with everything it started. ⚠ The path guard does not cover what a shell command
+  touches: see [Confining the local shell](#confining-the-local-shell).
 - **`Container`** — run the tools inside a throwaway local container via the `docker`
   (default) or Apple `container` CLI. Shell-out only, no client gem. **Hardened by default**
   (no network, dropped caps, read-only rootfs + ephemeral scratch, read-only host binds);
@@ -37,6 +38,57 @@ only by the capability gate above plus `fetch_allow` / the injected backend.
 - **`Remote`** — run the tools inside a remote container (E2B / Daytona / Modal / Docker /
   your own) by injecting a client. Escalating to `:remote` is always an explicit choice in
   your code — the default stays `:virtual`.
+
+## Confining the local shell
+
+On `:local`, `read`/`write`/`glob` are guarded to `cwd`. A shell command is not: it is a host
+process that can read and write wherever your user can, and reach the network. `#hardening_gaps`
+says so, so a host can show it before trusting the sandbox with a model:
+
+```ruby
+Nexo::Sandboxes::Local.new(cwd: dir).hardening_gaps
+# => ["shell commands are not confined: they can read and write outside /path and reach the network …"]
+```
+
+`isolation: :confined` runs every command inside an OS sandbox — Seatbelt on macOS, Bubblewrap
+on Linux — through `ruby_llm`'s sandbox contract. A confined command can write only inside
+`cwd`, cannot read your home directory, and has no network:
+
+```ruby
+# Gemfile
+gem "mxc"   # a soft dependency: Nexo loads it only for a confined shell
+
+class Builder < Nexo::Agent
+  sandbox :local, isolation: :confined, readable: [RbConfig::CONFIG["prefix"]]
+  permissions Nexo::Permissions.new(mode: :read_only, allow: %i[read glob write shell])
+end
+```
+
+Things to know:
+
+- **A confined command cannot read outside `cwd` either.** That includes a Ruby, Node or Python
+  installed under your home directory: `ruby` starts but cannot load its gems. Grant the
+  toolchain with `readable:`. Tools that link Homebrew libraries need those paths too.
+- **It never falls back.** If the sandbox cannot run on the machine, the first `shell` raises
+  `Nexo::ConfigurationError` with the reason. A missing `mxc` gem raises
+  `Nexo::MissingDependencyError`.
+- **Bring your own policy.** `isolation:` also takes an `MXC::Sandbox` class or instance, or any
+  object answering `supported?` and `run(*command, timeout:, readable:, writable:, directory:,
+  env:, network:)`.
+- **Verified on macOS (Seatbelt), `mxc` 0.4.1:** a write outside `cwd`, a read of the home
+  directory and a network request were all refused. Linux (Bubblewrap) is not verified here.
+- Unconfined remains the default in 0.14. Use a [container](#container-sandbox--docker--apple-container)
+  when you need a different filesystem, not only a fence.
+
+### Two fixes in 0.14 that change behaviour
+
+- **The narrowed environment is now real.** Before 0.14 the shell inherited the whole process
+  environment, API keys included; the `PATH`/`HOME`/`LANG` list was only added on top. A command
+  that relied on an inherited variable now needs it passed with `env:`
+  (`sandbox :local, env: {"BUNDLE_GEMFILE" => "..."}`).
+- **A timeout now stops the command.** Before 0.14 `Timeout::Error` was raised only after the
+  command had finished on its own. Now the command's whole process group is killed, and the
+  `Shell` tool reports the timeout to the model as `{error: ...}` instead of failing the run.
 
 ## Safety refinements — safer, more legible real-FS sandboxes
 

@@ -11,9 +11,9 @@ and the agent loop continues — it does not raise. A path that escapes the work
 | `:read_only` (default)   | ✅      | ✅      | ❌ not attached ‡   | ❌ not attached ‡                 | ❌ not attached ‡ | ❌ not attached ‡ |
 | `:auto`                  | ✅      | ✅      | ✅                  | ✅                                | ✅         | ✅         |
 | `:ask`                   | ✅      | ✅      | per `on_ask`        | per `on_ask`                      | per `on_ask` | per `on_ask` |
-| `:approve`               | ✅      | ✅      | per `decision`      | per `decision`                    | per `decision` | per `decision` |
+| `:approve`               | ✅      | ✅      | per call            | per call                          | per call   | per call   |
 | `Virtual` sandbox        | ✅      | ✅      | ✅ (in-memory)      | ❌ `NotImplementedError`→`{error}` | ✅ †       | ✅ †       |
-| `Local` sandbox          | ✅ (guarded) | ✅ | ✅ (guarded)        | ✅ (narrowed ENV)                 | ✅ †       | ✅ †       |
+| `Local` sandbox          | ✅ (guarded) | ✅ | ✅ (guarded)        | ✅ (narrowed ENV, unconfined ⚠)   | ✅ †       | ✅ †       |
 | `Container` sandbox      | ✅ (guarded) | ✅ | ✅ (guarded, scratch) | ✅ (in container)               | ✅ †       | ✅ †       |
 
 `:read`/`:glob` are auto-allowed under **every** mode (they sit in the default

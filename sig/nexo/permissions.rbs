@@ -8,7 +8,19 @@ module Nexo
     type capability = Symbol
     type ask_hook = ^(capability, untyped) -> boolish
 
-    def initialize: (?mode: Symbol, ?allow: Array[Symbol], ?mcp_allow: Array[untyped], ?on_ask: ask_hook?, ?ask_when: ask_hook?) -> void
+    attr_reader mode: Symbol
+    attr_reader decisions: Hash[String, bool]?
+    attr_accessor decision: Hash[Symbol, bool]?
+
+    def self.approval_key: (untyped capability, untyped detail, ?untyped args) -> String
+
+    def initialize: (?mode: Symbol, ?allow: Array[Symbol], ?mcp_allow: Array[untyped], ?on_ask: ask_hook?,
+                     ?ask_when: ask_hook?, ?approve_when: ask_hook?, ?decision: Hash[Symbol, bool]?,
+                     ?decisions: Hash[untyped, bool]?) -> void
+    def with_decision: (Hash[Symbol, bool]? decision) -> Permissions
+    def with_decisions: (Hash[untyped, bool]? decisions) -> Permissions
+    def never_allows?: (capability capability) -> bool
+    def never_allows_mcp?: (untyped tool_name) -> bool
     def authorize_mcp!: (untyped tool_name, ?untyped args) -> bool
     def authorize!: (capability capability, ?untyped detail) -> bool
   end
