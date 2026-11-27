@@ -139,6 +139,65 @@ on the Disk store that was killed mid-run could never be picked up.
 
 Like `resume`, this is re-entry, not replay: code outside a checkpoint runs again.
 
+## Stop a run — `Workflow.cancel`
+
+```ruby
+Nexo::Workflow.cancel(run_id)
+```
+
+- A run that is not executing (`"pending"`, `"queued"`, `"suspended"`) becomes `"cancelled"` at
+  once, and a queued job that later picks it up does nothing.
+- A `"running"` run is **asked** to stop. The request is left in the run store, and the process
+  executing the run sees it at its next `checkpoint`, at the start of a `run_agent`, or around
+  the agent's next tool call. It then ends `"cancelled"`. The model request in flight finishes
+  first, so stopping takes as long as that request.
+
+Nothing is rolled back: events, artifacts and finished checkpoints stay, and what the agents
+used up to that point is still recorded. A cancelled run is final — it can be neither resumed
+nor retried. Cancelling a run that already ended raises `Nexo::Error`.
+
+It works across processes on the ActiveRecord store (the run reads `"cancelling"` until it
+stops) and on the Disk store (an empty `<id>.cancel` file beside the run's document). A run
+store of your own needs `request_cancel!(run)`, `cancel_requested?(run)` and `clear_cancel!(run)`.
+
+Code outside a checkpoint and outside `run_agent` is not interrupted. A long step of your own
+can ask `cancel_requested?` and return early.
+
+## What a run used — `Workflow.usage`
+
+Every `run_agent` records an `agent_usage` event with the tokens and cost its prompt added.
+`Nexo::Workflow.usage(run)` totals them:
+
+```ruby
+Nexo::Workflow.usage(run)
+# => {"tokens" => {"input_tokens" => 18_230, "output_tokens" => 2_114}, "cost" => 0.0412, "prompts" => 3}
+```
+
+`"cost"` is `nil` when any prompt ran on a model `ruby_llm` has no price for (a local model,
+say): a partial total would read as the whole bill. A retried or resumed run adds to the same
+log, so the total is what the run cost altogether.
+
+## A tool that asks the person — suspend, answer, resume
+
+When a tool the agent calls asks the person something (an MCP server's question, or a
+`RubyLLM::Tool` calling `ask`), `run_agent` suspends the run, exactly as it does for an
+approval. The questions are in the run's state:
+
+```ruby
+run = Booking.run(user_id: 7)
+run.status                    # => "suspended"
+run.state["__input__"]
+# => [{"key" => "book:seat", "tool" => "book", "message" => "Window or aisle?",
+#      "fields" => [{"name" => "seat", "type" => "string", "required" => true}]}]
+
+Booking.resume(run.id, answers: {"book:seat" => "aisle"})
+```
+
+Answers accumulate on the run (`"__answers__"`), like approvals: a later, different question
+suspends it again. Resume re-runs the prompt, so the model has to ask for the tool again; when
+it does, the stored answer is sent and the turn carries on. An answer for a key that was not
+asked is ignored.
+
 ## Durable **agent** approval — `:approve` (bridge a mid-run gate to a suspend)
 
 The example above suspends at an **explicit** `suspend!` the workflow author placed.

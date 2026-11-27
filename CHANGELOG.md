@@ -2,9 +2,10 @@
 
 ## [0.16.0] - 2026-11-27
 
-Fixes and verification left over from 0.13–0.15, and the three changes that were parked for
-1.0: ruby_llm's file tools by default, undeclared tools refused by default, and ruby_llm's
-agent options on `Nexo::Agent`.
+Fixes and verification left over from 0.13–0.15; the three changes that were parked for 1.0
+(ruby_llm's file tools by default, undeclared tools refused by default, ruby_llm's agent
+options on `Nexo::Agent`); and ten more pieces of ruby_llm 2.2 for observing and controlling
+a run and for MCP servers that do more than answer a tool call.
 
 **Upgrading — three defaults changed:**
 
@@ -20,8 +21,18 @@ agent options on `Nexo::Agent`.
 3. **`Nexo.config.strict_tools` is `true`.** A tool put on the chat outside the `tools` macro
    is refused. Declare it with `tools`, or set `strict_tools = false`.
 
-Also: a custom run store's `claim_for_resume!` must accept `from:` to support `Workflow.retry`,
-and Nexo's notices are now written to standard error even under `ruby -W0`.
+Also:
+
+- A custom run store's `claim_for_resume!` must accept `from:` to support `Workflow.retry`,
+  and needs `request_cancel!` / `cancel_requested?` / `clear_cancel!` to support cancelling a
+  running run.
+- `WorkflowRun::STATUSES` gained `"cancelling"` and `"cancelled"`. The column is a string, so
+  no migration is needed; update any code that lists statuses.
+- The loop's event block now also receives `:usage`, `:tool_progress` and `:fallback`. A block
+  that assumes only `:tool_call`, `:tool_result` and `:done` should ignore the rest.
+- A custom agent class used with `run_agent` is given `answers:` only when a run has answers,
+  and `cancel:` only when its `#prompt` accepts it.
+- Nexo's notices are now written to standard error even under `ruby -W0`.
 
 ### Added
 
@@ -36,6 +47,23 @@ and Nexo's notices are now written to standard error even under `ruby -W0`.
   repeated. Before this, only a suspended run could be re-entered, so a failed run's
   checkpoints were never used.
 - **`file_tools :none`**, for an agent whose files come from an MCP server.
+- **`Workflow.cancel(run_id)`.** A waiting run is cancelled at once; a running one is asked to
+  stop through the run store and ends `"cancelled"` at its next checkpoint, `run_agent` or
+  tool call. Across processes on the ActiveRecord store (new `"cancelling"` and `"cancelled"`
+  statuses) and the Disk store. `Agent#prompt(cancel:)` is the same hook for a direct caller.
+- **Usage.** The loop emits `:usage` once per prompt with the tokens and cost it added, even
+  when the prompt raises; `run_agent` records it and `Nexo::Workflow.usage(run)` totals a run.
+- **`:tool_progress` and `:fallback` loop events**, recorded on a run as `agent_tool_progress`
+  and `agent_fallback`.
+- **Deferred tools:** `tools …, defer: true` and `mcp …, defer: true`, on ruby_llm's tool
+  search. A deferred tool is gated like any other.
+- **MCP resources:** `mcp …, resources: true` attaches `list_mcp_resources` and
+  `read_mcp_resource`, on the MCP permission axis.
+- **A tool that asks the person something** — an MCP server's question, or `Tool#ask` — raises
+  `Nexo::InputRequired`. `run_agent` suspends on it and `resume(id, answers: {…})` answers it;
+  `Agent.new(answers:)` answers up front.
+- **Step-up authorization:** an MCP call refused for want of a scope raises
+  `Nexo::AuthorizationRequired` with `#scopes`.
 - **Encryption for `Nexo::MCP::CredentialStore`.** `new(dir:, key:)` encrypts every file with
   AES-256-GCM, authenticated with the credential's key name. `generate_key` makes a key.
   A file that does not decrypt reads as "not authorized".
@@ -83,6 +111,13 @@ and Nexo's notices are now written to standard error even under `ruby -W0`.
   on the Disk store is killed with SIGKILL after its first checkpoint, and a second process
   sweeps and retries it without repeating that checkpoint.
 - A confined shell runs a Ruby script with `readable: :ruby` (macOS, `mxc` 0.4.1).
+- **MCP resources, a server's question, a missing scope and deferred tools**, through
+  ruby_llm's real MCP client against the same local server (`test/mcp_beyond_tools_test.rb`).
+- A gated tool can end the turn with `halt`, and a tool's `progress` reaches the run log.
+
+Not exercised: a fallback against a real provider (the event is wired and its reducer
+tested), compaction's effect on stored messages, tool search on a real provider, and a
+server's prompts and tasks.
 
 ### Declined, again
 

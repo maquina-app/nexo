@@ -65,6 +65,53 @@ Things to know:
 - The cap counts rounds, not time or tokens. Bound those inside your own tools (a read
   tool that accepts at most N ids) or with your provider's limits.
 
+## What the block receives
+
+`Agent#prompt` yields `(type, payload)` as the prompt runs:
+
+| Event | Payload | When |
+|---|---|---|
+| `:tool_call` | `RubyLLM::ToolCall` | before each tool call |
+| `:tool_progress` | `{tool_call:, progress:}` — a `RubyLLM::Progress` (`message`, `value`, `total`) | when a tool reports progress (0.16) |
+| `:tool_result` | the tool's return value | after each tool call |
+| `:fallback` | `RubyLLM::Fallback` (`from`, `to`, `error`) | after a request moved to a fallback model declared in the `llm` block (0.16) |
+| `:turn_limit_exceeded` | `{turns:, max_turns:}` | once, when the cap is hit |
+| `:done` | the final `RubyLLM::Message` | when the prompt ends |
+| `:usage` | `{tokens: {input_tokens:, output_tokens:, …}, cost:}` | once per prompt, last, **even when the prompt raises** (0.16) |
+
+`:usage` is what this prompt added, so it is right for a session's long-lived chat too. `cost`
+is `nil` when `ruby_llm` has no price for the model. `:fallback` is wired and reduced for a
+run's log, but no fallback has been triggered against a real provider from Nexo's suite.
+
+A tool of your own reports progress with `progress "Reading page 3 of 9", value: 3, total: 9`
+and ends the turn with `halt "Filed as billing"` — both `RubyLLM::Tool` methods, and both work
+through the permission gate.
+
+### Stopping a prompt
+
+`prompt(text, cancel: -> { stop_requested? })` asks the callable around every tool call. When
+it answers true the chat is cancelled and the prompt raises `RubyLLM::CancelledError` before
+the next tool call or model request; a request already in flight finishes first. A workflow
+does this for you — see [`Workflow.cancel`](durable-workflows.md).
+
+### A tool that asks the person something
+
+A tool can stop and ask: an MCP server's question, or a `RubyLLM::Tool` that calls `ask`.
+`prompt` then raises `Nexo::InputRequired`, whose `questions` say what to collect (`key`,
+`tool`, `message`, `fields`). Put them to the person and prompt again with the answers:
+
+```ruby
+begin
+  Booker.new.prompt("Book me a seat to Lisbon")
+rescue Nexo::InputRequired => e
+  answers = e.questions.to_h { |q| [q.key, ask_the_person(q)] }
+  Booker.new(answers: answers).prompt("Book me a seat to Lisbon")
+end
+```
+
+A value answers a one-field question, a Hash a form, `false` declines. Inside a workflow the
+run suspends and resumes with the answers instead.
+
 ## Verified against
 
 Built and tested against **`ruby_llm` 2.2.3** (the gemspec pins `~> 2.2.0`). The tool body

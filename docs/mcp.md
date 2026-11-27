@@ -152,6 +152,43 @@ controller: [`examples/mcp_oauth.rb`](https://github.com/maquina-app/nexo/blob/m
 | `OAuth endpoints must use HTTPS` | Only a server on `127.0.0.1`/`localhost` may use plain `http`. |
 | A stdio server exits at once | It needs a variable that was not passed with `env:`; its stderr is in your terminal. |
 
+## More than tools
+
+**Resources.** A server can offer things to read — files, records, documents — besides tools
+to call. Ask for them per server, and allow the two tools that reach them:
+
+```ruby
+mcp :docs, transport: :http, url: "https://mcp.example.com/mcp", resources: true
+mcp_allow "list_mcp_resources", "read_mcp_resource"
+```
+
+`list_mcp_resources` prints server, uri, name and type; `read_mcp_resource` returns a
+resource's text, up to 200 KB (a binary one is an error result). Both are on the MCP
+permission axis, because the read happens in the server: allowing `read_mcp_resource` lets
+the model read **any** resource those servers offer.
+
+**A server that asks the user something.** Some tools stop to ask (MCP calls it elicitation).
+`prompt` raises `Nexo::InputRequired` with the questions; a workflow suspends and resumes with
+the answers. See [the loop guide](loops.md) and [durable workflows](durable-workflows.md).
+
+**A call refused for want of a scope.** When a server answers that the stored grant lacks a
+scope, the call raises `Nexo::AuthorizationRequired` — the same error as "never signed in" —
+with the scopes it asked for:
+
+```ruby
+rescue Nexo::AuthorizationRequired => e
+  e.server   # => :github
+  e.scopes   # => ["repo"]      (empty when the user never signed in)
+  redirect_to mcp_connect_path(e.server)   # the authorization URL asks for the wider grant
+```
+
+**A server with many tools.** `mcp :name, …, defer: true` keeps its tool definitions out of
+the model's context until the provider's tool search asks for them.
+
+**Not wrapped by Nexo:** a server's prompts and its long-running tasks. The `ruby_llm` server
+object is reachable (`agent.mcp_server(:name).prompts`), but Nexo adds nothing around them and
+has not tested them.
+
 ## Every MCP tool call is gated — and fails closed
 
 MCP tools obey a **second permission axis**, separate from the sandbox capability axis,

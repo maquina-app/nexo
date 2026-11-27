@@ -131,6 +131,22 @@ Do not trust memory of the 1.x API.
   directory:, env:, network:)` → `stdout`/`stderr`/`exit_code`/`timed_out?`. `ContainerRunner`
   answers it; it is not a `Nexo::Sandbox`.
 - `with_context_budget` needs a known context window, so the macro has no default.
+- Loop events: `:tool_call`, `:tool_progress` (`after_tool_progress { |tool_call, progress| }`),
+  `:tool_result`, `:fallback` (`after_fallback`), `:done`, `:usage` (emitted in `ensure`).
+  `chat.tokens.to_h` is `{input_tokens:, output_tokens:, …}`; `chat.cost.total` is nil without
+  a price. Usage is a before/after difference because a session reuses its chat.
+- A tool that asks (`Tool#ask`, or an MCP `resultType: "input_required"`) does NOT raise out of
+  `chat.ask`: the chat pauses the call and `ask` returns with `chat.waiting?` and
+  `pending_questions`. `Loops::RubyLLM#settle_questions` answers from `agent.answers` and calls
+  `chat.complete`, or raises `Nexo::InputRequired`. That paused state is in memory only.
+- `chat.cancel` takes effect at ruby_llm's next checkpoint (before a tool call or a request),
+  raising `RubyLLM::CancelledError`. `Tool#halt` returns a `Tool::Halt` that passes through
+  `GatedTool` unchanged; the final message then has role `:tool`.
+- `with_tools(*tools, defer: true)`; `chat.deferred_tools`. `RubyLLM::MCP::InsufficientScopeError`
+  (`#scopes`) comes from a 403 with `WWW-Authenticate: … error="insufficient_scope"`.
+- MCP server object: `resources`, `resource(uri)`, `prompts`, `prompt(name, **args)`. Nexo wraps
+  resources only (`MCP::ListResources`, `MCP::ReadResource`); `defer:` and `resources:` are
+  `MCP::NEXO_OPTIONS`, stripped before `RubyLLM.mcp`.
 - `FileStore::Tools.classes([...])` and the tools' `new(store: -> { store })` are `:nodoc:`
   internals; one `SandboxFileStore` per chat (the read-before-write guard is in memory).
 - Persistence is two host models (`Chat` `acts_as_chat`, `Message` `acts_as_message`);
@@ -138,10 +154,20 @@ Do not trust memory of the 1.x API.
 
 ## Workflow rules
 
+- Statuses: `pending queued running done failed interrupted suspended cancelling cancelled`.
+  `Suspended` and `Cancelled` are signals caught in `execute` above the generic rescue and
+  never re-raised.
+- `Workflow.cancel`: the request lives OUTSIDE the run's state (Memory: a Set; Disk: a
+  `<id>.cancel` file; ActiveRecord: status `"cancelling"`), because the worker rewrites its
+  state on every save. Checked in `checkpoint`, `run_agent` and the loop's tool callbacks.
+- `run_agent` turns `Nexo::InputRequired` into a suspend (`"__input__"`, answers in
+  `"__answers__"`), as it does `ApprovalRequired`. A resume re-runs the prompt, so a test must
+  `stub_replies` again before resuming or the model never asks for the tool a second time.
+
 - `Workflow.run(payload = nil, buffer_events:, **kwargs)` then `payload ||= kwargs`: keep both
   call forms working when adding a keyword.
 - State keys are Strings. Reserved: `__suspend__`, `__approval__`, `__approvals__`,
-  `__buffer_events__`. Checkpoints and artifacts persist immediately; events may be buffered.
+  `__input__`, `__answers__`, `__buffer_events__`. Checkpoints and artifacts persist immediately; events may be buffered.
 - `rescue Workflow::Suspended` sits above the generic rescue and never re-raises.
 - `resume` (suspended) and `retry` (failed, interrupted) re-enter `#call` from the top; only
   checkpointed work is skipped. Both use `Object.const_get`, not `constantize`.
@@ -199,4 +225,6 @@ Do not trust memory of the 1.x API.
 - A sign-in against a third-party OAuth MCP server (the flow is verified over real HTTP
   against a local server; discovery against `getliminal.app/mcp` works). Not pursued: that
   server takes only a Client ID Metadata Document, which the host application serves, not Nexo.
+- A fallback against a real provider, compaction's effect on stored messages, tool search on a
+  real provider, and an MCP server's prompts and tasks.
 - "Faraday yields under the fiber scheduler" on 2.2 (practical evidence only: `nexo-mail`).

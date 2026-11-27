@@ -58,6 +58,24 @@ Nexo.configure { |c| c.session_chat_model = "Chat" } # default; a String class n
                                                      # constantized lazily at resume time
 ```
 
+## A long conversation — compaction
+
+A session's chat grows with every turn. `ruby_llm` can compact it; declare that in the agent's
+`llm` block (0.16) and it applies to the persisted chat on every resume:
+
+```ruby
+class Assistant < Nexo::Agent
+  model "claude-sonnet-5-5"
+
+  llm do
+    compaction at: 50_000   # or just `compaction` for the provider's defaults
+  end
+end
+```
+
+The option reaches the chat (`chat.compaction # => {at: 50000}`); what compaction then does to
+the stored messages is `ruby_llm`'s and the provider's, and has not been run from Nexo's suite.
+
 ## Rails-only durability — plain Ruby is in-memory
 
 Durable sessions require ActiveRecord. Backend selection guards on

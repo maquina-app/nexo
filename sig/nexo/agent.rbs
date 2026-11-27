@@ -10,7 +10,7 @@ module Nexo
     def self.file_tools: (?Symbol value) -> Symbol
     def self.llm: () ?{ () [self: singleton(RubyLLM::Agent)] -> void } -> untyped
     def self.context_budget: (?Hash[untyped, untyped]? budget, **untyped shares) -> Hash[untyped, untyped]?
-    def self.tools: (*untyped list, ?capability: Symbol?) -> Array[Hash[Symbol, untyped]]
+    def self.tools: (*untyped list, ?capability: Symbol?, ?defer: bool?) -> Array[Hash[Symbol, untyped]]
 
     attr_reader cwd: String
     attr_reader model: untyped
@@ -21,9 +21,10 @@ module Nexo
     attr_reader instructions: String?
 
     def initialize: (?cwd: String, ?model: untyped, ?sandbox: untyped, ?permissions: untyped,
-                     ?decision: Hash[Symbol, bool]?, ?decisions: Hash[String, bool]?, ?mcp_owner: untyped, ?loop: untyped) -> void
+                     ?decision: Hash[Symbol, bool]?, ?decisions: Hash[String, bool]?, ?mcp_owner: untyped, ?answers: Hash[untyped, untyped]?, ?loop: untyped) -> void
     def mcp_server: (untyped name) -> untyped
     def chat: (?base: untyped) -> RubyLLM::Chat
-    def prompt: (String text) ?{ (untyped) -> void } -> untyped
+    attr_reader answers: Hash[String, untyped]
+    def prompt: (String text, ?max_turns: Integer?, ?cancel: (^() -> boolish)?) ?{ (Symbol, untyped) -> void } -> untyped
   end
 end

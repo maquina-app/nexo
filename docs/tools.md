@@ -137,6 +137,18 @@ name followed by its arguments as JSON.
 
 Without `capability:` the tool runs ungated. That is right only for a tool with no side effects.
 
+### A long catalogue — `defer: true`
+
+```ruby
+tools(*Catalog.tools, capability: :read, defer: true)
+```
+
+A deferred tool's definition stays out of the model's context until the provider's tool search
+loads it (0.16, `ruby_llm`'s `with_tools(defer:)`). A provider without tool search gets it as
+an ordinary tool. Deferring changes what the model is told up front, not what it may do: a
+deferred tool is gated exactly like any other. `mcp :name, …, defer: true` does the same for
+a server's tools.
+
 ### `strict_tools` — refuse what was never declared
 
 A tool added to the chat any other way — typically by overriding `#chat` and calling
