@@ -182,7 +182,7 @@ class ApprovalPauseTest < Minitest::Test
 
     Careful.new(decisions: {key => false}).prompt("Archive r1") { |type, payload| events << [type, payload] }
 
-    declined = events.select { |type, _| type == :tool_declined }
+    declined = events.filter_map { |type, payload| [type, payload] if type == :tool_declined }
     assert_equal 1, declined.size
     assert_equal "archive", declined.first.last.name.to_s.split("--").last
     assert_empty Archive.calls
