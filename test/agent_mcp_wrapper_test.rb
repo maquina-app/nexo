@@ -43,11 +43,19 @@ class AgentMcpWrapperTest < Minitest::Test
   class PlainAgent < Nexo::Agent
     model "test-model"
     mcp :fake, transport: :stdio, command: "fake"
+    mcp_allow "get_email"
+  end
+
+  # No mcp_allow: under the default :read_only the tool can never be authorized.
+  class UnlistedAgent < Nexo::Agent
+    model "test-model"
+    mcp :fake, transport: :stdio, command: "fake"
   end
 
   class WrappingAgent < Nexo::Agent
     model "test-model"
     mcp :fake, transport: :stdio, command: "fake"
+    mcp_allow "get_email"
 
     def wrap_mcp_tool(tool) = CappingTool.new(tool: tool, max_chars: 10)
   end
@@ -64,6 +72,14 @@ class AgentMcpWrapperTest < Minitest::Test
     chat.expect(:with_tools, nil) { |*tools| captured = tools }
     agent.send(:apply_mcp, chat)
     captured
+  end
+
+  def test_a_tool_read_only_can_never_allow_is_not_attached
+    agent = build(UnlistedAgent)
+    chat = Object.new
+    def chat.with_tools(*) = raise("nothing should be attached")
+
+    assert_nil agent.send(:apply_mcp, chat)
   end
 
   def test_tools_are_gated_by_default

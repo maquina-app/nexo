@@ -130,6 +130,14 @@ module Nexo
       @mode == :read_only && PRIVILEGED.include?(capability)
     end
 
+    # Whether the MCP tool `tool_name` can NEVER be authorized by this gate. The
+    # MCP sibling of #never_allows?, true only under `:read_only` for a name
+    # absent from `mcp_allow`. Agent uses it to leave such a tool out of the
+    # schema; #authorize_mcp! remains the gate.
+    def never_allows_mcp?(tool_name)
+      @mode == :read_only && !@mcp_allow.include?(tool_name.to_s)
+    end
+
     # Authorizes an MCP tool *call* by name. A deliberate sibling of #authorize!
     # on a separate capability axis: an MCP tool runs inside the MCP server,
     # outside the sandbox, so this gates the authority to *invoke* it — a different
