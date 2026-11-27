@@ -86,6 +86,31 @@ class RunControlTest < Minitest::Test
     assert_equal({"tokens" => {}, "cost" => nil, "prompts" => 0}, Nexo::Workflow.usage(Struct.new(:events).new([])))
   end
 
+  # 0.16.1: a workflow that prompts its agents itself logs their events the
+  # way run_agent does, and may tag them.
+  class SelfDriven < Nexo::Workflow
+    def call(_payload)
+      agent = Worker.new(sandbox: sandbox)
+      agent.prompt("go", cancel: -> { cancel_requested? }) { |type, payload| emit_agent_event(type, payload, source: "worker") }
+      {}
+    ensure
+      agent&.close
+    end
+  end
+
+  def test_a_self_driven_agent_logs_events_usage_can_total
+    stub_replies tool_call(SLOW), "done"
+
+    run = SelfDriven.run
+
+    assert_equal "done", run.status, run.error.to_s
+    assert_equal 1, Nexo::Workflow.usage(run)["prompts"]
+    assert_operator Nexo::Workflow.usage(run)["tokens"]["input_tokens"], :>, 0
+    call = run.events.find { |event| event["type"] == "agent_tool_call" }
+    assert_equal "worker", call["data"]["source"]
+    assert call["data"]["name"], "reduced to plain data"
+  end
+
   def test_cost_is_nil_when_any_prompt_had_no_price
     run = Struct.new(:events).new([
       {"type" => "agent_usage", "data" => {"tokens" => {"input_tokens" => 10}, "cost" => 0.5}},

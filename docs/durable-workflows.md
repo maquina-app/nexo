@@ -166,6 +166,16 @@ can ask `cancel_requested?` and return early.
 ## What a run used — `Workflow.usage`
 
 Every `run_agent` records an `agent_usage` event with the tokens and cost its prompt added.
+A workflow that prompts its agents itself records the same events with
+`emit_agent_event` (0.16.1):
+
+```ruby
+agent = Reviewer.new(sandbox: sandbox)
+agent.prompt(text, cancel: -> { cancel_requested? }) do |type, payload|
+  emit_agent_event(type, payload, "source" => "reviewer")   # the tag is yours
+end
+```
+
 `Nexo::Workflow.usage(run)` totals them:
 
 ```ruby

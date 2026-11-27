@@ -1,5 +1,16 @@
 ## [Unreleased]
 
+## [0.16.1] - 2026-11-27
+
+### Added
+
+- **`Workflow#emit_agent_event(type, payload, extra = {})`**, public. It records one event of
+  an agent's prompt the way `run_agent` does: named `agent_<type>`, payload reduced to plain
+  data. A workflow that builds and prompts its agents itself (several agent classes in one
+  workflow) had to write its own reducer, and `Workflow.usage` could not read the result.
+- **`Workflow#cancel_requested?`** is public, for the same kind of workflow:
+  `agent.prompt(text, cancel: -> { cancel_requested? })`.
+
 ### Fixed
 
 - Tests only: the crash-and-retry test assumed Ruby 3.4's `Hash#inspect`, and the live
