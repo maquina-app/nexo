@@ -70,6 +70,14 @@ module Nexo
     # workflow jobs to a dedicated queue.
     attr_accessor :job_queue
 
+    # What happens when the model calls a tool Nexo did not attach — one a host
+    # added to the chat itself, outside the `tools` macro, so no permission gate
+    # ever saw it. `false` (default in 0.14) runs it and warns once per tool;
+    # `true` refuses it, and the model is told the call did not run. Declare host
+    # tools with `tools` on the agent and turn this on. It becomes the default
+    # in 1.0.
+    attr_accessor :strict_tools
+
     # Seeds the safe, provider-neutral defaults (no model, `:virtual` sandbox,
     # `:read_only` permissions, `:threaded` concurrency).
     def initialize
@@ -84,6 +92,7 @@ module Nexo
       @broadcast_events = false # safe default: opt in to the Turbo mirror
       @run_store = nil # nil → the automatic choice (ActiveRecord under Rails, else Memory)
       @job_queue = nil # nil → ActiveJob's default queue
+      @strict_tools = false # warn, do not refuse; flips to true in 1.0
     end
 
     private

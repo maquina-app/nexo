@@ -52,6 +52,9 @@ module Nexo
     # and the tool `args` — enough for a host to render the approval prompt.
     attr_reader :capability, :detail, :args
 
+    # The key this call is decided under — see Permissions::approval_key.
+    def key = Permissions.approval_key(capability, detail, args)
+
     # Builds the signal for `capability` acting on `detail` with `args`; the
     # message reads "approval required for <capability> (<detail>)".
     def initialize(capability, detail = nil, args = nil)
@@ -61,6 +64,9 @@ module Nexo
       super("approval required for #{capability} (#{detail})")
     end
   end
+
+  @undeclared_tools = Set.new
+  @undeclared_tools_lock = Mutex.new
 
   class << self
     # Yields the singleton Configuration for in-place setup and returns it.
@@ -82,6 +88,20 @@ module Nexo
     # isolating the global between examples.
     def reset_config!
       @config = Configuration.new
+    end
+
+    # Warns, once per tool name, that the model called a tool Nexo did not attach
+    # (see Configuration#strict_tools). Called from the tool backstop, possibly on
+    # several tool threads at once, hence the lock.
+    def warn_undeclared_tool(name, agent_class)
+      @undeclared_tools_lock.synchronize do
+        return if @undeclared_tools.include?(name)
+
+        @undeclared_tools << name
+      end
+      warn "[nexo] #{agent_class} ran the tool `#{name}`, which was added to the chat outside " \
+        "the `tools` macro, so no permission gate saw the call. Declare it with `tools` " \
+        "(optionally `capability:`); Nexo.config.strict_tools = true refuses such calls."
     end
 
     # Returns a fresh run id as a time-ordered UUID v7 string (Ruby 3.3+).

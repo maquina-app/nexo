@@ -135,6 +135,21 @@ class RealLoopTest < Minitest::Test
     assert_equal({"content" => "Done."}, resumed.result)
   end
 
+  # 0.14: on the real loop, approving one write does not approve a different one.
+  def test_two_different_writes_each_ask_on_the_real_loop
+    stub_replies tool_call(WRITE, path: "a.txt", content: "A"), tool_call(WRITE, path: "b.txt", content: "B"), "Done."
+
+    run = ApprovalWorkflow.run
+    assert_equal "a.txt", run.state["__approval__"]["tool"]
+
+    run = ApprovalWorkflow.resume(run.id, approved: true)
+    assert_equal "suspended", run.status
+    assert_equal "b.txt", run.state["__approval__"]["tool"]
+
+    run = ApprovalWorkflow.resume(run.id, approved: true)
+    assert_equal "done", run.status
+  end
+
   class ReadingWorkflow < Nexo::Workflow
     agent Reader
 

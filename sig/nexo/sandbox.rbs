@@ -8,5 +8,6 @@ module Nexo
     def instructions: () -> String?
     def supports?: (Symbol capability) -> bool
     def mtime: (String path) -> Time?
+    def hardening_gaps: () -> Array[String]
   end
 end

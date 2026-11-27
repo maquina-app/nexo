@@ -7,32 +7,72 @@ require "timeout"
 module Nexo
   module Sandboxes
     # Host filesystem + shell sandbox, for trusted dev/CI use. The developer opts
-    # into this explicitly (the default is Virtual); two guards keep a
-    # model-driven agent contained:
+    # into this explicitly (the default is Virtual). What keeps a model-driven
+    # agent contained:
     #
     # * Path-escape guard — every `read`/`write` path is expanded against `cwd`
     #   and must stay inside it, otherwise `SecurityError` is raised.
     # * Narrowed ENV — the shell sees only PATH, HOME, LANG (plus explicit
     #   `env:` additions), never the full process environment.
+    # * A real timeout — a command that outlives `timeout:` is killed together
+    #   with everything it started.
+    #
+    # ⚠️ The path guard covers `read`/`write`/`glob` only. A shell command is a
+    # host process: unless `isolation: :confined` is set it can read and write
+    # anywhere the user can, and reach the network. #hardening_gaps reports this
+    # so a host can show it.
+    #
+    # ## Confining the shell
+    #
+    # `isolation: :confined` runs each command inside an OS sandbox (Seatbelt on
+    # macOS, Bubblewrap on Linux) through `ruby_llm`'s sandbox contract, so it can
+    # write only inside `cwd`, cannot read the home directory, and has no network.
+    # It needs the `mxc` gem (a soft dependency: add `gem "mxc"` to the host
+    # Gemfile). A confined command cannot read outside `cwd` either, which
+    # includes a Ruby or Node installed under the home directory — grant those
+    # with `readable:`.
+    #
+    # ```ruby
+    # sandbox :local, isolation: :confined, readable: [RbConfig::CONFIG["prefix"]]
+    # ```
+    #
+    # `isolation:` also takes any object answering `ruby_llm`'s sandbox contract
+    # (`supported?` and `run`), or an `MXC::Sandbox` class or instance carrying a
+    # policy of your own.
     #
     # Under a fiber reactor (Spec 5) these blocking file/shell syscalls would
     # stall every other concurrent fiber. When `Nexo.config.concurrency == :async`
     # each operation is offloaded to a worker thread (see #offload); otherwise
-    # it runs inline, byte-for-byte the Spec 1 behavior with zero overhead. The
-    # offload never changes return values or the security properties below.
+    # it runs inline with zero overhead. The offload never changes return values
+    # or the security properties above.
     class Local < Sandbox
       # The expanded workspace root; every path is guarded to stay inside it.
       attr_reader :cwd
 
+      # How the shell is isolated: `:none`, `:confined`, or the sandbox object given.
+      attr_reader :isolation
+
       # Roots the sandbox at `cwd` (expanded, default `Dir.pwd`) and narrows the
       # shell environment to `PATH`/`HOME`/`LANG` plus any explicit `env:` entries.
-      def initialize(cwd: Dir.pwd, env: {})
+      #
+      # `isolation:` is `:none` (default — the shell is an ordinary host process),
+      # `:confined` (an OS sandbox through the `mxc` gem), or a sandbox object.
+      # `readable:` lists extra paths a confined command may read. Raises
+      # ConfigurationError for an unknown `isolation:`; a `:confined` sandbox that
+      # cannot run on this machine raises on the first #shell, not here.
+      def initialize(cwd: Dir.pwd, env: {}, isolation: :none, readable: [])
         @cwd = File.expand_path(cwd)
         # The physical root (symlinks resolved), used by the escape guards so a
         # symlink inside cwd can't leak a target outside it.
         @real_cwd = File.exist?(@cwd) ? File.realpath(@cwd) : @cwd
         # Deliberately narrow env — never hand a model-driven shell the whole ENV.
-        @env = ENV.to_h.slice("PATH", "HOME", "LANG").merge(env)
+        @env = ENV.to_h.slice("PATH", "HOME", "LANG").merge(env.transform_keys(&:to_s))
+        @isolation = isolation
+        @readable = Array(readable).map { |path| File.expand_path(path.to_s) }
+        return if %i[none confined].include?(isolation) || contract?(isolation) || mxc_sandbox?(isolation)
+
+        raise Nexo::ConfigurationError,
+          "unknown isolation #{isolation.inspect} (use :none, :confined, or a sandbox object)"
       end
 
       def read(path)
@@ -59,11 +99,28 @@ module Nexo
       end
 
       # A plain-text description of this host environment for the agent's system
-      # prompt: the host cwd, that the real host filesystem and shell are
-      # reachable, and that access is guarded to `cwd`.
+      # prompt: the host cwd, and what a shell command can and cannot reach.
       def instructions
-        "You run on the host machine, cwd #{@cwd}. The real host filesystem " \
-          "and shell are reachable; file access is guarded to #{@cwd}."
+        if confined?
+          "You run on the host machine, cwd #{@cwd}. File access is guarded to " \
+            "#{@cwd}. Shell commands run in an OS sandbox: they can write only " \
+            "inside #{@cwd} and have no network access."
+        else
+          "You run on the host machine, cwd #{@cwd}. The real host filesystem " \
+            "and shell are reachable; file access is guarded to #{@cwd}."
+        end
+      end
+
+      # Whether shell commands run inside an OS sandbox.
+      def confined? = @isolation != :none
+
+      # What this sandbox does NOT contain, as short human-readable strings — the
+      # same contract as Container#hardening_gaps. Empty when the shell is confined.
+      def hardening_gaps
+        return [] if confined?
+
+        ["shell commands are not confined: they can read and write outside #{@cwd} " \
+          "and reach the network (set isolation: :confined, or use a container sandbox)"]
       end
 
       # Supports all four capabilities — unlike Virtual, a real process runs
@@ -80,18 +137,111 @@ module Nexo
         File.exist?(full) ? File.mtime(full) : nil
       end
 
+      # Runs `command` through `sh`, in `cwd`, with the narrowed environment.
+      # Raises `Timeout::Error` after `timeout` seconds — and by then the command
+      # and every process it started have been killed.
       def shell(command, timeout: 30)
-        offload do
-          # ruby_llm's target Ruby has no `timeout:` kwarg on Open3.capture3
-          # (verified), so the wall-clock bound lives in Timeout.timeout.
-          out, err, status = Timeout.timeout(timeout) do
-            Open3.capture3(@env, command, chdir: @cwd)
-          end
-          {stdout: out, stderr: err, status: status.exitstatus}
-        end
+        offload { confined? ? confined_shell(command, timeout) : host_shell(command, timeout) }
       end
 
       private
+
+      # The unconfined path: an ordinary host process in its own process group,
+      # so a timeout can kill the whole tree and not only the `sh` at its root.
+      # `unsetenv_others` is what makes the narrowed ENV real — without it the
+      # child inherits the whole process environment and `@env` only adds to it.
+      def host_shell(command, timeout)
+        out_read, out_write = IO.pipe
+        err_read, err_write = IO.pipe
+        pid = Process.spawn(@env, command, chdir: @cwd, in: File::NULL, out: out_write, err: err_write,
+          pgroup: true, unsetenv_others: true)
+        out_write.close
+        err_write.close
+        readers = [out_read, err_read].map { |io| reader(io) }
+        _, status = Timeout.timeout(timeout) { Process.wait2(pid) }
+        {stdout: readers[0].value.to_s, stderr: readers[1].value.to_s, status: status.exitstatus}
+      rescue Timeout::Error
+        kill_group(pid)
+        raise Timeout::Error, "command timed out after #{timeout}s and was killed"
+      ensure
+        [out_read, out_write, err_read, err_write].each { |io| io&.close unless io&.closed? }
+      end
+
+      # Drains one pipe on its own thread so a chatty command cannot fill the
+      # pipe buffer and block. A read cut short by the timeout teardown is nil.
+      def reader(io)
+        Thread.new do
+          io.read
+        rescue IOError
+          nil
+        end.tap { |thread| thread.report_on_exception = false }
+      end
+
+      # Kills the command's whole process group and reaps it. Best-effort: the
+      # group may already be gone.
+      def kill_group(pid)
+        return unless pid
+
+        Process.kill("KILL", -pid)
+        Process.wait(pid)
+      rescue Errno::ESRCH, Errno::ECHILD, Errno::EPERM
+        nil
+      end
+
+      # The confined path: `ruby_llm`'s sandbox contract. The runner adds this
+      # run's grants (cwd readable and writable, the declared `readable:` paths)
+      # to its own policy; `network: nil` keeps that policy's network access,
+      # which is none for the default sandbox.
+      def confined_shell(command, timeout)
+        result = runner.run("sh", "-c", command, timeout: timeout, directory: @real_cwd,
+          readable: [@real_cwd, *@readable], writable: [@real_cwd], env: @env, network: nil)
+        raise Timeout::Error, "command timed out after #{timeout}s and was killed" if result.timed_out?
+
+        {stdout: result.stdout.to_s, stderr: result.stderr.to_s, status: result.exit_code}
+      end
+
+      # The object that runs a confined command, resolved once. Raises
+      # ConfigurationError when it cannot run on this machine, so a host that
+      # asked for confinement never silently gets an unconfined shell.
+      def runner
+        @runner ||= begin
+          candidate = contract?(@isolation) ? @isolation : mxc_runner
+          unless candidate.supported?
+            reason = candidate.reason if candidate.respond_to?(:reason)
+            raise Nexo::ConfigurationError,
+              ["the shell sandbox cannot run on this machine.", reason].compact.join(" ")
+          end
+          candidate
+        end
+      end
+
+      # Wraps an `MXC::Sandbox` (the default one for `:confined`, or the host's
+      # own) in `ruby_llm`'s adapter, which speaks the sandbox contract.
+      def mxc_runner
+        require_mxc!
+        ::RubyLLM::Sandbox.resolve((@isolation == :confined) ? ::MXC::Sandbox.new : @isolation)
+      end
+
+      # `mxc` is a soft dependency, like `async`: required only on this path.
+      def require_mxc!
+        require "mxc"
+      rescue LoadError
+        raise Nexo::MissingDependencyError,
+          "isolation: :confined needs the mxc gem — add `gem \"mxc\"` to your Gemfile"
+      end
+
+      # Whether `value` answers `ruby_llm`'s sandbox contract.
+      def contract?(value)
+        value.respond_to?(:run) && value.respond_to?(:supported?)
+      end
+
+      # Whether `value` is an `MXC::Sandbox` class or instance. False when the
+      # gem is not loaded: a host holding one has necessarily loaded it.
+      def mxc_sandbox?(value)
+        return false unless defined?(::MXC::Sandbox)
+
+        value.is_a?(::MXC::Sandbox) || (value.is_a?(Class) && value <= ::MXC::Sandbox)
+      end
 
       # Runs a blocking block off the reactor when async concurrency is enabled,
       # inline otherwise. The decision is driven by config, not by
@@ -116,6 +266,8 @@ module Nexo
         end
       end
 
+      # `path` expanded against `cwd`, or `SecurityError` when it would land
+      # outside the sandbox.
       def absolute(path)
         full = File.expand_path(path, @cwd)
         # Check the PHYSICAL location (symlinks resolved), not the lexical path, so

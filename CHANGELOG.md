@@ -1,5 +1,78 @@
 ## [Unreleased]
 
+## [0.14.0] - 2026-11-26
+
+A security release. Three guarantees Nexo documented did not hold and now do, and a tool
+you wrote yourself can be gated like Nexo's own.
+
+**Upgrading:** four changes can affect a host.
+
+1. **The local shell no longer inherits your environment.** If a command an agent runs on
+   `sandbox :local` relied on an inherited variable, pass it with `env:`.
+2. **`resume(approved:)` answers one call.** A workflow whose agent makes several gated calls
+   now suspends once per distinct call. A host that drove an agent directly with
+   `Agent.new(decision:)` is unaffected.
+3. **Under `:read_only`, MCP tools outside `mcp_allow` are no longer attached.** They were
+   always denied when called; the model just stops seeing them.
+4. **Tools added by overriding `#chat` now warn once.** Move them to the `tools` macro.
+
+### Fixed
+
+- **`Sandboxes::Local#shell` leaked the whole process environment.** The documented narrowing
+  to `PATH`/`HOME`/`LANG` never happened: those were added on top of an inherited environment,
+  so any secret in the host's `ENV` was readable by a model-run command. The child process now
+  gets only the narrowed set plus explicit `env:` entries.
+- **A shell timeout did not stop the command.** `Timeout::Error` was raised only after the
+  command finished by itself. The command now runs in its own process group, which is killed
+  when the timeout fires. `Tools::Shell` returns the timeout to the model as `{error:}` instead
+  of failing the run.
+- **One approval approved everything after it.** `Workflow.resume(id, approved: true)` handed
+  the re-driven agent a single global decision, so every later `:approve`-gated call in that
+  prompt ran without asking; the guide said it would suspend again. Answers are now filed per
+  call under the reserved `__approvals__` state key, keyed by capability and detail (and a
+  digest of the arguments for MCP tools). A call with no answer suspends.
+- **`sandbox :local, env: {...}`** dropped `env:` in the Hash form. Every option now reaches
+  `Sandboxes::Local`.
+- **`Tools::Fetch` failed on hosts whose first address was unreachable.** Only the first
+  resolved address was tried, so a host with an IPv6 record failed on a machine with no IPv6
+  route. Each vetted address is now tried in turn (up to four), and only on connect errors.
+
+### Added
+
+- **`tools` macro on `Nexo::Agent`** for tools of your own, with an optional `capability:`.
+  A tool declared with one is wrapped in the new `Nexo::GatedTool`, so the agent's permissions
+  decide every call, and it is left out of the schema when the mode could never allow it.
+- **`Nexo.config.strict_tools`.** One `around_tool_call` block catches calls to tools Nexo did
+  not attach. Default `false`: the call runs and Nexo warns once per tool. `true` refuses it.
+  This becomes the default in 1.0.
+- **`isolation: :confined` on `Sandboxes::Local`** runs shell commands in an OS sandbox through
+  `ruby_llm`'s sandbox contract (the `mxc` gem, a soft dependency): writes only inside `cwd`,
+  no home directory, no network. `readable:` grants extra paths; `isolation:` also accepts an
+  `MXC::Sandbox` or any object answering the contract. Verified on macOS; opt-in.
+- **`Sandbox#hardening_gaps`** on every sandbox. `Local` reports an unconfined shell.
+- **`Permissions#decisions`, `#with_decisions`, `::approval_key`, `#never_allows_mcp?`** and
+  `Nexo::ApprovalRequired#key`.
+- **Runs execute inside `RubyLLM.workflow`**, so `ruby_llm`'s instrumentation and usage records
+  carry the Nexo run id. `checkpoint` and `run_agent` are steps of it. No outcome changes.
+
+### Deprecated
+
+- `Permissions#decision`, `#with_decision` and `Agent.new(decision:)`: one answer for every
+  gated call. `Workflow#run_agent` no longer uses them. Use `decisions:`.
+
+### Decided against, for now
+
+Recorded so they are not re-litigated without new facts (all read from ruby_llm 2.2.3):
+
+- **The permission check did not move into `around_tool_call`.** A skipped call can only give
+  the model `"The <name> call did not run."`; the block's return value is ignored. Nexo's
+  denial messages cannot travel through it, so the hook is the backstop, not the gate.
+- **`:approve` was not rebuilt on ruby_llm's tool approvals.** Those are durable only with
+  `acts_as_chat`; without ActiveRecord the pending state lives in memory. Nexo's approvals
+  work with any run store.
+- **`Nexo::Agent` is not a `RubyLLM::Agent` subclass**, and `Session`, `WebSearch`,
+  `ReadTracker` and `OutputTruncator` stay: ruby_llm has no plain-Ruby equivalent of them.
+
 ## [0.13.0] - 2026-11-26
 
 Nexo now runs on ruby_llm 2.2. MCP comes from ruby_llm itself, skills need no extra gem,

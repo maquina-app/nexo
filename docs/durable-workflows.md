@@ -132,7 +132,7 @@ class ApprovedWrite < Nexo::Workflow
 end
 ```
 
-The loop is: **`:approve` gate with no decision → `Nexo::ApprovalRequired` → `run_agent`
+The loop is: **`:approve` gate reaches a call nobody has decided → `Nexo::ApprovalRequired` → `run_agent`
 suspends → host renders the pending call → `resume(approved:)` threads the decision back
 through the gate.**
 
@@ -176,10 +176,20 @@ resumed.status                                 # => "done" (the gate allowed the
   non-idempotent tool call *before* the approval gate re-runs on resume (agent tool calls
   generally aren't checkpointable). Put approval gates **early**, or after the expensive
   work is already `checkpoint`ed by the workflow.
-- **One approval per suspend cycle, global decision.** The `{approved:}` answers whichever
-  gate the re-driven agent hits first. A *second* gate after an approved first one simply
-  **suspends again** — the next resume decides it. There is no per-tool decision granularity
-  in v1.
+- **One answer decides one call.** `resume(approved:)` answers the call recorded under
+  `run.state["__approval__"]`, and nothing else. The answer is filed in
+  `run.state["__approvals__"]` under that call's key (capability plus path, command or URL; for
+  an MCP tool, its name plus a digest of the arguments). A *different* gated call later in the
+  same prompt **suspends again**, and the next resume decides it. Before 0.14 the first answer
+  silently applied to every later call.
+- **A re-driven model may ask for something else.** Resume runs the prompt again, and nothing
+  forces the model to repeat the call you approved. If it writes `b.txt` where it asked for
+  `a.txt`, that is a new call and the run suspends for it. This is the safe direction.
+- **`approved:` with nothing pending approves nothing.** An answer is recorded only when a call
+  is waiting.
+- **A catch-all tool handler breaks it.** `RubyLLM::Tool.rescue_from StandardError` in the host
+  swallows the approval signal, and the call is reported to the model as an error instead of
+  suspending the run. Rescue specific classes.
 - **Cross-process approval needs the ActiveRecord store + ActiveJob** (like all durable resume).
   In-process `resume` works with the Memory store; a Memory run does not survive the process.
 - **Branch depends on upstream `ruby_llm`.** This works because `ruby_llm`'s tool loop lets a

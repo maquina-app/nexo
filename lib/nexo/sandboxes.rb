@@ -29,13 +29,14 @@ module Nexo
     # Resolves the `{ type:, **opts }` Hash form. `:docker`/`:apple` pass every
     # other key straight through to Sandboxes::Container (so an explicit Hash
     # `cwd:` or the `/workspace` default wins — never the host `cwd`); `:local`
-    # honors an explicit Hash `cwd:`, otherwise falls back to the host `cwd`.
+    # honors an explicit Hash `cwd:`, otherwise falls back to the host `cwd`, and
+    # passes every other key (`env:`, `isolation:`, `readable:`) to Sandboxes::Local.
     def resolve_hash(opts, cwd)
       type = opts.fetch(:type)
       rest = opts.except(:type)
       case type
       when :docker, :apple then Container.new(runtime: type, **rest)
-      when :local then Local.new(cwd: rest.fetch(:cwd, cwd))
+      when :local then Local.new(**rest, cwd: rest.fetch(:cwd, cwd))
       else raise Nexo::ConfigurationError, "unknown sandbox type: #{type.inspect}"
       end
     end

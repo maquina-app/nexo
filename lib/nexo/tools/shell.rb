@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "timeout"
+
 module Nexo
   module Tools
     # Runs a shell command in the agent's sandbox. Authorizes `:shell` first.
@@ -18,7 +20,8 @@ module Nexo
 
       # Authorizes `:shell`, runs `command`, and returns
       # `{ stdout:, stderr:, status: }` (stdout/stderr truncated via OutputTruncator) — or
-      # `{ error: ... }` on a denial or a sandbox with no shell.
+      # `{ error: ... }` on a denial, a sandbox with no shell, or a command that
+      # ran past the sandbox's timeout (it has been killed by then).
       def execute(command:)
         @permissions.authorize!(:shell, command)
         out = @sandbox.shell(command)
@@ -27,7 +30,7 @@ module Nexo
           stderr: OutputTruncator.call(out[:stderr]),
           status: out[:status]
         }
-      rescue Permissions::Denied, NotImplementedError => e
+      rescue Permissions::Denied, NotImplementedError, Timeout::Error => e
         {error: e.message}
       end
     end

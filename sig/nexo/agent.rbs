@@ -7,6 +7,7 @@ module Nexo
     def self.permissions: (?untyped value) -> untyped
     def self.instructions: (?String value) -> String?
     def self.search_backend: (?untyped obj) -> untyped
+    def self.tools: (*untyped list, ?capability: Symbol?) -> Array[Hash[Symbol, untyped]]
 
     attr_reader cwd: String
     attr_reader model: untyped
@@ -16,7 +17,8 @@ module Nexo
     attr_reader permissions: Permissions
     attr_reader instructions: String?
 
-    def initialize: (?cwd: String, ?model: untyped, ?sandbox: untyped, ?permissions: untyped) -> void
+    def initialize: (?cwd: String, ?model: untyped, ?sandbox: untyped, ?permissions: untyped,
+                     ?decision: Hash[Symbol, bool]?, ?decisions: Hash[String, bool]?, ?loop: untyped) -> void
     def chat: (?base: untyped) -> RubyLLM::Chat
     def prompt: (String text) ?{ (untyped) -> void } -> untyped
   end

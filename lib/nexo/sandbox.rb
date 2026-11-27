@@ -54,6 +54,14 @@ module Nexo
       capability != :shell
     end
 
+    # What this sandbox does not contain, as short human-readable strings a host
+    # can show before trusting it with a model. Empty by default; Sandboxes::Local
+    # reports an unconfined shell and Sandboxes::Container the hardening its
+    # runtime cannot express.
+    def hardening_gaps
+      []
+    end
+
     # The last-modified time of `path`, used by the read-before-write + stale
     # guard for real-filesystem sandboxes. Base returns `nil` (no external
     # mutation to guard against, e.g. Virtual), which disables the guard.

@@ -24,7 +24,7 @@ module Nexo
     # configuration instead of silently resetting to defaults.
     CONFIG_IVARS = %i[
       @model @assume_model_exists @provider @sandbox @permissions @instructions
-      @skills @mcp @mcp_allow @fetch_allow @search_backend @requires @produces
+      @skills @mcp @mcp_allow @fetch_allow @search_backend @requires @produces @tools
     ].freeze
 
     class << self
@@ -163,6 +163,38 @@ module Nexo
         names.empty? ? (@produces || []) : (@produces = ((@produces || []) + names).uniq)
       end
 
+      # Declares tools of your own for this agent. Accumulating, like `skills`.
+      # With no arguments it reads the declarations (default `[]`).
+      #
+      # ```ruby
+      # class Archivist < Nexo::Agent
+      #   tools Today, SumPayments                 # pure helpers: no gate
+      #   tools ArchiveRun, capability: :write     # gated like Nexo's write tool
+      #   tools ->(agent) { Lookup.new(root: agent.cwd) }
+      # end
+      # ```
+      #
+      # Each entry is a `RubyLLM::Tool` class (instantiated with no arguments), an
+      # instance, or a lambda taking the agent and returning one — or an Array of
+      # them, for an agent whose tools depend on how it was built.
+      #
+      # `capability:` names what the tool does in Nexo's terms — `:read`, `:write`,
+      # `:shell`, `:fetch`, `:search`. The tool is then wrapped in Nexo::GatedTool:
+      # the agent's Permissions decide every call exactly as they do for Nexo's
+      # own tools (denied under `:read_only`, prompted under `:ask`, suspended
+      # under `:approve`), and it is left out of the schema when it could never be
+      # authorized. Without `capability:` the tool runs ungated — the right choice
+      # only for a tool with no side effects.
+      #
+      # Declare tools here instead of overriding `#chat` to call `with_tools`: a
+      # tool added that way is unknown to Nexo, which warns about it, and refuses
+      # it under `Nexo.config.strict_tools`.
+      def tools(*list, capability: nil)
+        return @tools || [] if list.empty?
+
+        @tools = (@tools || []) + list.flatten.map { |tool| {tool: tool, capability: capability} }
+      end
+
       # Declares an MCP server for this agent (Spec 6). Accumulating: multiple
       # `mcp` lines are collected. With no args (`name` nil and `opts` empty) it
       # reads the list (default `[]`); otherwise it appends the friendly,
@@ -226,14 +258,17 @@ module Nexo
     # Symbol shorthands (:virtual/:local, :read_only/:auto/:ask/:approve) and
     # pre-built Sandbox/Permissions instances are both accepted. `loop:` injects
     # the engine that drives a prompt — the provider-neutral Loops::RubyLLM by
-    # default, or an opt-in backend like Loops::AgentSDK.
+    # default, or a backend of your own.
     #
-    # `decision:` (Spec 16, default `nil`) is a per-run approval answer
-    # (`{approved: true|false}`) threaded into the resolved Permissions so an
-    # `:approve` gate allows/denies instead of raising Nexo::ApprovalRequired.
-    # It only supplies the *answer* to an already-`:approve` gate — it never
-    # widens capability. Workflow#run_agent passes it on the resume pass.
-    def initialize(cwd: Dir.pwd, model: nil, sandbox: nil, permissions: nil, decision: nil, loop: Loops::RubyLLM.new)
+    # `decisions:` (0.14, default `nil`) are the per-call approval answers for an
+    # `:approve` gate — a Hash of Permissions::approval_key → `true`/`false`. A
+    # call found there runs or is denied; any other call raises
+    # Nexo::ApprovalRequired. They only supply *answers* to an already-`:approve`
+    # gate — they never widen capability. Workflow#run_agent passes the approvals
+    # recorded on the run. `decision:` is the deprecated global form (one
+    # `{approved:}` answer for every gated call).
+    def initialize(cwd: Dir.pwd, model: nil, sandbox: nil, permissions: nil, decision: nil, decisions: nil,
+      loop: Loops::RubyLLM.new)
       @cwd = cwd
       @model = model || self.class.model || Nexo.config.default_model
       if @model.nil?
@@ -253,7 +288,8 @@ module Nexo
       # sharing the run's sandbox) is BORROWED — closing it would strand the owner.
       @owns_sandbox = sandbox.nil?
       @sandbox = resolve_sandbox(sandbox || self.class.sandbox)
-      @permissions = resolve_permissions(permissions || self.class.permissions, decision: decision)
+      @permissions = resolve_permissions(permissions || self.class.permissions, decision: decision,
+        decisions: decisions)
       @instructions = self.class.instructions
       @loop = loop
     end
@@ -297,10 +333,12 @@ module Nexo
         tools << Tools::Shell.new(sandbox: @sandbox, permissions: @permissions)
       end
       c.with_tools(*tools)
+      apply_host_tools(c)
       apply_mcp(c)
       apply_fetch(c)
       apply_search(c)
       apply_tool_concurrency(c)
+      apply_tool_backstop(c)
       c
     end
 
@@ -505,15 +543,80 @@ module Nexo
       return if self.class.mcp.empty?
 
       @mcp_clients ||= self.class.mcp.map { |cfg| Nexo::MCP.build(**cfg) }
-      gated = @mcp_clients.flat_map(&:tools).select { |tool| model_callable?(tool) }.map do |tool|
+      gated = @mcp_clients.flat_map(&:tools).select { |tool| attachable_mcp_tool?(tool) }.map do |tool|
         wrap_mcp_tool(Nexo::MCP::GatedTool.new(tool: tool, permissions: @permissions))
       end
       chat.with_tools(*gated) unless gated.empty?
     end
 
+    # Whether an MCP tool is worth attaching: the model may call it, and the gate
+    # could authorize it. A tool `:read_only` can never allow is left out of the
+    # schema, as a sandbox tool is — it would only cost tokens and a wasted call.
+    def attachable_mcp_tool?(tool)
+      model_callable?(tool) && !@permissions.never_allows_mcp?(tool.name)
+    end
+
     # Whether the model may call this MCP tool. Only MCP App tools restrict it.
     def model_callable?(tool)
       !tool.respond_to?(:visibility) || tool.visibility.include?(:model)
+    end
+
+    # Attaches the tools declared with the `tools` macro. One declared with a
+    # `capability:` is wrapped in Nexo::GatedTool, and skipped altogether when the
+    # gate could never authorize it.
+    def apply_host_tools(chat)
+      built = self.class.tools.flat_map do |entry|
+        capability = entry[:capability]
+        next [] if capability && @permissions.never_allows?(capability)
+
+        build_host_tools(entry[:tool]).map do |tool|
+          capability ? Nexo::GatedTool.new(tool: tool, permissions: @permissions, capability: capability) : tool
+        end
+      end
+      chat.with_tools(*built) unless built.empty?
+    end
+
+    # A declared tool is a class, an instance, or a lambda taking the agent. The
+    # lambda may return several tools, and may return classes.
+    def build_host_tools(tool)
+      case tool
+      when Class then [tool.new]
+      when Proc then Array(tool.call(self)).flat_map { |built| build_host_tools(built) }
+      else [tool]
+      end
+    end
+
+    # The fail-closed backstop behind the gate. Every tool Nexo attached is on the
+    # chat by now; one `around_tool_call` block lets those run and catches any
+    # other — a tool the host added to the chat itself, which no gate ever saw.
+    # Under `Nexo.config.strict_tools` such a call is skipped (`ruby_llm` then
+    # tells the model the call did not run); otherwise it runs with a one-time
+    # warning.
+    #
+    # This is a backstop, not the gate: a skipped call can only produce
+    # `ruby_llm`'s fixed "did not run" text, so the gate that explains itself
+    # stays in the tools (VERIFIED, ruby_llm 2.2.3).
+    #
+    # The block is registered once per chat and reads the known names from the
+    # chat, so a Session that rebuilds over the same chat does not stack blocks.
+    # It runs on the tool's own thread under tool concurrency; the name set is
+    # frozen and only read.
+    def apply_tool_backstop(chat)
+      return unless chat.respond_to?(:around_tool_call) && chat.respond_to?(:tools)
+
+      chat.instance_variable_set(:@nexo_known_tools, chat.tools.keys.to_set(&:to_s).freeze)
+      return if chat.instance_variable_get(:@nexo_backstop)
+
+      chat.instance_variable_set(:@nexo_backstop, true)
+      chat.around_tool_call do |tool_call, &run|
+        name = tool_call.name.to_s
+        if chat.instance_variable_get(:@nexo_known_tools).include?(name)
+          run.call
+        elsif !Nexo.config.strict_tools
+          Nexo.warn_undeclared_tool(name, self.class)
+          run.call
+        end
+      end
     end
 
     # Applies Nexo.config.tool_concurrency to the chat through
@@ -596,12 +699,14 @@ module Nexo
     # by `:local`; container tiers keep their own `/workspace` default).
     def resolve_sandbox(value) = Sandboxes.resolve(value, cwd: @cwd)
 
-    def resolve_permissions(value, decision: nil)
+    def resolve_permissions(value, decision: nil, decisions: nil)
       # A user-supplied Permissions sets its own mcp_allow: — leave it untouched.
-      # Thread a per-run approval decision through a non-mutating copy (Spec 16)
+      # Thread the run's approval answers through a non-mutating copy (Spec 16)
       # so a shared, class-level :approve instance is never clobbered.
       if value.is_a?(Permissions)
-        return decision ? value.with_decision(decision) : value
+        value = value.with_decision(decision) if decision
+        value = value.with_decisions(decisions) if decisions
+        return value
       end
 
       # Thread the class-level mcp_allow into each symbol branch (Spec 6) so the
@@ -611,7 +716,7 @@ module Nexo
       when :read_only then Permissions.new(mode: :read_only, mcp_allow: allow)
       when :auto then Permissions.new(mode: :auto, allow: %i[read glob write shell fetch search], mcp_allow: allow)
       when :ask then Permissions.new(mode: :ask, mcp_allow: allow) # pass a Permissions with on_ask for a real gate
-      when :approve then Permissions.new(mode: :approve, mcp_allow: allow, decision: decision)
+      when :approve then Permissions.new(mode: :approve, mcp_allow: allow, decision: decision, decisions: decisions)
       else raise ConfigurationError, "unknown permissions: #{value.inspect}"
       end
     end

@@ -482,9 +482,15 @@ this replaces are gone; do not trust memory of the 1.x API.
   calls:, concurrency:, workers:, rounds:)`; `chat.concurrency` is still a reader.
 - **Callbacks are additive.** `before_tool_call { |tool_call| }` gets a `RubyLLM::ToolCall`
   (`name`, `arguments` — a Hash with SYMBOL keys now); `after_tool_result { |result| }` gets the
-  tool's raw return value. `on_tool_call`/`on_tool_result` are gone. `around_tool_call { |call, &run| }`
-  exists and skips the tool when `run` is never called — the natural single choke point for
-  permissions (0.14 backlog; today the check lives inside each tool body).
+  tool's raw return value. `on_tool_call`/`on_tool_result` are gone.
+- **`around_tool_call { |tool_call, &run| }` is a backstop, not the gate (0.14, read from
+  `chat.rb:2791-2817`).** Not calling `run` gives the model the FIXED
+  `{error: "The <name> call did not run."}`; the block's return value is ignored, so a denial
+  message cannot travel through it. A raise in the block leaves `chat.ask`. It wraps every
+  LOCAL tool (MCP, `run_code`, file-store tools, skill loader), not provider-side ones, and runs
+  after core's own approval decision, on the tool's thread under tool concurrency. Blocks nest,
+  first registered outermost. `Agent#apply_tool_backstop` registers ONE per chat (guarded by
+  `@nexo_backstop`, names in `@nexo_known_tools`) — do not move `authorize!` into it.
 - **MCP is core.** `RubyLLM.mcp(name:, url: | command: [argv], env:, directory:, headers:,
   bearer_token:, timeout:)` returns a `RubyLLM::MCP` instance; unknown settings raise
   `ArgumentError`. Nothing connects until the first request. `server.tools` → Array of
@@ -493,8 +499,19 @@ this replaces are gone; do not trust memory of the 1.x API.
   process inherits only `Stdio::INHERITED_ENV` and its stderr is the parent's. The community
   `ruby_llm-mcp` gem defines the same constant and must not be bundled.
 - **Nexo attaches MCP tools with `with_tools`, NOT `chat.with_mcp(server)`** — `with_mcp` offers the
-  server's tools straight from `mcp.reachable_tools`, with no place to insert the gate. Core's own
-  `only`/`requires_approval` class macros are not used yet (0.14 backlog).
+  server's tools straight from `mcp.reachable_tools`, with no place to insert the gate.
+- **Core approvals are durable only with `acts_as_chat` (0.14 decision).** `requires_approval`
+  / `pending_questions` / `chat.waiting?` keep their state in `Chat::ToolCallState`, which is
+  NOT part of `messages` — rebuilding a chat loses it. Nexo workflows keep no chat and resume
+  by re-running, so `:approve` stays on `ApprovalRequired` → `suspend!`. Do not port it.
+- **`RubyLLM.workflow(name, id:) { |wf| }` is instrumentation only** (Fiber-storage context,
+  events `workflow.ruby_llm` / `workflow_step.ruby_llm`, `wf.step(name) { }`). An empty name
+  raises `ArgumentError`, hence `name || "Nexo::Workflow"` in `Workflow.execute`. Exceptions
+  (incl. `Suspended`) pass through. Tests observe it via `RubyLLM.config.instrumenter`.
+- **Sandbox contract** (`ruby_llm/sandbox.rb`): `supported?` + `run(*command, timeout:,
+  readable:, writable:, denied:, directory:, env:, network:)` → `stdout`/`stderr`/`exit_code`/
+  `timed_out?`. `RubyLLM::Sandbox.resolve(MXC::Sandbox.new)` (a `:nodoc:` method) builds the
+  adapter; `mxc` >= 0.4.1 is an OPTIONAL gem. It covers command execution only — no file API.
 - **Tool results.** A Hash/Array return reaches the model as JSON text (was Ruby `inspect`).
   Malformed arguments and unknown tool names become `{error:}` results without running anything.
 - **`with_instructions(text, append: true)`** still appends; default replaces.
@@ -505,6 +522,36 @@ this replaces are gone; do not trust memory of the 1.x API.
   ruby_llm one).
 
 ## More gotchas
+
+- **`Sandboxes::Local#shell` uses `Process.spawn`, not Open3 (0.14).** Two bugs lived in the old
+  `Timeout.timeout { Open3.capture3(@env, cmd) }`: (1) an env Hash passed to spawn is MERGED
+  into the parent's environment unless `unsetenv_others: true`, so the "narrowed ENV" never
+  narrowed anything; (2) Open3's block form joins the wait thread in its `ensure`, so the
+  timeout fired only after the child exited by itself. Now: `pgroup: true` +
+  `unsetenv_others: true`, readers on threads, `Process.kill("KILL", -pid)` on timeout. Do not
+  "simplify" it back to capture3.
+- **Confined shell (0.14) is opt-in and never falls back.** `isolation: :confined` → mxc via
+  `ruby_llm`'s adapter; unsupported machine ⇒ `ConfigurationError` on first `shell`, missing gem
+  ⇒ `MissingDependencyError`. VERIFIED macOS/Seatbelt, mxc 0.4.1: outside write, home read and
+  network refused; env is clean; `ruby` starts but cannot load RubyGems unless its prefix is in
+  `readable:` (that is why `:confined` is not the default). Linux/Bubblewrap NOT verified.
+  `mxc` is a Gemfile dev dep only; the one live test skips without it.
+- **Approvals are per call (0.14).** `Workflow#record_approval!` files `resume_input[:approved]`
+  under `Permissions.approval_key(capability, detail, args)` in the reserved `"__approvals__"`
+  state key and clears `"__approval__"`; `run_agent` passes the map as `Agent.new(decisions:)`.
+  A custom agent class used with `run_agent` must accept `decisions:` (not `decision:`).
+  `Permissions#decision` (global) remains only for direct callers; `decisions` wins when both
+  are set. Keys stringify and sort argument keys so they survive a JSON run store.
+- **Host tools go through the `tools` macro (0.14).** `tools Foo, capability: :write` wraps in
+  `Nexo::GatedTool` (`MCP::GatedTool` is its subclass, authorizing by name). A tool attached by
+  overriding `#chat` AFTER `super` is unknown to the backstop: warned once
+  (`Nexo.warn_undeclared_tool`), refused under `Nexo.config.strict_tools`. Tests asserting on
+  stderr must match the message, not `assert_empty` — `-w` leaks unrelated ruby_llm warnings.
+- **MCP schema shaping (0.14).** `Permissions#never_allows_mcp?` drops MCP tools `:read_only`
+  cannot authorize. Tests that expect an MCP tool attached must list it in `mcp_allow`.
+- **`fetch.rb` and `web_search.rb` BOTH have a broad `rescue => e`** and both re-raise
+  `ApprovalRequired` first; the other four tools rescue narrowly. (An older note above names
+  only `fetch.rb:58`.)
 
 - **Spec 21 scheduling tests load ActiveJob IN-PROCESS (not a subprocess).** Unlike the Spec 11/13
   Rails-runtime tests (which shell out via `Bundler.with_unbundled_env` because they need
