@@ -63,11 +63,9 @@ class LoopsRubyLLMTest < Minitest::Test
 
     assert_instance_of Nexo::Loops::RubyLLM, agent.loop
 
-    tool_classes = agent.chat.tools.values.map(&:class)
-    assert_includes tool_classes, Nexo::Tools::ReadFile
-    assert_includes tool_classes, Nexo::Tools::WriteFile
-    assert_includes tool_classes, Nexo::Tools::Glob
-    refute_includes tool_classes, Nexo::Tools::Shell
+    tools = agent.chat.tools
+    assert_equal %i[edit_file list_files read_file search_files write_file], tools.keys.sort
+    refute_includes tools.values.map(&:class), Nexo::Tools::Shell
 
     response = agent.prompt("Review it")
     assert_equal "review complete", response.content

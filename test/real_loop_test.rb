@@ -10,9 +10,9 @@ require "test_helper"
 # These are the facts the rest of the suite assumes about ruby_llm 2.2 — proven
 # here rather than asserted against hand-built doubles.
 class RealLoopTest < Minitest::Test
-  READ = :"nexo--tools--read_file"
-  WRITE = :"nexo--tools--write_file"
-  GLOB = :"nexo--tools--glob"
+  READ = :read_file
+  WRITE = :write_file
+  LIST = :list_files
 
   class Reader < Nexo::Agent
     model "gpt-4o-mini"
@@ -54,7 +54,7 @@ class RealLoopTest < Minitest::Test
     assert_kind_of RubyLLM::ToolCall, call
     assert_equal READ.to_s, call.name
     assert_equal({path: "notes.md"}, call.arguments)
-    assert_equal "hello from the sandbox", events[1].last, "the result event is the tool's raw return value"
+    assert_match(/hello from the sandbox/, events[1].last, "the result event is the tool's raw return value")
     assert_kind_of RubyLLM::Message, events[2].last
   end
 
@@ -84,7 +84,7 @@ class RealLoopTest < Minitest::Test
 
   def test_max_turns_is_a_hard_cap_on_tool_rounds
     agent = Reader.new
-    stub_replies tool_call(GLOB, pattern: "*") # the last reply repeats: an endless tool loop
+    stub_replies tool_call(LIST) # the last reply repeats: an endless tool loop
     events = []
 
     assert_raises(RubyLLM::ToolRoundLimitError) do
@@ -99,7 +99,7 @@ class RealLoopTest < Minitest::Test
 
   def test_max_turns_nil_runs_uncapped
     agent = Reader.new
-    stub_replies(*Array.new(30) { tool_call(GLOB, pattern: "*") }, "finally")
+    stub_replies(*Array.new(30) { tool_call(LIST) }, "finally")
 
     response = agent.prompt("Many rounds", max_turns: nil)
 

@@ -25,6 +25,7 @@ class SessionTest < Minitest::Test
     assert_match(/WARM_RECALL_OK/, out)
     assert_match(/DISTINCT_THREAD_OK/, out)
     assert_match(/TOOLS_REATTACHED_OK/, out)
+    assert_match(/LLM_OPTIONS_OK/, out)
     assert_match(/CLOSE_OK/, out)
   end
 end

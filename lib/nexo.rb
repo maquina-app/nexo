@@ -107,17 +107,42 @@ module Nexo
     end
 
     # Warns, once per tool name, that the model called a tool Nexo did not attach
-    # (see Configuration#strict_tools). Called from the tool backstop, possibly on
-    # several tool threads at once, hence the lock.
-    def warn_undeclared_tool(name, agent_class)
-      @undeclared_tools_lock.synchronize do
-        return if @undeclared_tools.include?(name)
+    # (see Configuration#strict_tools), and says whether the call was refused.
+    # Called from the tool backstop, possibly on several tool threads at once,
+    # hence the lock.
+    def warn_undeclared_tool(name, agent_class, refused: false)
+      return unless first_warning?(:"tool:#{name}")
 
-        @undeclared_tools << name
+      outcome = refused ? "The call was refused" : "The call ran with no permission gate"
+      notice "[nexo] #{agent_class}: the model called `#{name}`, a tool added to the chat outside " \
+        "the `tools` macro. #{outcome} (Nexo.config.strict_tools is #{refused}). Declare it " \
+        "with `tools` on the agent, optionally with `capability:`."
+    end
+
+    # Warns, once per agent class, that it still uses Nexo's own file tools.
+    def warn_deprecated_file_tools(agent_class)
+      return unless first_warning?(:"file_tools:#{agent_class}")
+
+      notice "[nexo] #{agent_class} uses `file_tools :nexo` (ReadFile, WriteFile, Glob), which is " \
+        "deprecated and will be removed in 1.0. The default is `:core`: ruby_llm's read_file, " \
+        "list_files, search_files, write_file and edit_file, behind the same permission gate."
+    end
+
+    # Writes one operational notice to standard error. Not `Kernel#warn`: that
+    # prints nothing when Ruby runs with `-W0`, and a refused tool call or a
+    # removal notice is not a language warning to be silenced with those.
+    def notice(message)
+      $stderr.write("#{message}\n")
+    end
+
+    # Whether `key` is being warned about for the first time in this process.
+    def first_warning?(key)
+      @undeclared_tools_lock.synchronize do
+        return false if @undeclared_tools.include?(key)
+
+        @undeclared_tools << key
+        true
       end
-      warn "[nexo] #{agent_class} ran the tool `#{name}`, which was added to the chat outside " \
-        "the `tools` macro, so no permission gate saw the call. Declare it with `tools` " \
-        "(optionally `capability:`); Nexo.config.strict_tools = true refuses such calls."
     end
 
     # Returns a fresh run id as a time-ordered UUID v7 string (Ruby 3.3+).

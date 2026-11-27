@@ -47,11 +47,87 @@ class AgentCoreFileToolsTest < Minitest::Test
     assert_equal %i[edit_file list_files read_file search_files write_file], names.sort
   end
 
-  def test_nexo_tools_remain_the_default
+  def test_the_core_tools_are_the_default
     plain = Class.new(Nexo::Agent) { model "gpt-4o-mini" }
 
-    assert_equal :nexo, plain.file_tools
-    assert_includes plain.new.chat.tools.keys, :"nexo--tools--read_file"
+    assert_equal :core, plain.file_tools
+    assert_equal %i[list_files read_file search_files], plain.new.chat.tools.keys.sort
+  end
+
+  # 0.16: Nexo's own three still work when asked for, and say they are going.
+  def test_nexo_tools_still_work_and_warn_once_per_agent_class
+    legacy = Class.new(Nexo::Agent) do
+      model "gpt-4o-mini"
+      file_tools :nexo
+    end
+    names = nil
+
+    _out, err = capture_io do
+      names = legacy.new.chat.tools.keys
+      legacy.new.chat
+    end
+
+    assert_equal %i[nexo--tools--glob nexo--tools--read_file], names.sort
+    assert_equal 1, err.scan("deprecated and will be removed in 1.0").size
+  end
+
+  # A filesystem MCP server names its tools like ruby_llm's file tools. The
+  # clash is reported by Nexo, with the way out, before ruby_llm trips on it.
+  class FakeMcpReadFile < RubyLLM::Tool
+    description "Read a file from the server"
+    parameter :path, type: :string
+
+    def name = "read_file"
+
+    def execute(path:) = "from the server: #{path}"
+  end
+
+  class FakeServer
+    def tools = [FakeMcpReadFile.new]
+
+    def close = nil
+  end
+
+  def with_fake_server(klass)
+    agent = klass.new
+    agent.instance_variable_set(:@mcp_clients, [FakeServer.new])
+    agent
+  end
+
+  def test_an_mcp_tool_named_like_a_file_tool_is_a_clear_configuration_error
+    klass = Class.new(Nexo::Agent) do
+      model "gpt-4o-mini"
+      mcp :files, transport: :stdio, command: "fake"
+      mcp_allow "read_file"
+    end
+
+    error = assert_raises(Nexo::ConfigurationError) { with_fake_server(klass).chat }
+
+    assert_match(/`read_file`/, error.message)
+    assert_match(/file_tools :none/, error.message)
+  end
+
+  def test_file_tools_none_leaves_the_files_to_the_mcp_server
+    klass = Class.new(Nexo::Agent) do
+      model "gpt-4o-mini"
+      file_tools :none
+      mcp :files, transport: :stdio, command: "fake"
+      mcp_allow "read_file"
+    end
+
+    tools = with_fake_server(klass).chat.tools
+
+    assert_equal %i[read_file], tools.keys
+    assert_kind_of Nexo::MCP::GatedTool, tools[:read_file]
+  end
+
+  def test_the_config_default_can_still_select_nexo_tools
+    Nexo.config.file_tools = :nexo
+    plain = Class.new(Nexo::Agent) { model "gpt-4o-mini" }
+
+    capture_io { assert_includes plain.new.chat.tools.keys, :"nexo--tools--read_file" }
+  ensure
+    Nexo.reset_config!
   end
 
   def test_a_read_only_agent_gets_no_writing_tools

@@ -178,9 +178,11 @@ class Assistant < Nexo::Agent
   provider :openai
   assume_model_exists true # bypass registry validation on the persisted chat (R7)
   instructions "You are a helpful assistant with memory."
-  # :write is granted so WriteFile is attached and the re-attach assertion below
-  # has three tools to find; the :read_only default would statically deny it.
+  # :write is granted so the writing tools are attached and the re-attach
+  # assertion below finds all five; the :read_only default would deny them.
   permissions Nexo::Permissions.new(mode: :read_only, allow: %i[read glob write])
+  # 0.16: model options declared in ruby_llm's own DSL reach a persisted chat.
+  llm { temperature 0.3 }
 end
 
 # --- Backend selection: with ActiveRecord present, hydrate takes the durable path.
@@ -230,18 +232,20 @@ abort "FAIL: second thread not created (#{Chat.count})" unless Chat.count == 2
 puts "DISTINCT_THREAD_OK"
 
 # --- The hydrated chat carries the agent's sandbox tools (reused seam, R3).
-# The default (:virtual) sandbox has no shell, so the Shell tool is NOT attached
-# (Spec 14 R2 — capability-gated tool attach); the other three attach because the
-# agent's gate permits read/glob/write.
+# The default (:virtual) sandbox has no shell, so the Shell tool is NOT attached;
+# the five file tools attach because the agent's gate permits read and write.
 session = Nexo::Session.resume(Assistant, "user-42")
 hydrated = session.instance_variable_get(:@chat)
-tool_classes = hydrated.to_llm.tools.values.map(&:class)
-[Nexo::Tools::ReadFile, Nexo::Tools::WriteFile, Nexo::Tools::Glob].each do |klass|
-  abort "FAIL: missing #{klass} on hydrated chat (#{tool_classes.inspect})" unless tool_classes.include?(klass)
-end
-abort "FAIL: virtual sandbox should not attach Shell (#{tool_classes.inspect})" if
-  tool_classes.include?(Nexo::Tools::Shell)
+tool_names = hydrated.to_llm.tools.keys.sort
+expected = %i[edit_file list_files read_file search_files write_file]
+abort "FAIL: hydrated chat tools are #{tool_names.inspect}, expected #{expected.inspect}" unless tool_names == expected
+abort "FAIL: a file tool is not behind the gate" unless hydrated.to_llm.tools.values.all?(Nexo::GatedTool)
 puts "TOOLS_REATTACHED_OK"
+
+# --- The agent's `llm` block is applied onto the hydrated record (0.16).
+abort "FAIL: llm options did not reach the persisted chat (#{hydrated.to_llm.temperature.inspect})" unless
+  (hydrated.to_llm.temperature.to_f - 0.3).abs < 0.001
+puts "LLM_OPTIONS_OK"
 
 # --- close is safe with no MCP/fetch resources held.
 session.close

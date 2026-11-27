@@ -80,16 +80,15 @@ module Nexo
     attr_accessor :job_queue
 
     # The file tools an agent gets when it does not say (see the `file_tools`
-    # macro): `:nexo` (default) for Nexo's own three, `:core` for `ruby_llm`'s five
-    # over the agent's sandbox. `:core` becomes the default in 1.0.
+    # macro): `:core` (default since 0.16) for `ruby_llm`'s five over the agent's
+    # sandbox, `:nexo` for Nexo's own three, which are deprecated and go in 1.0.
     attr_accessor :file_tools
 
     # What happens when the model calls a tool Nexo did not attach — one a host
     # added to the chat itself, outside the `tools` macro, so no permission gate
-    # ever saw it. `false` (default in 0.14) runs it and warns once per tool;
-    # `true` refuses it, and the model is told the call did not run. Declare host
-    # tools with `tools` on the agent and turn this on. It becomes the default
-    # in 1.0.
+    # ever saw it. `true` (default since 0.16) refuses it: the model is told the
+    # call did not run, and Nexo warns once per tool. `false` runs it and warns.
+    # Declare host tools with the `tools` macro on the agent.
     attr_accessor :strict_tools
 
     # Seeds the safe, provider-neutral defaults (no model, `:virtual` sandbox,
@@ -107,8 +106,8 @@ module Nexo
       @broadcast_events = false # safe default: opt in to the Turbo mirror
       @run_store = nil # nil → the automatic choice (ActiveRecord under Rails, else Memory)
       @job_queue = nil # nil → ActiveJob's default queue
-      @file_tools = :nexo # ruby_llm's own (:core) are opt-in until 1.0
-      @strict_tools = false # warn, do not refuse; flips to true in 1.0
+      @file_tools = :core # ruby_llm's file tools; Nexo's own (:nexo) go in 1.0
+      @strict_tools = true # a tool no gate saw does not run
     end
 
     private

@@ -42,6 +42,7 @@ module Nexo
           value = value.dup if value.is_a?(Array) || value.is_a?(Hash)
           subclass.instance_variable_set(ivar, value)
         end
+        subclass.instance_variable_set(:@llm, Class.new(@llm)) if @llm
       end
 
       # Each macro is a reader with no argument and a writer with one. Unset
@@ -91,21 +92,56 @@ module Nexo
         value.nil? ? @instructions : (@instructions = value)
       end
 
-      # Which file tools the agent gets. With no argument it reads the choice
-      # (default: Nexo.config.file_tools, which is `:nexo`).
+      # Declares model options through `ruby_llm`'s own agent DSL (0.16). The
+      # block is evaluated on a private `RubyLLM::Agent` subclass (see
+      # ModelOptions) and every chat this agent builds is built through it, so
+      # anything `RubyLLM::Agent` can declare about the model works here:
       #
-      # * `:nexo` — Nexo's own `ReadFile`, `WriteFile` and `Glob`.
+      # ```ruby
+      # class Reviewer < Nexo::Agent
+      #   model "claude-sonnet-5-5"
+      #
+      #   llm do
+      #     thinking effort: :high
+      #     temperature 0.2
+      #     fallbacks "claude-haiku-5-5"
+      #     schema ReviewSchema
+      #   end
+      # end
+      # ```
+      #
+      # Several `llm` blocks add up, and a subclass starts from its parent's
+      # declarations. What Nexo owns — the model, the instructions, tools, MCP
+      # servers, skills — is refused inside the block with a
+      # ConfigurationError naming the Nexo macro to use: those are the things
+      # the sandbox and the permission gate depend on. With no block it reads
+      # the class the declarations live on (`nil` when there are none).
+      def llm(&block)
+        return @llm unless block
+
+        @llm ||= Class.new(ModelOptions)
+        @llm.class_eval(&block)
+        @llm
+      end
+
+      # Which file tools the agent gets. With no argument it reads the choice
+      # (default: Nexo.config.file_tools, which is `:core` since 0.16).
+      #
       # * `:core` — `ruby_llm`'s `list_files`, `read_file`, `search_files`,
       #   `write_file` and `edit_file`, over the agent's sandbox (see
-      #   SandboxFileStore). Adds editing part of a file, searching contents, and
-      #   a read-before-write guard that works on every sandbox.
+      #   SandboxFileStore): editing part of a file, searching contents, and a
+      #   read-before-write guard that works on every sandbox.
+      # * `:none` — no file tools: for an agent that reaches its files another
+      #   way, such as a filesystem MCP server whose tools carry the same names.
+      # * `:nexo` — Nexo's own `ReadFile`, `WriteFile` and `Glob`. Deprecated:
+      #   it warns once per agent class and is removed in 1.0.
       #
       # Either way the tools are behind the same permission gate: reading and
       # listing are `:read`, writing and editing are `:write`, and under
       # `:read_only` the writing tools are not attached at all. The two sets use
       # different tool names and return different shapes, so a skill that names
       # `nexo--tools--write_file`, or a host that reads tool events, must be
-      # updated when switching. `:core` is planned as the default in 1.0.
+      # updated when switching.
       def file_tools(value = nil)
         value.nil? ? (@file_tools || Nexo.config.file_tools) : (@file_tools = value)
       end
@@ -360,7 +396,7 @@ module Nexo
     # stored `role: :system` messages rather than appending, so the thread keeps
     # exactly one copy across resumes (VERIFIED, ruby_llm 2.2.3).
     def chat(base: nil)
-      c = base || RubyLLM.chat(**chat_model_options)
+      c = build_chat(base)
       c = apply_instructions(c)
 
       tools = file_tool_set
@@ -518,6 +554,25 @@ module Nexo
 
     private
 
+    # The chat everything else is layered on: `base` (a session's record) or a
+    # fresh one. An agent with an `llm` block gets it through that block's
+    # `RubyLLM::Agent` class, which applies the declared model options; one
+    # without is built exactly as before.
+    #
+    # VERIFIED (ruby_llm 2.2.3): `SomeAgent.chat(**options)` forwards the
+    # options to `RubyLLM.chat` and returns the configured chat;
+    # `SomeAgent.new(chat: existing, persist_instructions: false)` applies the
+    # same declarations onto an existing chat or record and leaves its messages
+    # and tools alone.
+    def build_chat(base)
+      options = self.class.llm
+      return base || RubyLLM.chat(**chat_model_options) unless options
+      return options.chat(**chat_model_options) unless base
+
+      options.new(chat: base, persist_instructions: false)
+      base
+    end
+
     # Builds the `RubyLLM.chat` options conditionally so the default agent's
     # call is byte-for-byte what it was before this feature: `{model: @model}`.
     # `provider` is added only when resolved; `assume_model_exists: true` only
@@ -602,7 +657,26 @@ module Nexo
       gated = mcp_clients.flat_map(&:tools).select { |tool| attachable_mcp_tool?(tool) }.map do |tool|
         wrap_mcp_tool(Nexo::MCP::GatedTool.new(tool: tool, permissions: @permissions))
       end
+      refuse_mcp_name_clash!(chat, gated)
       chat.with_tools(*gated) unless gated.empty?
+    end
+
+    # Raises ConfigurationError when an MCP tool has the name of a tool already
+    # on the chat. `ruby_llm`'s file tools have plain names (`read_file`,
+    # `write_file`...), and so do the tools of a typical filesystem MCP server;
+    # left alone the clash surfaces later as an ArgumentError from inside
+    # `ruby_llm` that names neither the server nor the way out.
+    def refuse_mcp_name_clash!(chat, gated)
+      return unless chat.respond_to?(:tools)
+
+      taken = chat.tools.keys.map(&:to_s)
+      clash = gated.map { |tool| tool.name.to_s } & taken
+      return if clash.empty?
+
+      raise ConfigurationError,
+        "#{self.class}: an MCP server offers #{clash.map { |name| "`#{name}`" }.join(", ")}, " \
+        "which this agent already has as a tool of its own. If the agent should use the server's, " \
+        "declare `file_tools :none`; otherwise leave those names out of `mcp_allow`."
     end
 
     # The agent's MCP servers, built once from the `mcp` declarations (with this
@@ -643,9 +717,12 @@ module Nexo
     # turn and models do try it. #authorize! stays the actual boundary either way.
     def file_tool_set
       case self.class.file_tools
-      when :nexo then nexo_file_tools
+      when :nexo
+        Nexo.warn_deprecated_file_tools(self.class)
+        nexo_file_tools
       when :core then core_file_tools
-      else raise ConfigurationError, "unknown file_tools #{self.class.file_tools.inspect} (use :nexo or :core)"
+      when :none then []
+      else raise ConfigurationError, "unknown file_tools #{self.class.file_tools.inspect} (use :core, :none or :nexo)"
       end
     end
 
@@ -709,9 +786,9 @@ module Nexo
     # The fail-closed backstop behind the gate. Every tool Nexo attached is on the
     # chat by now; one `around_tool_call` block lets those run and catches any
     # other — a tool the host added to the chat itself, which no gate ever saw.
-    # Under `Nexo.config.strict_tools` such a call is skipped (`ruby_llm` then
-    # tells the model the call did not run); otherwise it runs with a one-time
-    # warning.
+    # Under `Nexo.config.strict_tools` (the default) such a call is skipped —
+    # `ruby_llm` then tells the model the call did not run; with it off the call
+    # runs. Either way Nexo warns once per tool.
     #
     # This is a backstop, not the gate: a skipped call can only produce
     # `ruby_llm`'s fixed "did not run" text, so the gate that explains itself
@@ -729,12 +806,15 @@ module Nexo
 
       chat.instance_variable_set(:@nexo_backstop, true)
       chat.around_tool_call do |tool_call, &run|
-        name = tool_call.name.to_s
-        if chat.instance_variable_get(:@nexo_known_tools).include?(name)
+        name = (tool_call.respond_to?(:qualified_name) ? tool_call.qualified_name : tool_call.name).to_s
+        if chat.instance_variable_get(:@nexo_known_tools).include?(name) || !chat.tools.key?(name.to_sym)
+          # Known to Nexo — or not on the chat at all, in which case nothing runs
+          # and `ruby_llm` answers the model with its own "no tool named" error.
           run.call
-        elsif !Nexo.config.strict_tools
-          Nexo.warn_undeclared_tool(name, self.class)
-          run.call
+        else
+          refused = Nexo.config.strict_tools
+          Nexo.warn_undeclared_tool(name, self.class, refused: refused)
+          run.call unless refused
         end
       end
     end
