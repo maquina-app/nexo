@@ -175,7 +175,8 @@ module Nexo
       # ```
       #
       # Each entry is a `RubyLLM::Tool` class (instantiated with no arguments), an
-      # instance, or a lambda taking the agent and returning one.
+      # instance, or a lambda taking the agent and returning one — or an Array of
+      # them, for an agent whose tools depend on how it was built.
       #
       # `capability:` names what the tool does in Nexo's terms — `:read`, `:write`,
       # `:shell`, `:fetch`, `:search`. The tool is then wrapped in Nexo::GatedTool:
@@ -564,22 +565,24 @@ module Nexo
     # `capability:` is wrapped in Nexo::GatedTool, and skipped altogether when the
     # gate could never authorize it.
     def apply_host_tools(chat)
-      built = self.class.tools.filter_map do |entry|
+      built = self.class.tools.flat_map do |entry|
         capability = entry[:capability]
-        next if capability && @permissions.never_allows?(capability)
+        next [] if capability && @permissions.never_allows?(capability)
 
-        tool = build_host_tool(entry[:tool])
-        capability ? Nexo::GatedTool.new(tool: tool, permissions: @permissions, capability: capability) : tool
+        build_host_tools(entry[:tool]).map do |tool|
+          capability ? Nexo::GatedTool.new(tool: tool, permissions: @permissions, capability: capability) : tool
+        end
       end
       chat.with_tools(*built) unless built.empty?
     end
 
-    # A declared tool is a class, a lambda taking the agent, or an instance.
-    def build_host_tool(tool)
+    # A declared tool is a class, an instance, or a lambda taking the agent. The
+    # lambda may return several tools, and may return classes.
+    def build_host_tools(tool)
       case tool
-      when Class then tool.new
-      when Proc then tool.call(self)
-      else tool
+      when Class then [tool.new]
+      when Proc then Array(tool.call(self)).flat_map { |built| build_host_tools(built) }
+      else [tool]
       end
     end
 

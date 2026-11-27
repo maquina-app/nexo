@@ -59,7 +59,7 @@ end
 ```
 
 Each entry is a tool class (built with no arguments), an instance, or a lambda that takes the
-agent. The macro accumulates and is inherited.
+agent and returns a tool or an Array of tools. The macro accumulates and is inherited.
 
 With `capability:` (`:read`, `:write`, `:shell`, `:fetch` or `:search`) the tool is wrapped in
 `Nexo::GatedTool`, and the agent's permissions decide every call the same way they do for Nexo's

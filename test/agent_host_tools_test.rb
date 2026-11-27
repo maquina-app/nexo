@@ -138,6 +138,18 @@ class AgentHostToolsTest < Minitest::Test
     assert_equal ["/tmp/somewhere"], results
   end
 
+  def test_a_lambda_may_return_several_tool_classes
+    agent_class = Class.new(Nexo::Agent) do
+      model "gpt-4o-mini"
+      tools ->(_agent) { [Today, Archive] }
+    end
+
+    names = agent_class.new.chat.tools.keys
+
+    assert_includes names, TODAY
+    assert_includes names, ARCHIVE
+  end
+
   def test_an_undeclared_tool_runs_with_one_warning_by_default
     stub_replies tool_call(ARCHIVE, run: "r1"), tool_call(ARCHIVE, run: "r2"), "Done."
     Nexo.instance_variable_get(:@undeclared_tools).clear
