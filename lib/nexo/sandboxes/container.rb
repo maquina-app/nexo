@@ -293,7 +293,7 @@ module Nexo
       # it with no daemon. Matches by the exact identity label set in `run_argv`
       # (`label=nexo.sandbox.id=<name>`), NOT a `name=<name>` substring filter.
       def reconnect_argv
-        [@bin, "ps", "-aqf", "label=nexo.sandbox.id=#{@name}"]
+        [@bin, "ps", "-aq", "--no-trunc", "-f", "label=nexo.sandbox.id=#{@name}"]
       end
 
       # Runs `cmd` inside the started container, wall-clock bounded. Returns the

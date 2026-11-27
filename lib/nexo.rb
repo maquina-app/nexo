@@ -36,6 +36,22 @@ module Nexo
   # image or the sandbox wiring rather than in the Ruby.
   class EnvironmentError < ConfigurationError; end
 
+  # Raised when an agent is about to use an MCP server that a person has not
+  # authorized yet (an `oauth:` server on the authorization-code grant). Carries
+  # the `server` so a host can send the user to
+  # `agent.mcp_server(server).authorization_url(redirect_uri:)`.
+  class AuthorizationRequired < Error
+    # The `mcp` macro name of the server that needs authorizing.
+    attr_reader :server
+
+    # Builds the error for the MCP server declared as `server`.
+    def initialize(server)
+      @server = server.to_sym
+      super("MCP server :#{server} is not authorized — send the user to " \
+        "agent.mcp_server(:#{server}).authorization_url(redirect_uri:) first")
+    end
+  end
+
   # Control-flow signal raised by the `:approve` permission gate (Spec 16) when a
   # capability needs a human decision and none has been threaded in yet. Unlike
   # Permissions::Denied ("no, adapt" — tools rescue it into `{error:}`),

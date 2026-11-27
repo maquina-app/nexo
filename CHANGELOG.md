@@ -1,5 +1,61 @@
 ## [Unreleased]
 
+## [0.15.0] - 2026-11-26
+
+Six things taken from ruby_llm 2.2, each behind Nexo's permission gate. Everything new is
+opt-in except one default: a cap on tool calls per round.
+
+**Upgrading:** one default changed. A model response may now run at most 20 tool calls;
+the rest are answered with an error and the model can ask again. Raise or remove it with
+`Nexo.config.tool_calls_per_round`. A custom sandbox class is unaffected unless you turn
+on `file_tools :core`, which needs `#files`.
+
+### Added
+
+- **`Nexo.config.tool_calls_per_round`** (default `20`). `max_turns` counts model responses,
+  and one response may hold any number of tool calls, so a round was unbounded. Passed to
+  ruby_llm as `with_tool_options(calls:)`.
+- **`context_budget` macro on `Nexo::Agent`**, a per-agent `Chat#with_context_budget`. It
+  bounds what any tool returns as a share of the model's context window. Off unless declared.
+- **OAuth for MCP servers.** `mcp ..., oauth: true` (or a Hash of options) hands the server to
+  ruby_llm's MCP OAuth. `Agent.new(mcp_owner:)` says whose credentials to use,
+  `Agent#mcp_server(name)` exposes the server so a host can drive `authorization_url` /
+  `authorize` / `deauthorize`, and `Nexo::AuthorizationRequired` is raised before an
+  unauthorized server is used. `Nexo::MCP::CredentialStore` keeps tokens on disk for hosts
+  without ActiveRecord (plain JSON, `0600`, not encrypted).
+- **`file_tools :core`.** Attaches ruby_llm's `list_files`, `read_file`, `search_files`,
+  `write_file` and `edit_file` over the agent's sandbox through the new
+  `Nexo::SandboxFileStore`, each wrapped in `Nexo::GatedTool`. Adds editing part of a file,
+  searching contents, and a read-before-write guard that works on every sandbox. Nexo's own
+  three tools remain the default until 1.0.
+- **`Sandbox#files` and `#file_size`** on every sandbox (a container or remote sandbox lists
+  through its shell).
+- **`Nexo::Sandboxes::ContainerRunner`** answers ruby_llm's sandbox contract with a throwaway,
+  hardened container per command. It works as `Sandboxes::Local`'s `isolation:` and as
+  `RubyLLM.config.sandbox`.
+- `Nexo::GatedTool` takes `detail:`, a callable naming what a call acts on.
+
+### Fixed
+
+- **Container reconnect compared a short id with a full one.** The lookup now asks for the
+  full id (`ps -aq --no-trunc`). Found by running the reconnect smoke test against Docker for
+  the first time.
+
+### Verified
+
+- The container sandbox and its reconnect path, live against Docker 29 (through OrbStack).
+  Both were recorded as unverified since they shipped. Apple `container` parity is still not
+  verified.
+- The confined local shell on Linux (Bubblewrap), in CI: a write and a read outside the
+  workspace and a network connection are refused.
+- OAuth is tested against ruby_llm's real MCP class but not against a live authorization
+  server.
+
+### Changed
+
+- `Sandboxes::Local#shell` and `ContainerRunner` share `Sandboxes::Subprocess`, the
+  kill-on-timeout runner introduced in 0.14.
+
 ## [0.14.0] - 2026-11-26
 
 A security release. Three guarantees Nexo documented did not hold and now do, and a tool

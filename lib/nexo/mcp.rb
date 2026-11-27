@@ -46,8 +46,17 @@ module Nexo
       # the server's in-memory settings; the event path (Workflow#serializable)
       # carries only tool `name`/`args` and return values, never connection config,
       # so the token never reaches `emit` (see the no-leak test).
-      def build(name:, transport:, token: nil, **config)
-        client_factory.mcp(**settings(name: name, transport: transport, token: token, config: config))
+      #
+      # `oauth:` (0.15) turns on `ruby_llm`'s MCP OAuth for an HTTP server: `true`,
+      # or a Hash of the options `RubyLLM::MCP.oauth` takes (`client_id:`,
+      # `client_secret:`, `scopes:`, `grant:`, `private_key:`, `assertion:`,
+      # `identity_provider:`, `authorization_params:`). `ruby_llm` runs the whole
+      # flow — discovery, registration, PKCE, refresh, DPoP — and keeps the
+      # credentials in `RubyLLM.config.mcp_credential_store`. Nexo adds nothing to
+      # it but the owner: `owner:` (normally `Agent.new(mcp_owner:)`) says whose
+      # credentials these are. `oauth:` and `token:` are mutually exclusive.
+      def build(name:, transport:, token: nil, owner: nil, **config)
+        client_factory.mcp(**settings(name: name, transport: transport, token: token, owner: owner, config: config))
       rescue ArgumentError => e
         raise ConfigurationError, "mcp :#{name} — #{e.message}"
       end
@@ -73,16 +82,19 @@ module Nexo
       private
 
       # Maps the macro opts onto the keywords `RubyLLM.mcp` takes.
-      def settings(name:, transport:, token:, config:)
+      def settings(name:, transport:, token:, config:, owner: nil)
         config = config.dup
         mapped = {name: name.to_s}
+        oauth = config.delete(:oauth)
 
         if transport.to_sym == :stdio
           command = Array(config.delete(:command)) + Array(config.delete(:args))
           raise ConfigurationError, "mcp :#{name} — a :stdio server needs a `command:`" if command.empty?
           mapped[:command] = command.map(&:to_s)
+          raise ConfigurationError, "mcp :#{name} — `oauth:` needs an HTTP transport, not :stdio" if oauth
         elsif HTTP_TRANSPORTS.include?(transport.to_sym)
           mapped[:bearer_token] = bearer(token) unless token.nil?
+          mapped[:oauth] = oauth_settings(name, oauth, owner, token) if oauth
         else
           raise ConfigurationError,
             "mcp :#{name} — unknown transport #{transport.inspect} (use :stdio, :http, :sse or :streamable)"
@@ -90,6 +102,42 @@ module Nexo
 
         mapped.merge(config)
       end
+
+      # The `oauth:` Hash handed to `ruby_llm`, with the owner filled in.
+      #
+      # `ruby_llm` files credentials under "<owner>@<server url>", taking the
+      # owner's GlobalID when it has one and `to_s` otherwise. An object with
+      # neither a GlobalID nor a meaningful `to_s` would be filed under its
+      # inspect string — a different key in every process, so the credentials
+      # could never be found again. Refuse that here.
+      def oauth_settings(name, oauth, owner, token)
+        raise ConfigurationError, "mcp :#{name} — use `oauth:` or `token:`, not both" unless token.nil?
+
+        oauth = (oauth == true) ? {} : oauth.to_h
+        owner = oauth[:owner] if owner.nil?
+        return oauth.except(:owner) if owner.nil?
+
+        unless owner.respond_to?(:to_gid) || [String, Symbol, Integer].any? { |type| owner.is_a?(type) }
+          raise ConfigurationError,
+            "mcp :#{name} — the OAuth owner must be a String, Symbol, Integer or a record with a GlobalID " \
+            "(got #{owner.class}); its credentials are stored under it"
+        end
+        oauth.merge(owner: -> { owner })
+      end
+
+      # Whether a server declared with these `mcp` macro options needs a PERSON to
+      # authorize it before it can be used: OAuth with the authorization-code
+      # grant. The client-credentials and JWT-bearer grants fetch a token by
+      # themselves on the first request.
+      def user_authorized?(config)
+        oauth = config[:oauth]
+        return false unless oauth
+
+        oauth = {} if oauth == true
+        grant = oauth[:grant] || ((oauth[:assertion] || oauth[:identity_provider]) ? :jwt_bearer : :authorization_code)
+        grant.to_sym == :authorization_code
+      end
+      public :user_authorized?
 
       # `ruby_llm` reads a Proc again for each request; any other callable is
       # wrapped in one so it gets the same treatment.

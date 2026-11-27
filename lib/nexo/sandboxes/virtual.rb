@@ -28,6 +28,13 @@ module Nexo
         @files.keys.select { |key| File.fnmatch(normalized, key) }
       end
 
+      # The in-memory files, relative to `cwd`, without dotfiles.
+      def files
+        prefix = "#{@cwd.chomp("/")}/"
+        @files.keys.filter_map { |key| key.delete_prefix(prefix) if key.start_with?(prefix) }
+          .reject { |path| path.split("/").any? { |part| part.start_with?(".") } }.sort
+      end
+
       def shell(_command, **)
         raise NotImplementedError, "virtual sandbox has no shell"
       end

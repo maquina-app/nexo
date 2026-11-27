@@ -523,6 +523,40 @@ this replaces are gone; do not trust memory of the 1.x API.
 
 ## More gotchas
 
+- **0.15 composes six ruby_llm 2.2 pieces; all read from source, each proven as noted.**
+  - `with_tool_options(calls: N)` caps calls PER RESPONSE (N >= 2; `1`/`:one` means "ask the
+    provider for one"), not per prompt. `Nexo.config.tool_calls_per_round` (default 20).
+    `chat.tool_options[:calls]` reads it back. `stub_replies` cannot script a multi-call
+    response, so the cap itself is asserted on the chat, not through the loop.
+  - `with_context_budget(per_result:, per_request:, window:)` needs a known context window;
+    without one it does nothing and warns once. That is why the `context_budget` macro has
+    NO default — an Ollama/`assume_model_exists` model would warn on every chat.
+  - **MCP OAuth**: `RubyLLM.mcp(..., oauth: {...})` works inline; the owner is resolved by
+    `instance_exec` on the MCP instance, so Nexo passes `owner: -> { owner }`. Credentials are
+    filed under `"<owner.to_gid || owner.to_s>@<server url>"` in
+    `RubyLLM.config.mcp_credential_store` (contract: `read(key)`, `write(key, data, owner:)`,
+    `delete(key)`, optional `synchronize(key)`). `server.authorized?` reads the store only —
+    no network — which is what `Agent#require_mcp_authorization!` relies on. NOT run against
+    a live authorization server.
+  - **Core file tools are attached with `with_tools`, never `chat.with_file_store`** (same
+    reason as MCP: no place for the gate). `RubyLLM::FileStore::Tools.classes([:read])` etc.
+    and the tools' `new(store: -> { store })` are `:nodoc:` internals. Tool names are bare:
+    `read_file`, `list_files`, `search_files` (param `query`), `write_file`, `edit_file`
+    (`path`/`old_text`/`new_text`, or `edits:` naming several paths — hence the GatedTool
+    `detail:` falls back to the whole call when there is no `path`, or one approval would
+    cover every multi-file edit).
+  - `SandboxFileStore#list` gives `digest: nil` on purpose (no read per file); `[]` computes
+    it. The read-before-write guard lives in `FileStore`'s in-memory `@reads`, so ONE store
+    per chat.
+  - `ContainerRunner` is NOT a `Nexo::Sandbox`; it is the sandbox contract only. Binds granted
+    paths at their own host path. VERIFIED live on Docker 29/OrbStack as `Local`'s isolation.
+- **Use `Sandboxes::Subprocess.capture`, never `Timeout.timeout { Open3.capture3 }`** for a
+  command that must stop. `Container#exec!` still uses the old form (its timeout does not
+  kill the `docker exec`); left for a later pass.
+- **Docker is OrbStack on this machine and is usually STOPPED** (`orbctl start`). Live
+  container tests: `NEXO_LIVE=1 ... test/sandboxes/container_live_test.rb`,
+  `container_reconnect_smoke.rb`, `container_runner_test.rb`. All pass as of 0.15.
+
 - **`Sandboxes::Local#shell` uses `Process.spawn`, not Open3 (0.14).** Two bugs lived in the old
   `Timeout.timeout { Open3.capture3(@env, cmd) }`: (1) an env Hash passed to spawn is MERGED
   into the parent's environment unless `unsetenv_others: true`, so the "narrowed ENV" never
@@ -534,7 +568,7 @@ this replaces are gone; do not trust memory of the 1.x API.
   `ruby_llm`'s adapter; unsupported machine ⇒ `ConfigurationError` on first `shell`, missing gem
   ⇒ `MissingDependencyError`. VERIFIED macOS/Seatbelt, mxc 0.4.1: outside write, home read and
   network refused; env is clean; `ruby` starts but cannot load RubyGems unless its prefix is in
-  `readable:` (that is why `:confined` is not the default). Linux/Bubblewrap NOT verified.
+  `readable:` (that is why `:confined` is not the default). Linux/Bubblewrap VERIFIED in CI since 0.15 (the two confined tests run there: same skip count as macOS).
   `mxc` is a Gemfile dev dep only; the one live test skips without it.
 - **Approvals are per call (0.14).** `Workflow#record_approval!` files `resume_input[:approved]`
   under `Permissions.approval_key(capability, detail, args)` in the reserved `"__approvals__"`

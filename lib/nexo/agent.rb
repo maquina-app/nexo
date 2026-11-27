@@ -25,6 +25,7 @@ module Nexo
     CONFIG_IVARS = %i[
       @model @assume_model_exists @provider @sandbox @permissions @instructions
       @skills @mcp @mcp_allow @fetch_allow @search_backend @requires @produces @tools
+      @context_budget @file_tools
     ].freeze
 
     class << self
@@ -88,6 +89,50 @@ module Nexo
       # prompt (default `nil`); with a value it records it.
       def instructions(value = nil)
         value.nil? ? @instructions : (@instructions = value)
+      end
+
+      # Which file tools the agent gets. With no argument it reads the choice
+      # (default: Nexo.config.file_tools, which is `:nexo`).
+      #
+      # * `:nexo` — Nexo's own `ReadFile`, `WriteFile` and `Glob`.
+      # * `:core` — `ruby_llm`'s `list_files`, `read_file`, `search_files`,
+      #   `write_file` and `edit_file`, over the agent's sandbox (see
+      #   SandboxFileStore). Adds editing part of a file, searching contents, and
+      #   a read-before-write guard that works on every sandbox.
+      #
+      # Either way the tools are behind the same permission gate: reading and
+      # listing are `:read`, writing and editing are `:write`, and under
+      # `:read_only` the writing tools are not attached at all. The two sets use
+      # different tool names and return different shapes, so a skill that names
+      # `nexo--tools--write_file`, or a host that reads tool events, must be
+      # updated when switching. `:core` is planned as the default in 1.0.
+      def file_tools(value = nil)
+        value.nil? ? (@file_tools || Nexo.config.file_tools) : (@file_tools = value)
+      end
+
+      # Keeps tool results within shares of the model's context window — a
+      # pass-through to `ruby_llm`'s `Chat#with_context_budget`. With no argument
+      # it reads the declared budget (default `nil`: `ruby_llm`'s own
+      # `config.context_budget`, which is off unless you set it).
+      #
+      # ```ruby
+      # class Researcher < Nexo::Agent
+      #   context_budget per_result: 0.25, per_request: 0.7
+      # end
+      # ```
+      #
+      # `per_result:` cuts a single tool result longer than that share and tells
+      # the model to ask for less; `per_request:` leaves the oldest tool results
+      # out of a request that would exceed that share. Both need the model's
+      # context window, which `ruby_llm` knows only for models in its registry —
+      # for a local or unregistered model pass `window:` (tokens), or the budget
+      # does nothing and `ruby_llm` warns once. This bounds what ANY tool returns,
+      # including MCP tools and tools of your own; OutputTruncator still bounds
+      # shell output by lines, with or without a known window.
+      def context_budget(budget = nil, **shares)
+        return @context_budget if budget.nil? && shares.empty?
+
+        @context_budget = (budget || {}).to_h.merge(shares)
       end
 
       # Declares the skills attached to this agent. With no args it returns the
@@ -267,8 +312,12 @@ module Nexo
     # gate — they never widen capability. Workflow#run_agent passes the approvals
     # recorded on the run. `decision:` is the deprecated global form (one
     # `{approved:}` answer for every gated call).
+    #
+    # `mcp_owner:` (0.15) is whose OAuth credentials this agent's `oauth:` MCP
+    # servers use — a user record, or a stable String/Integer id.
     def initialize(cwd: Dir.pwd, model: nil, sandbox: nil, permissions: nil, decision: nil, decisions: nil,
-      loop: Loops::RubyLLM.new)
+      mcp_owner: nil, loop: Loops::RubyLLM.new)
+      @mcp_owner = mcp_owner
       @cwd = cwd
       @model = model || self.class.model || Nexo.config.default_model
       if @model.nil?
@@ -314,21 +363,7 @@ module Nexo
       c = base || RubyLLM.chat(**chat_model_options)
       c = apply_instructions(c)
 
-      # One ReadTracker per chat, shared by ReadFile (records) and WriteFile
-      # (enforces the read-before-write + stale guard) — R4.
-      tracker = ReadTracker.new
-      # A sandbox tool is attached only when the agent could actually use it, on
-      # BOTH axes: the sandbox has to support the capability (R2 — a :virtual
-      # sandbox has no shell) and the gate must not deny it statically (a
-      # :read_only agent can never be authorized for :write or :shell). Otherwise
-      # a guaranteed failure sits in the tool schema on every turn and models do
-      # try it. This is the same attach-time gating apply_fetch/apply_search
-      # already apply; #authorize! stays the actual boundary either way.
-      tools = [Tools::ReadFile.new(sandbox: @sandbox, permissions: @permissions, tracker: tracker)]
-      unless @permissions.never_allows?(:write)
-        tools << Tools::WriteFile.new(sandbox: @sandbox, permissions: @permissions, tracker: tracker)
-      end
-      tools << Tools::Glob.new(sandbox: @sandbox, permissions: @permissions)
+      tools = file_tool_set
       if @sandbox.supports?(:shell) && !@permissions.never_allows?(:shell)
         tools << Tools::Shell.new(sandbox: @sandbox, permissions: @permissions)
       end
@@ -337,7 +372,8 @@ module Nexo
       apply_mcp(c)
       apply_fetch(c)
       apply_search(c)
-      apply_tool_concurrency(c)
+      apply_tool_options(c)
+      apply_context_budget(c)
       apply_tool_backstop(c)
       c
     end
@@ -427,6 +463,26 @@ module Nexo
     end
 
     public
+
+    # The `ruby_llm` MCP server declared as `name` with the `mcp` macro, built
+    # with this agent's `mcp_owner`. For an `oauth:` server this is where a host
+    # drives the authorization (0.15):
+    #
+    # ```ruby
+    # agent  = Assistant.new(mcp_owner: current_user)
+    # linear = agent.mcp_server(:linear)
+    # redirect_to linear.authorization_url(redirect_uri: callback_url) unless linear.authorized?
+    # # ...and in the callback action:
+    # agent.mcp_server(:linear).authorize(params)
+    # ```
+    #
+    # `#deauthorize` forgets the owner's credentials. Raises ConfigurationError
+    # for a name that was never declared.
+    def mcp_server(name)
+      index = self.class.mcp.index { |cfg| cfg[:name].to_s == name.to_s } or
+        raise ConfigurationError, "#{self.class} declares no mcp :#{name}"
+      mcp_clients[index]
+    end
 
     # Releases any MCP server connections held by this agent instance. Clients are
     # memoized on the instance and reused across prompts (Spec 6 lifecycle default),
@@ -542,11 +598,29 @@ module Nexo
     def apply_mcp(chat)
       return if self.class.mcp.empty?
 
-      @mcp_clients ||= self.class.mcp.map { |cfg| Nexo::MCP.build(**cfg) }
-      gated = @mcp_clients.flat_map(&:tools).select { |tool| attachable_mcp_tool?(tool) }.map do |tool|
+      require_mcp_authorization!
+      gated = mcp_clients.flat_map(&:tools).select { |tool| attachable_mcp_tool?(tool) }.map do |tool|
         wrap_mcp_tool(Nexo::MCP::GatedTool.new(tool: tool, permissions: @permissions))
       end
       chat.with_tools(*gated) unless gated.empty?
+    end
+
+    # The agent's MCP servers, built once from the `mcp` declarations (with this
+    # agent's `mcp_owner`) and reused until #close.
+    def mcp_clients
+      @mcp_clients ||= self.class.mcp.map { |cfg| Nexo::MCP.build(**cfg, owner: @mcp_owner) }
+    end
+
+    # Raises Nexo::AuthorizationRequired for the first server a person still has
+    # to authorize. Checked before any tool is listed, so the host gets one clear
+    # error to act on in place of a 401 from somewhere inside the first request.
+    # Reads the credential store only — no network.
+    def require_mcp_authorization!
+      self.class.mcp.zip(mcp_clients).each do |cfg, client|
+        next unless Nexo::MCP.user_authorized?(cfg)
+
+        raise Nexo::AuthorizationRequired.new(cfg[:name]) unless client.authorized?
+      end
     end
 
     # Whether an MCP tool is worth attaching: the model may call it, and the gate
@@ -559,6 +633,52 @@ module Nexo
     # Whether the model may call this MCP tool. Only MCP App tools restrict it.
     def model_callable?(tool)
       !tool.respond_to?(:visibility) || tool.visibility.include?(:model)
+    end
+
+    # The agent's file tools, per the `file_tools` declaration.
+    #
+    # A tool is attached only when the agent could actually use it: the gate must
+    # not deny it statically (a :read_only agent can never be authorized for
+    # :write), otherwise a guaranteed failure sits in the tool schema on every
+    # turn and models do try it. #authorize! stays the actual boundary either way.
+    def file_tool_set
+      case self.class.file_tools
+      when :nexo then nexo_file_tools
+      when :core then core_file_tools
+      else raise ConfigurationError, "unknown file_tools #{self.class.file_tools.inspect} (use :nexo or :core)"
+      end
+    end
+
+    # Nexo's own file tools. One ReadTracker per chat, shared by ReadFile (records)
+    # and WriteFile (enforces the read-before-write + stale guard).
+    def nexo_file_tools
+      tracker = ReadTracker.new
+      tools = [Tools::ReadFile.new(sandbox: @sandbox, permissions: @permissions, tracker: tracker)]
+      unless @permissions.never_allows?(:write)
+        tools << Tools::WriteFile.new(sandbox: @sandbox, permissions: @permissions, tracker: tracker)
+      end
+      tools << Tools::Glob.new(sandbox: @sandbox, permissions: @permissions)
+    end
+
+    # `ruby_llm`'s file tools over one SandboxFileStore per chat, each behind
+    # Nexo::GatedTool. They are built here and attached with `with_tools` — NOT
+    # with `chat.with_file_store`, which would attach them with no place for the
+    # gate. The gate is told the path the call acts on, like Nexo's own tools.
+    #
+    # VERIFIED (ruby_llm 2.2.3): `FileStore::Tools.classes(names)` returns the
+    # tool classes for `:read` (list, read, search), `:write` and `:edit`, each
+    # built with `store:` (a callable). These are internal to `ruby_llm`; the
+    # real-loop tests are what catches a change.
+    def core_file_tools
+      store = SandboxFileStore.new(@sandbox)
+      groups = {read: :read}
+      groups = groups.merge(write: :write, edit: :write) unless @permissions.never_allows?(:write)
+      groups.flat_map do |group, capability|
+        ::RubyLLM::FileStore::Tools.classes([group]).map do |tool|
+          Nexo::GatedTool.new(tool: tool.new(store: -> { store }), permissions: @permissions,
+            capability: capability, detail: ->(arguments) { arguments[:path] })
+        end
+      end
     end
 
     # Attaches the tools declared with the `tools` macro. One declared with a
@@ -619,15 +739,21 @@ module Nexo
       end
     end
 
-    # Applies Nexo.config.tool_concurrency to the chat through
-    # `with_tool_options(concurrency:)` (ruby_llm 2.x moved tool execution settings
-    # off `with_tools`). `nil` leaves RubyLLM's own setting alone.
-    def apply_tool_concurrency(chat)
-      mode = Nexo.config.tool_concurrency
-      return if mode.nil?
+    # Applies the harness-wide tool execution settings through
+    # `with_tool_options` (ruby_llm 2.x moved them off `with_tools`):
+    # Nexo.config.tool_concurrency, where `nil` leaves RubyLLM's own setting
+    # alone, and Nexo.config.tool_calls_per_round, where `nil` sets no cap.
+    def apply_tool_options(chat)
       return unless chat.respond_to?(:with_tool_options)
 
-      chat.with_tool_options(concurrency: mode)
+      options = {concurrency: Nexo.config.tool_concurrency, calls: Nexo.config.tool_calls_per_round}.compact
+      chat.with_tool_options(**options) unless options.empty?
+    end
+
+    # Applies the agent's `context_budget` declaration, when there is one.
+    def apply_context_budget(chat)
+      budget = self.class.context_budget
+      chat.with_context_budget(budget) if budget && chat.respond_to?(:with_context_budget)
     end
 
     # Hook: called once per MCP tool, AFTER it is wrapped in a permission-gating

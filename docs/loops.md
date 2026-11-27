@@ -49,6 +49,11 @@ end
 Inside a workflow the error fails the run like any other (`status: "failed"`, re-raised),
 so a runaway agent cannot keep spending.
 
+`max_turns` counts model responses, and one response may ask for any number of tool calls.
+`Nexo.config.tool_calls_per_round` (default `20`) caps how many of them run: calls past the
+cap are answered with an error straight away and never execute. With the defaults a prompt
+is bounded at 25 rounds of 20 calls. Set it to `nil` for no cap.
+
 Things to know:
 
 - **Upgrading from 0.12:** `max_turns` used to be telemetry only — a run that passed it

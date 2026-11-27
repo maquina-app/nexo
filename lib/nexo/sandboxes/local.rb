@@ -1,6 +1,5 @@
 # frozen_string_literal: true
 
-require "open3"
 require "fileutils"
 require "timeout"
 
@@ -90,6 +89,22 @@ module Nexo
         offload { Dir.glob(full) }.select { |match| real_within?(match) }
       end
 
+      # Every regular file under `cwd`, relative to it. `Dir.glob` skips dotfiles
+      # by default, and a symlink whose target is outside the sandbox is left out.
+      def files
+        offload do
+          Dir.glob("**/*", base: @cwd).select do |path|
+            full = File.join(@cwd, path)
+            File.file?(full) && real_within?(full)
+          end.sort
+        end
+      end
+
+      # The size of `path` in bytes, without reading it.
+      def file_size(path)
+        File.size(absolute(path))
+      end
+
       def write(path, content)
         offload do
           full = absolute(path)
@@ -146,46 +161,12 @@ module Nexo
 
       private
 
-      # The unconfined path: an ordinary host process in its own process group,
-      # so a timeout can kill the whole tree and not only the `sh` at its root.
-      # `unsetenv_others` is what makes the narrowed ENV real — without it the
-      # child inherits the whole process environment and `@env` only adds to it.
+      # The unconfined path: an ordinary host process, given ONLY the narrowed
+      # environment and killed with everything it started when the timeout fires
+      # (see Subprocess).
       def host_shell(command, timeout)
-        out_read, out_write = IO.pipe
-        err_read, err_write = IO.pipe
-        pid = Process.spawn(@env, command, chdir: @cwd, in: File::NULL, out: out_write, err: err_write,
-          pgroup: true, unsetenv_others: true)
-        out_write.close
-        err_write.close
-        readers = [out_read, err_read].map { |io| reader(io) }
-        _, status = Timeout.timeout(timeout) { Process.wait2(pid) }
-        {stdout: readers[0].value.to_s, stderr: readers[1].value.to_s, status: status.exitstatus}
-      rescue Timeout::Error
-        kill_group(pid)
-        raise Timeout::Error, "command timed out after #{timeout}s and was killed"
-      ensure
-        [out_read, out_write, err_read, err_write].each { |io| io&.close unless io&.closed? }
-      end
-
-      # Drains one pipe on its own thread so a chatty command cannot fill the
-      # pipe buffer and block. A read cut short by the timeout teardown is nil.
-      def reader(io)
-        Thread.new do
-          io.read
-        rescue IOError
-          nil
-        end.tap { |thread| thread.report_on_exception = false }
-      end
-
-      # Kills the command's whole process group and reaps it. Best-effort: the
-      # group may already be gone.
-      def kill_group(pid)
-        return unless pid
-
-        Process.kill("KILL", -pid)
-        Process.wait(pid)
-      rescue Errno::ESRCH, Errno::ECHILD, Errno::EPERM
-        nil
+        stdout, stderr, status = Subprocess.capture(@env, command, timeout: timeout, chdir: @cwd)
+        {stdout: stdout, stderr: stderr, status: status}
       end
 
       # The confined path: `ruby_llm`'s sandbox contract. The runner adds this

@@ -152,6 +152,76 @@ not police `ruby_llm`'s own debug logging (`RUBYLLM_DEBUG`) — that boundary is
 > The `mcp` macro and `mcp_allow` are unchanged.
 
 
+## HTTP servers + OAuth
+
+For a server that signs users in — Linear, Slack, Google, your own — pass `oauth:` in place
+of `token:`. `ruby_llm` runs the whole flow (discovery, client registration, PKCE, token
+refresh, DPoP). Nexo adds three things: whose credentials are used, a clear stop before an
+unauthorized server is touched, and somewhere to keep the tokens outside Rails.
+
+```ruby
+class Assistant < Nexo::Agent
+  model ENV.fetch("NEXO_MODEL")
+  mcp :linear, transport: :http, url: "https://mcp.linear.app/mcp", oauth: true
+  mcp :slack,  transport: :http, url: "https://mcp.slack.com/mcp",
+               oauth: {client_id: ENV["SLACK_CLIENT_ID"], client_secret: ENV["SLACK_CLIENT_SECRET"]}
+  mcp_allow "list_issues", "search_messages"
+end
+```
+
+`oauth:` is `true` or a Hash of the options `RubyLLM::MCP.oauth` takes: `client_id:`,
+`client_secret:`, `scopes:`, `grant:`, `private_key:`, `assertion:`, `identity_provider:`,
+`authorization_params:`.
+
+**Whose credentials.** Pass the owner when you build the agent:
+
+```ruby
+agent = Assistant.new(mcp_owner: current_user)
+```
+
+Credentials are stored per owner and server. The owner must be a record with a GlobalID, or a
+String, Symbol or Integer you keep stable. Anything else is refused, because it would be
+filed under a name that changes every run.
+
+**Authorizing.** `agent.mcp_server(name)` is the `ruby_llm` server object. Send the user
+to its authorization URL and hand the callback's parameters back:
+
+```ruby
+linear = agent.mcp_server(:linear)
+redirect_to linear.authorization_url(redirect_uri: mcp_callback_url), allow_other_host: true unless linear.authorized?
+
+# in the callback action
+Assistant.new(mcp_owner: current_user).mcp_server(:linear).authorize(params)
+```
+
+`#deauthorize` forgets the owner's credentials.
+
+**Before it is authorized.** Building the chat raises `Nexo::AuthorizationRequired`, whose
+`#server` names the one to authorize. It is raised before any request is made, from the
+credential store alone. Servers on the `client_credentials` or JWT-bearer grant need no
+person and fetch their own token on first use.
+
+**Where the tokens live.** `ruby_llm` keeps them in memory by default and in an encrypted
+table under Rails (`rails g ruby_llm:install`). For a host with neither, Nexo ships a store
+on disk:
+
+```ruby
+RubyLLM.configure do |config|
+  config.mcp_credential_store = Nexo::MCP::CredentialStore.new(dir: "~/.local/state/my-app/mcp")
+end
+```
+
+⚠️ These files hold live access and refresh tokens as plain JSON. They are not encrypted.
+The directory is created `0700` and each file `0600`, which is the protection an SSH key
+has and no more. Do not put the directory anywhere shared or synced.
+
+The permission gate is unchanged by any of this: an OAuth server's tools are still denied
+unless `mcp_allow` lists them, and under `:approve` each call still asks.
+
+> Not verified end to end. The settings, the owner key, the authorization check and the
+> store are tested against `ruby_llm`'s real MCP class; a full sign-in against a live
+> authorization server has not been run from Nexo.
+
 ## Decorating MCP tools
 
 `wrap_mcp_tool` is called once per MCP tool, after it is wrapped in a permission-gating
