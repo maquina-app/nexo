@@ -196,6 +196,40 @@ Assistant.new(mcp_owner: current_user).mcp_server(:linear).authorize(params)
 
 `#deauthorize` forgets the owner's credentials.
 
+**From a workflow.** `run_agent` takes the owner too (0.16). Pass an id that is in the run's
+payload, so a resumed or retried run finds the same owner:
+
+```ruby
+def call(payload)
+  run_agent("Summarise my open issues", mcp_owner: payload[:user_id])
+end
+```
+
+**How the server learns who the client is.** Three ways, chosen by what the server supports:
+
+- *It registers clients itself* (dynamic client registration): nothing to configure.
+- *You registered a client by hand*: pass `oauth: {client_id: "...", client_secret: "..."}`.
+- *It takes a Client ID Metadata Document* — the client id is the `https` URL of a small JSON
+  file you host, listing your name and redirect URIs. Set it once for the process:
+
+  ```ruby
+  RubyLLM.configure { |config| config.mcp_client_id = "https://example.com/oauth/client.json" }
+  ```
+
+  ```json
+  {
+    "client_id": "https://example.com/oauth/client.json",
+    "client_name": "My App",
+    "redirect_uris": ["https://example.com/mcp/callback"],
+    "grant_types": ["authorization_code", "refresh_token"],
+    "response_types": ["code"],
+    "token_endpoint_auth_method": "none"
+  }
+  ```
+
+  A server that supports only this and gets no `mcp_client_id` fails with
+  "does not register clients".
+
 **Before it is authorized.** Building the chat raises `Nexo::AuthorizationRequired`, whose
 `#server` names the one to authorize. It is raised before any request is made, from the
 credential store alone. Servers on the `client_credentials` or JWT-bearer grant need no
@@ -211,14 +245,30 @@ RubyLLM.configure do |config|
 end
 ```
 
-⚠️ These files hold live access and refresh tokens as plain JSON. They are not encrypted.
-The directory is created `0700` and each file `0600`, which is the protection an SSH key
-has and no more. Do not put the directory anywhere shared or synced.
+⚠️ These files hold live access and refresh tokens. The directory is created `0700` and each
+file `0600`. Without a key they are plain JSON, which is the protection an SSH key has and
+no more: acceptable for a personal CLI, wrong for a shared, synced or backed-up directory.
+Pass a `key:` and every file is encrypted with AES-256-GCM (0.16):
+
+```ruby
+Nexo::MCP::CredentialStore.generate_key   # => 64 hex characters; do this once
+Nexo::MCP::CredentialStore.new(dir: "/var/lib/my-app/mcp", key: ENV.fetch("MCP_STORE_KEY"))
+```
+
+Keep the key out of the directory (an environment variable, a keychain, a secrets manager).
+A file that does not decrypt — a wrong key, a tampered file, a file copied from another
+owner — reads as "not authorized", never as an error. Plain files written before a key was
+set are still read, and are encrypted the next time they are written.
 
 The permission gate is unchanged by any of this: an OAuth server's tools are still denied
 unless `mcp_allow` lists them, and under `:approve` each call still asks.
 
-> Not verified end to end. The settings, the owner key, the authorization check and the
+> **Verified over real HTTP (0.16).** `test/mcp_oauth_roundtrip_test.rb` runs the whole flow
+> through `ruby_llm`'s client against an authorization server and MCP server on `127.0.0.1`:
+> discovery, dynamic registration and a Client ID Metadata Document, PKCE, bearer requests,
+> token refresh, per-owner reuse from the encrypted store, a forged callback, and
+> `deauthorize`. [`examples/mcp_oauth.rb`](https://github.com/maquina-app/nexo/blob/main/examples/mcp_oauth.rb)
+> signs in to a real server from a terminal.
 > store are tested against `ruby_llm`'s real MCP class; a full sign-in against a live
 > authorization server has not been run from Nexo.
 

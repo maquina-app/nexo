@@ -1,5 +1,96 @@
 ## [Unreleased]
 
+## [0.16.0] - 2026-11-27
+
+Fixes and verification left over from 0.13–0.15, and the three changes that were parked for
+1.0: ruby_llm's file tools by default, undeclared tools refused by default, and ruby_llm's
+agent options on `Nexo::Agent`.
+
+**Upgrading — three defaults changed:**
+
+1. **File tools are ruby_llm's.** A default agent now gets `list_files`, `read_file`,
+   `search_files`, `write_file` and `edit_file` in place of `nexo--tools--read_file`,
+   `nexo--tools--write_file` and `nexo--tools--glob`. Update any skill, prompt or event
+   consumer that names the old tools. To move later, set `Nexo.config.file_tools = :nexo`
+   (or `file_tools :nexo` on an agent); it prints a notice and is removed in 1.0. A custom
+   sandbox class needs `#files`.
+2. **An MCP server whose tools are named `read_file`, `write_file`… now clashes** with those
+   file tools, and building the chat raises `Nexo::ConfigurationError`. Declare
+   `file_tools :none` on that agent, or leave the clashing names out of `mcp_allow`.
+3. **`Nexo.config.strict_tools` is `true`.** A tool put on the chat outside the `tools` macro
+   is refused. Declare it with `tools`, or set `strict_tools = false`.
+
+Also: a custom run store's `claim_for_resume!` must accept `from:` to support `Workflow.retry`,
+and Nexo's notices are now written to standard error even under `ruby -W0`.
+
+### Added
+
+- **`llm do ... end` on `Nexo::Agent`.** The block is written in `RubyLLM::Agent`'s own DSL
+  (`thinking`, `temperature`, `schema`, `fallbacks`, `compaction`, `caching`, `headers`…) and
+  applied to every chat the agent builds, a session's persisted chat included. It is
+  evaluated on a private `RubyLLM::Agent` subclass (`Nexo::ModelOptions`), so Nexo re-implements
+  none of those options. What Nexo owns is refused inside the block: `model`, `instructions`,
+  `tools`, `mcp`, `skills`, `provider_tools`, `file_store`, `code_execution`.
+- **`Workflow.retry(run_id)`** runs a `"failed"` or `"interrupted"` run again. Checkpoints the
+  run finished before it stopped, and the finished steps of a `checkpoint_all` batch, are not
+  repeated. Before this, only a suspended run could be re-entered, so a failed run's
+  checkpoints were never used.
+- **`file_tools :none`**, for an agent whose files come from an MCP server.
+- **Encryption for `Nexo::MCP::CredentialStore`.** `new(dir:, key:)` encrypts every file with
+  AES-256-GCM, authenticated with the credential's key name. `generate_key` makes a key.
+  A file that does not decrypt reads as "not authorized".
+- **`Workflow#run_agent(prompt, mcp_owner:)`**, so an agent with an `oauth:` MCP server can be
+  driven from a workflow.
+- **`readable: :ruby`** on `Sandboxes::Local`, and `Local.ruby_paths`: the running Ruby's
+  prefix and gem paths, which a confined shell needs to run a Ruby script.
+- **Reconnect on the Apple `container` runtime.** `reconnect: true` with `runtime: :apple`
+  no longer raises; the sandbox lists containers as JSON and matches its label exactly.
+- A CI job that runs the live container tests against the runner's Docker.
+
+### Changed
+
+- `Nexo.config.file_tools` defaults to `:core` and `Nexo.config.strict_tools` to `true` (see
+  Upgrading). `:nexo` file tools are deprecated.
+- A tool name that is not on the chat at all is left to ruby_llm, which answers "There is no
+  tool named…"; the backstop refuses only a tool that exists and was never declared.
+- A read-only root filesystem is no longer reported as a hardening gap on `:apple`: its
+  `--tmpfs` scratch is writable on `container` 1.7.
+
+### Fixed
+
+- **A timed-out command kept running inside a container.** `Sandboxes::Container` ran `exec`
+  through `Timeout` and `Open3`, which stopped neither the runtime's client nor the process
+  in the container. It now uses `Sandboxes::Subprocess`, and kills every process the timed-out
+  exec started.
+- **A workflow's event log recorded an MCP tool's result as an object address**
+  (`#<RubyLLM::MCP::Result:0x…>`). It now records the result's text and whether the server
+  called it an error.
+- **`Workflow.reconcile_interrupted!` skipped the Disk run store**, so a CLI killed mid-run
+  left its run `"running"` for good.
+- **`ContainerRunner#supported?` was always false on `:apple`** (`container version` is not a
+  subcommand); it asks `container system status`. Its runs pass `--progress none`.
+- Nexo's notices used `Kernel#warn`, which prints nothing under `ruby -W0`.
+
+### Verified
+
+- **MCP OAuth over real HTTP**, against an authorization server and MCP server on
+  `127.0.0.1` (`test/mcp_oauth_roundtrip_test.rb`): discovery, dynamic registration and a
+  Client ID Metadata Document, PKCE, bearer requests, refresh, per-owner reuse, a forged
+  callback, `deauthorize`. This is what found the event-log and `run_agent` defects above.
+- **Apple `container` 1.7.1** on macOS 27: the live sandbox tests, the reconnect smoke test
+  and `ContainerRunner`, alongside Docker 29.
+- **A crash and a retry across real processes** (`test/workflow_crash_retry_test.rb`): a run
+  on the Disk store is killed with SIGKILL after its first checkpoint, and a second process
+  sweeps and retries it without repeating that checkpoint.
+- A confined shell runs a Ruby script with `readable: :ruby` (macOS, `mxc` 0.4.1).
+
+### Declined, again
+
+- **`Nexo::Agent < RubyLLM::Agent`.** Read against 2.2.3 once more: that class builds one chat
+  when it is created and keeps it, where a Nexo agent builds a chat per prompt; and `model`,
+  `mcp`, `skills`, `tools` and `instructions` share a name with a different signature. The
+  `llm` block gives the same options by composition, through ruby_llm's public API.
+
 ## [0.15.0] - 2026-11-26
 
 Six things taken from ruby_llm 2.2, each behind Nexo's permission gate. Everything new is

@@ -76,6 +76,36 @@ Defaults are safe: an agent with no `sandbox`/`permissions` declared gets the in
 `:virtual` sandbox and `:read_only` permissions, so an untrusted model has zero host
 access until you explicitly opt in.
 
+## Model options — the `llm` block
+
+Anything `ruby_llm`'s own agent class can declare about the model — thinking, temperature,
+structured output, fallback models, compaction, prompt caching, headers — goes in an `llm`
+block (0.16). It is written in `RubyLLM::Agent`'s DSL and applied to every chat the agent
+builds, a session's persisted chat included:
+
+```ruby
+class Reviewer < Nexo::Agent
+  model "claude-sonnet-5-5"
+  instructions "You are a careful code reviewer."
+
+  llm do
+    thinking effort: :high
+    temperature 0.2
+    fallbacks "claude-haiku-5-5"
+    schema ReviewSchema
+  end
+end
+```
+
+Several blocks add up, and a subclass starts from its parent's. What Nexo owns is refused
+inside the block with a `Nexo::ConfigurationError` naming the macro to use: `model`,
+`instructions`, `tools`, `mcp`, `skills`, and the three that would put a tool on the chat
+without the permission gate (`provider_tools`, `file_store`, `code_execution`).
+
+`Nexo::Agent` does not inherit from `RubyLLM::Agent`: that class builds one chat when it is
+created and keeps it, where a Nexo agent builds a fresh chat per prompt, and five macros share
+a name with a different meaning. The block gives the same options without that change.
+
 ## Unregistered models — local tags, self-hosted, brand-new releases
 
 `ruby_llm` normally validates a model id against its bundled `models.json` registry

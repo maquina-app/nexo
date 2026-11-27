@@ -110,6 +110,35 @@ step runs), and do **not** call `suspend!` inside a step (undefined — unsuppor
 > re-submits only the still-missing names — A is skipped, B re-runs. Do **not** treat
 > a batch as all-or-nothing.
 
+## Run a failed run again — `Workflow.retry`
+
+`resume` continues a run that paused on purpose. `retry` (0.16) does the same for one that
+stopped by accident: a run that raised (`"failed"`), or one whose process died
+(`"interrupted"`). It re-enters `#call` from the top with the original payload, and every
+checkpoint the run finished before it stopped is returned from its state — including the
+finished steps of a `checkpoint_all` batch.
+
+```ruby
+begin
+  run = Triage.run(inbox: "work")
+rescue => e
+  # three inboxes were read and checkpointed; building the digest raised
+end
+
+Triage.retry(run_id)   # reads no inbox again; goes straight back to the digest
+```
+
+The run keeps its id, its events and its artifacts; its `error` is cleared when the retry
+starts. A retry that fails again leaves the run `"failed"` and re-raises, and can be retried
+again. Any other status raises `Nexo::Error`.
+
+A process that is killed leaves its run `"running"`. `Nexo::Workflow.reconcile_interrupted!`
+marks those `"interrupted"` — call it once at boot, or before offering a retry. Since 0.16
+it covers the Disk run store as well as ActiveRecord and the in-memory one; before that a CLI
+on the Disk store that was killed mid-run could never be picked up.
+
+Like `resume`, this is re-entry, not replay: code outside a checkpoint runs again.
+
 ## Durable **agent** approval — `:approve` (bridge a mid-run gate to a suspend)
 
 The example above suspends at an **explicit** `suspend!` the workflow author placed.
