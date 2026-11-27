@@ -180,6 +180,20 @@ class ContainerArgvTest < Minitest::Test
     assert_equal %w[docker exec -i abc123 sh], sandbox.send(:exec_argv, "sh", interactive: true)
   end
 
+  # Each exec is tagged in its environment so a timeout can find and kill what
+  # it started inside the container (killing the runtime's client does not).
+  def test_exec_argv_carries_the_marker_and_the_kill_argv_finds_it
+    sandbox = build
+    sandbox.instance_variable_set(:@cid, "abc123")
+
+    assert_equal %w[docker exec -e NEXO_EXEC=m1 abc123 sh -c x], sandbox.send(:exec_argv, "sh", "-c", "x", marker: "m1")
+
+    kill = sandbox.send(:kill_argv, "m1")
+    assert_equal %w[docker exec abc123 sh -c], kill.first(5)
+    assert_equal ["sh", "m1"], kill.last(2)
+    refute_includes kill[5], "m1", "the marker is a positional argument, never part of the script"
+  end
+
   def test_supports_shell_unlike_virtual
     sandbox = build
 

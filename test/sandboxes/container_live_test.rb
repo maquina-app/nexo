@@ -45,6 +45,18 @@ class ContainerLiveTest < Minitest::Test
     assert_equal 3, boom[:status]
   end
 
+  # A timeout must stop the command INSIDE the container, not only the
+  # runtime's client process on the host.
+  def test_a_timed_out_command_is_killed_inside_the_container
+    started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    assert_raises(Timeout::Error) { @sandbox.shell("sleep 47 & sleep 48", timeout: 2) }
+    elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started
+
+    assert_operator elapsed, :<, 15
+    left = @sandbox.shell("ps -o args 2>/dev/null || ps")[:stdout]
+    refute_match(/sleep 4[78]/, left)
+  end
+
   def test_glob_lists_written_files
     @sandbox.write("a.rb", "1")
     @sandbox.write("b.rb", "2")

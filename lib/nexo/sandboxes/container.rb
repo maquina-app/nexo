@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "open3"
+require "securerandom"
 require "timeout"
 
 module Nexo
@@ -129,8 +130,9 @@ module Nexo
       end
 
       # Runs `command` inside the container and returns
-      # `{ stdout:, stderr:, status: }` (status is the integer exit code). The
-      # wall-clock bound lives in `Timeout.timeout` around `Open3.capture3`.
+      # `{ stdout:, stderr:, status: }` (status is the integer exit code). After
+      # `timeout` seconds it raises `Timeout::Error`, with the command — and
+      # whatever it started — already killed inside the container.
       def shell(command, timeout: 30)
         exec!("sh", "-c", command, timeout: timeout)
       end
@@ -296,31 +298,58 @@ module Nexo
         [@bin, "ps", "-aq", "--no-trunc", "-f", "label=nexo.sandbox.id=#{@name}"]
       end
 
-      # Runs `cmd` inside the started container, wall-clock bounded. Returns the
-      # `{ stdout:, stderr:, status: }` shape (integer exit code) proven by
-      # Local#shell; `Open3.capture3` has no `timeout:` kwarg on the target Ruby.
+      # Runs `cmd` inside the started container and returns the
+      # `{ stdout:, stderr:, status: }` shape (integer exit code) of Local#shell.
+      # Raises `Timeout::Error` after `timeout` seconds, with the command stopped
+      # on both sides (see #capture!).
       def exec!(*cmd, timeout: 30)
-        ensure_started!
-        out, err, status = Timeout.timeout(timeout) do
-          Open3.capture3(*exec_argv(*cmd))
-        end
-        {stdout: out, stderr: err, status: status.exitstatus}
+        capture!(cmd, timeout: timeout)
       end
 
       # As #exec!, but feeds `data` to the command on stdin (used by `write` so
       # file contents never enter the argv). `-i` keeps stdin open.
       def exec_stdin!(data, *cmd, timeout: 30)
-        ensure_started!
-        out, err, status = Timeout.timeout(timeout) do
-          Open3.capture3(*exec_argv(*cmd, interactive: true), stdin_data: data)
-        end
-        {stdout: out, stderr: err, status: status.exitstatus}
+        capture!(cmd, timeout: timeout, stdin_data: data)
       end
 
-      # The `exec` argv (pure, offline-assertable). `interactive:` inserts `-i`.
-      def exec_argv(*cmd, interactive: false)
+      # Runs one `exec` through Subprocess, which kills the runtime's client
+      # process when the time is up. That alone leaves the command running
+      # INSIDE the container, so each exec carries a marker in its environment
+      # and a timeout also kills every process in the container that has it.
+      def capture!(cmd, timeout:, stdin_data: nil)
+        ensure_started!
+        marker = SecureRandom.hex(8)
+        argv = exec_argv(*cmd, interactive: !stdin_data.nil?, marker: marker)
+        out, err, status = Subprocess.capture(ENV.to_h, *argv, timeout: timeout, stdin_data: stdin_data)
+        {stdout: out, stderr: err, status: status}
+      rescue Timeout::Error
+        kill_marked(marker)
+        raise
+      end
+
+      # Kills every process in the container started by the exec carrying
+      # `marker`. Best-effort and bounded: it must never hide the timeout.
+      def kill_marked(marker)
+        Subprocess.capture(ENV.to_h, *kill_argv(marker), timeout: 10)
+      rescue
+        nil
+      end
+
+      # The argv that kills the processes of one exec (pure, offline-assertable).
+      # The marker is passed as `$1`, never interpolated into the script.
+      def kill_argv(marker)
+        script = "for p in /proc/[0-9]*; do " \
+          'if tr "\0" "\n" < "$p/environ" 2>/dev/null | grep -qx "NEXO_EXEC=$1"; then ' \
+          'kill -9 "${p#/proc/}" 2>/dev/null; fi; done; true'
+        [@bin, "exec", @cid, "sh", "-c", script, "sh", marker]
+      end
+
+      # The `exec` argv (pure, offline-assertable). `interactive:` inserts `-i`;
+      # `marker:` tags the command's environment so a timeout can find it.
+      def exec_argv(*cmd, interactive: false, marker: nil)
         argv = [@bin, "exec"]
         argv << "-i" if interactive
+        argv += ["-e", "NEXO_EXEC=#{marker}"] if marker
         argv += [@cid, *cmd]
         argv
       end
