@@ -683,6 +683,33 @@ module Nexo
     # ```
     def resume_input = @resume_input || {}
 
+    # Whether someone asked for this run to stop (see ::cancel). Read from the
+    # run store each time, so a request made in another process is seen. Public
+    # since 0.16.1, for a workflow that drives an agent itself:
+    # `agent.prompt(text, cancel: -> { cancel_requested? })`.
+    def cancel_requested?
+      store = Nexo::RunStore.default
+      return false unless store.respond_to?(:cancel_requested?)
+
+      store.cancel_requested?(@run)
+    end
+
+    # Records one event of an agent's prompt on the run, as #run_agent does
+    # (0.16.1): the event is named `agent_<type>` and its payload reduced to plain
+    # data, so a tool call, an MCP result or a usage report reads back the same
+    # from any run store and ::usage can total it. For a workflow that builds and
+    # prompts its agents itself instead of calling #run_agent — one that drives
+    # several agent classes, say:
+    #
+    # ```ruby
+    # agent.prompt(text) { |type, payload| emit_agent_event(type, payload, "source" => "hey") }
+    # ```
+    #
+    # `extra` is merged into the event's data, to tag it. Returns the event.
+    def emit_agent_event(type, payload, extra = {})
+      emit(:"agent_#{type}", serializable(type, payload).merge(extra.transform_keys(&:to_s)))
+    end
+
     # Appends an event to the run's ordered log and persists it incrementally.
     # The event's own keys ("type"/"data"/"at") are strings so the record reads
     # back the same shape after the ActiveRecord backend's JSON round-trip; the
@@ -951,7 +978,7 @@ module Nexo
       agent = klass.new(**options)
       prompt = prompt.call(agent) if prompt.respond_to?(:call)
       traced(klass.name || "agent") do
-        drive(agent, prompt, max_turns) { |type, payload| emit(:"agent_#{type}", serializable(type, payload)) }
+        drive(agent, prompt, max_turns) { |type, payload| emit_agent_event(type, payload) }
       end
     rescue ::RubyLLM::CancelledError
       raise Cancelled
@@ -1001,15 +1028,6 @@ module Nexo
       return agent.prompt(prompt, max_turns: max_turns, &on_event) unless takes_cancel
 
       agent.prompt(prompt, max_turns: max_turns, cancel: -> { cancel_requested? }, &on_event)
-    end
-
-    # Whether someone asked for this run to stop (see ::cancel). Read from the
-    # run store each time, so a request made in another process is seen.
-    def cancel_requested?
-      store = Nexo::RunStore.default
-      return false unless store.respond_to?(:cancel_requested?)
-
-      store.cancel_requested?(@run)
     end
 
     # Raises Cancelled when the run was asked to stop.
