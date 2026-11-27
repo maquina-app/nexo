@@ -25,8 +25,17 @@ module Nexo
       # filesystem is the only skill source.
       #
       # A missing file raises Error whose message names the resolved path.
+      #
+      # Skill folders are named with hyphens (`email-triage`), as the Agent
+      # Skills specification asks. A name given with underscores resolves to the
+      # hyphenated folder when that is the one on disk, so `skills :email_triage`
+      # keeps reading after a rename.
       def find(name)
-        Skill.new(File.join(Nexo.config.skills_path.to_s, name.to_s))
+        root = Nexo.config.skills_path.to_s
+        folder = name.to_s
+        hyphenated = folder.tr("_", "-")
+        folder = hyphenated if !File.directory?(File.join(root, folder)) && File.directory?(File.join(root, hyphenated))
+        Skill.new(File.join(root, folder))
       end
 
       # Copies a skill's bundled files INTO a sandbox, so an agent can read or run

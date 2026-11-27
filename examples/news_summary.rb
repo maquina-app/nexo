@@ -18,7 +18,7 @@ class NewsSummary < Nexo::Agent
   permissions Nexo::Permissions.new(mode: :read_only, allow: %i[read glob fetch])
   fetch_allow %w[hnrss.org lite.cnn.com text.npr.org]
 
-  skills :news_summary # teaches WHICH sites + HOW to summarize (examples/skills/news_summary)
+  skills "news-summary" # teaches WHICH sites + HOW to summarize (examples/skills/news-summary)
 
   instructions <<~TXT
     You summarize current news from the allow-listed sites using the fetch tool, following

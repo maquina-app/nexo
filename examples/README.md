@@ -74,7 +74,7 @@ routing between agents is plain Ruby in a workflow.
 
 ## Support files
 
-- `skills/` — the `SKILL.md` packages the examples use (`email_triage`, `news_summary`,
+- `skills/` — the `SKILL.md` packages the examples use (`email-triage`, `news-summary`,
   `refunds`, `ruby-code-review`). The examples point `Nexo.config.skills_path` here;
   in a Rails app the default is `app/skills`.
 - `support/model.rb` — reads `NEXO_MODEL` and `NEXO_PROVIDER` for the live examples.

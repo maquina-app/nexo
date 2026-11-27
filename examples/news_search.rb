@@ -39,7 +39,7 @@ class NewsSearch < Nexo::Agent
 
   fetch_allow %w[lite.cnn.com text.npr.org hnrss.org]
 
-  skills :news_summary # teaches WHICH sites + HOW to summarize (examples/skills/news_summary)
+  skills "news-summary" # teaches WHICH sites + HOW to summarize (examples/skills/news-summary)
 
   instructions <<~TXT
     Use the search tool to discover today's top stories, then fetch the most relevant

@@ -4,68 +4,102 @@ require "yaml"
 
 module Nexo
   module Skills
-    # One skill package read from disk: a folder holding a `SKILL.md` (YAML front
-    # matter + Markdown body) and, optionally, `scripts/`, `assets/` and
-    # `references/`.
+    # One skill: a folder holding a `SKILL.md` (YAML front matter, then the
+    # instructions) and, optionally, `scripts/`, `assets/` and `references/`.
     #
-    # This is a deliberately small reader. `ruby_llm` ships its own
-    # `RubyLLM::Skill`, but it enforces the Agent Skills naming rule (lowercase
-    # words joined by hyphens, equal to the folder name), which rejects the
-    # underscore names Nexo has always resolved from a symbol (`skills
-    # :email_triage`). Nexo only ever needs the body text and the file listings,
-    # so it reads those itself rather than force every host to rename its skills.
+    # Since 0.17 the file is read by `ruby_llm`'s own parser (`RubyLLM::Skill`),
+    # which follows the Agent Skills specification: `name` and `description` are
+    # required, the name is lower-case letters, digits and single hyphens and
+    # must match the folder, and the lengths are bounded. Nexo adds only what it
+    # needs on top: the three file lists, which Skills.materialize copies into a
+    # sandbox.
+    #
+    # What Nexo does NOT take from `ruby_llm` is how a skill reaches the model.
+    # `ruby_llm` attaches a `load_skill` tool that reads skill files from the
+    # host when the model asks; Nexo puts #content into the agent's instructions
+    # and gives the model nothing to call (see Agent#chat).
+    #
+    # DEPRECATED, removed in 0.18: a skill named with underscores
+    # (`email_triage`) is not valid under the specification. It still loads,
+    # through the reader Nexo had before 0.17, and prints a notice naming the
+    # rename.
     class Skill
-      # The file that makes a folder a skill.
+      # The file every skill folder holds.
       FILE = "SKILL.md"
 
-      # The bundled-file folders a skill may ship.
+      # The folders of files a skill may ship beside its instructions.
       KINDS = %w[scripts assets references].freeze
 
       FRONT_MATTER = /\A---[ \t]*\r?\n(.*?)^---[ \t]*(?:\r?\n|\z)/m
       private_constant :FRONT_MATTER
 
-      # The skill's folder, as an absolute path String.
+      # The skill folder's absolute path.
       attr_reader :path
 
-      # The front matter as a Hash with String keys.
+      # The skill's `name`, `description` and optional `compatibility` note.
+      attr_reader :name, :description, :compatibility
+
+      # The front matter's `metadata` mapping (empty when there is none).
       attr_reader :metadata
 
-      # The `SKILL.md` body: the instructions injected into the chat.
+      # The instructions: everything after the front matter.
       attr_reader :content
 
-      # Reads the skill in the folder `path`. Raises Nexo::Error naming the file
-      # when `SKILL.md` is missing, has no front matter, or its front matter is
-      # not a YAML mapping.
+      # Reads the skill in the folder at `path`. Raises Nexo::Error when the
+      # folder has no `SKILL.md` or the file is not a valid skill.
       def initialize(path)
         @path = File.expand_path(path.to_s)
         file = File.join(@path, FILE)
         raise Error, "skill not found: #{file}" unless File.file?(file)
 
-        @metadata, @content = parse(File.read(file, encoding: "UTF-8"), file)
+        legacy_name?(file) ? read_legacy(file) : read(file)
       end
 
-      # The skill's declared name.
-      def name = metadata["name"]
-
-      # The one-line summary of when to use the skill.
-      def description = metadata["description"]
-
-      # What the skill needs from its environment, or nil when it declares nothing.
-      def compatibility = metadata["compatibility"]
-
-      # Host paths of the files under `scripts/`, sorted.
+      # The files under `scripts/`, as absolute paths.
       def scripts = files("scripts")
 
-      # Host paths of the files under `assets/`, sorted.
+      # The files under `assets/`, as absolute paths.
       def assets = files("assets")
 
-      # Host paths of the files under `references/`, sorted.
+      # The files under `references/`, as absolute paths.
       def references = files("references")
 
       private
 
-      # Splits `text` into its front matter Hash and its Markdown body.
-      def parse(text, file)
+      def read(file)
+        parsed = ::RubyLLM::Skill.new(@path)
+        @name = parsed.name
+        @description = parsed.description
+        @compatibility = parsed.compatibility
+        @metadata = parsed.metadata || {}
+        @content = parsed.instructions.to_s.strip
+      rescue ::RubyLLM::InvalidSkillError, ::RubyLLM::SkillNotFoundError => e
+        raise Error, e.message
+      end
+
+      # Whether the folder or the declared name uses an underscore, the one
+      # thing the specification refuses that Nexo accepted before 0.17.
+      def legacy_name?(file)
+        return true if File.basename(@path).include?("_")
+
+        File.foreach(file).first(20).any? { |line| line.match?(/\Aname:\s*['"]?[^'"\s]*_/) }
+      end
+
+      def read_legacy(file)
+        front_matter, @content = legacy_parse(File.read(file, encoding: "UTF-8"), file)
+        @name = front_matter["name"]
+        @description = front_matter["description"]
+        @compatibility = front_matter["compatibility"]
+        @metadata = front_matter["metadata"].is_a?(Hash) ? front_matter["metadata"] : {}
+        return unless Nexo.first_warning?(:"skill-name:#{@path}")
+
+        proper = File.basename(@path).tr("_", "-")
+        Nexo.notice "[nexo] skill `#{File.basename(@path)}` (#{@path}) is named with underscores, which the " \
+          "Agent Skills specification does not allow. Rename the folder and its `name:` to `#{proper}`; " \
+          "`skills :#{File.basename(@path)}` keeps working. Underscore names stop loading in 0.18."
+      end
+
+      def legacy_parse(text, file)
         match = FRONT_MATTER.match(text.delete_prefix("\u{FEFF}"))
         raise Error, "#{file} must start with YAML front matter between --- lines" unless match
 
@@ -77,7 +111,6 @@ module Nexo
         raise Error, "#{file} has invalid YAML front matter: #{e.message}"
       end
 
-      # The files under one of the skill's folders, as sorted host paths.
       def files(kind)
         dir = File.join(path, kind)
         return [] unless File.directory?(dir)

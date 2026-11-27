@@ -1,5 +1,5 @@
 ---
-name: email_triage
+name: email-triage
 description: Classifies the messages in an inbox and produces a concise markdown digest of the ones worth the user's attention. Read-only — never send, delete, or modify.
 ---
 

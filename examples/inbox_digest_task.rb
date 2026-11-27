@@ -16,9 +16,9 @@ Nexo.configure { |c| c.skills_path = File.expand_path("skills", __dir__) }
 class InboxTriage < Nexo::Agent
   Examples.model(self)
   permissions :read_only # it can list and read the staged mail, and nothing else
-  skills :email_triage   # the rules live in examples/skills/email_triage/SKILL.md
+  skills "email-triage" # the rules live in examples/skills/email-triage/SKILL.md
 
-  instructions "You triage the mail in the inbox/ folder of your workspace, following the email_triage skill."
+  instructions "You triage the mail in the inbox/ folder of your workspace, following the email-triage skill."
 end
 
 class InboxDigestTask < Nexo::Workflow
