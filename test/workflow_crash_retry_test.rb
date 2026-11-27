@@ -28,7 +28,7 @@ class WorkflowCrashRetryTest < Minitest::Test
 
       assert status.success?, err
       assert_match(/swept=1 was=interrupted now=done/, out)
-      assert_match(/"first" => "first-done", "second" => "second-done"/, out)
+      assert_match(/"first" ?=> ?"first-done", "second" ?=> ?"second-done"/, out) # Hash#inspect differs before Ruby 3.4
       assert_equal "ran\n", File.read(File.join(dir, "first.log")), "the first checkpoint ran once, in the killed process"
     end
   end

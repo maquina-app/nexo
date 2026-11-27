@@ -108,6 +108,17 @@ allow-list: every run has the network the runner was built with, none by default
 on Docker 29 and on Apple `container` 1.7.1 (`runtime: :apple`): a command wrote inside the
 workspace, could not read a file outside it, had no network, and was killed at its timeout.
 
+**On a Linux host, pass `user:`.** A bind mount keeps its host ownership there, and the
+container's root runs with every capability dropped, so it cannot write into a directory
+owned by your user:
+
+```ruby
+Nexo::Sandboxes::ContainerRunner.new(image: "ruby:3.3-slim", user: "#{Process.uid}:#{Process.gid}")
+```
+
+On macOS, OrbStack and Docker Desktop map ownership themselves and need nothing. (Found by
+the CI job added in 0.16, which is the first time this ran on Linux.)
+
 ### Two fixes in 0.14 that change behaviour
 
 - **The narrowed environment is now real.** Before 0.14 the shell inherited the whole process

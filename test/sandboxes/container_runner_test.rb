@@ -79,7 +79,11 @@ class ContainerRunnerTest < Minitest::Test
 
   def live_runner
     skip "set NEXO_LIVE=1 to run live container smoke tests" unless ENV["NEXO_LIVE"] == "1"
-    built = runner(image: ENV["NEXO_CONTAINER_IMAGE"] || "alpine")
+    # On a Linux host the bind mounts keep their host ownership, and a container's
+    # root without capabilities cannot write to them: run as the host's user. A
+    # macOS runtime (OrbStack, Docker Desktop) maps ownership itself.
+    user = "#{Process.uid}:#{Process.gid}" if RbConfig::CONFIG["host_os"].include?("linux")
+    built = runner(image: ENV["NEXO_CONTAINER_IMAGE"] || "alpine", **{user: user}.compact)
     skip "docker is not available" unless built.supported?
     built
   end

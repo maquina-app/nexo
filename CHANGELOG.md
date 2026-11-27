@@ -1,5 +1,12 @@
 ## [Unreleased]
 
+### Fixed
+
+- Tests only: the crash-and-retry test assumed Ruby 3.4's `Hash#inspect`, and the live
+  `ContainerRunner` test did not run as the host's user on Linux. Three doc comments in
+  `RunStore` had been separated from `claim_for_resume!`.
+- Documented that `ContainerRunner` needs `user:` on a Linux host to write to the workspace.
+
 ## [0.16.0] - 2026-11-27
 
 Fixes and verification left over from 0.13–0.15; the three changes that were parked for 1.0
