@@ -1,7 +1,7 @@
 # CLAUDE.md
 
 Nexo (`nexo_ai`): an agent harness over `ruby_llm ~> 2.2.0`. It adds a Sandbox + Permissions
-seam and a durable WorkflowRun lifecycle. Pre-1.0, released through 0.16.1; 0.17 in progress.
+seam and a durable WorkflowRun lifecycle. Pre-1.0, released through 0.17.0.
 
 ## Naming rule (violating this is a bug)
 
