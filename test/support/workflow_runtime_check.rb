@@ -226,3 +226,46 @@ waiting = Nexo::WorkflowRun.create!(workflow_class: "StoppableFlow", payload: {}
 Nexo::Workflow.cancel(waiting.id)
 abort "FAIL: a queued run was not cancelled at once" unless waiting.reload.status == "cancelled"
 puts "CANCEL_OK"
+
+# --- 0.17: the paused conversation survives the JSON column and comes back ----
+
+# An agent stand-in: it pauses with a transcript on the first pass and, on the
+# resume, must be handed that same transcript back.
+class PausingAgent
+  TRANSCRIPT = [{"role" => "user", "content" => "go"},
+    {"role" => "assistant", "content" => "", "tool_calls" => {"call_1" => {"id" => "call_1", "name" => "ship", "arguments" => {"order" => "7"}}}}].freeze
+
+  class << self
+    attr_accessor :continued_with
+  end
+
+  def initialize(sandbox: nil, decisions: nil, **)
+    @decisions = decisions || {}
+  end
+
+  def prompt(_text, max_turns: 25, continue: nil)
+    if @decisions.empty?
+      signal = Nexo::ApprovalRequired.new(:write, "ship 7")
+      signal.transcript = TRANSCRIPT
+      raise signal
+    end
+    self.class.continued_with = continue
+    Struct.new(:content).new("shipped")
+  end
+end
+
+class ContinueFlow < Nexo::Workflow
+  agent PausingAgent
+
+  def call(_payload) = {said: run_agent("Ship order 7").content}
+end
+
+paused = ContinueFlow.run
+abort "FAIL: expected a suspended run (#{paused.status})" unless paused.reload.status == "suspended"
+saved = paused.state["__chat__"]
+abort "FAIL: the conversation was not saved (#{paused.state.keys})" unless saved && saved["messages"] == PausingAgent::TRANSCRIPT
+finished = ContinueFlow.resume(paused.id, approved: true)
+abort "FAIL: resume did not finish (#{finished.status}: #{finished.error})" unless finished.reload.status == "done"
+abort "FAIL: the agent was not handed the conversation back (#{PausingAgent.continued_with.inspect})" unless PausingAgent.continued_with == PausingAgent::TRANSCRIPT
+abort "FAIL: the saved conversation was not dropped" if finished.state.key?("__chat__")
+puts "CONTINUE_OK"
