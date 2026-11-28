@@ -217,4 +217,17 @@ class ContainerArgvTest < Minitest::Test
 
     assert_match(/\Anexo-/, name)
   end
+
+  # 0.17: a machine without the runtime says so, in place of a bare Errno::ENOENT.
+  def test_a_missing_runtime_binary_is_a_configuration_error
+    path = ENV["PATH"]
+    ENV["PATH"] = "/nonexistent"
+    sandbox = Nexo::Sandboxes::Container.new(image: "alpine")
+
+    error = assert_raises(Nexo::ConfigurationError) { sandbox.read("x") }
+
+    assert_match(/`docker` command was not found on PATH/, error.message)
+  ensure
+    ENV["PATH"] = path
+  end
 end

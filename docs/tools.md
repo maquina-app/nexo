@@ -61,7 +61,7 @@ class Editor < Nexo::Agent
 end
 
 Editor.new.chat.tools.keys
-# => [:list_files, :read_file, :search_files, :write_file, :edit_file]
+# => [:list_files, :read_file, :search_files, :write_file, :edit_file, :delete_file]
 ```
 
 Reading, listing and searching are `:read`; writing and editing are `:write`, and under
@@ -75,7 +75,8 @@ run with the file's path as the detail.
 - **Dotfiles are not listed.**
 - **Listing goes through the sandbox.** `:virtual` and `:local` answer directly. A container
   or remote sandbox runs one `find`, and reads each file to report its size.
-- **There is no delete**, because a sandbox has none.
+- **`delete_file`** is attached with the writing tools (0.17), on a sandbox that can delete:
+  `:virtual`, `:local` and containers. A custom sandbox without `#delete` gets none.
 - The tool classes are internal to `ruby_llm`; Nexo's tests drive them through the real
   loop, which is what will catch a change there.
 
@@ -83,7 +84,7 @@ The `file_tools` macro chooses the set per agent, and `Nexo.config.file_tools` f
 
 | `file_tools` | What the agent gets |
 |---|---|
-| `:core` (default) | `list_files`, `read_file`, `search_files`, `write_file`, `edit_file` |
+| `:core` (default) | `list_files`, `read_file`, `search_files`, and for an agent that may write `write_file`, `edit_file`, `delete_file` |
 | `:none` | No file tools. For an agent whose files come from somewhere else, such as a filesystem MCP server. |
 
 ### An MCP server with the same tool names
@@ -145,6 +146,37 @@ allow is left out of the schema. The detail your `on_ask`/`ask_when` hook receiv
 name followed by its arguments as JSON.
 
 Without `capability:` the tool runs ungated. That is right only for a tool with no side effects.
+
+### What identifies a call — `detail:`
+
+Under `:ask` and `:approve` a gated call is identified by the tool and **all** its arguments.
+That is right for `write_file` (the path) and wrong for a tool with a free-text argument: a
+model words `reason:` differently each time, so each attempt looks like a new call. Say
+which part matters:
+
+```ruby
+tools IssueRefund, capability: :write, detail: ->(args) { "refund $#{args[:amount]} on #{args[:order]}" }
+```
+
+The callable gets the call's arguments with Symbol keys and returns a String. It is what
+`ask_when` and `on_ask` are told, and what an approval is filed under.
+
+### Tools that run on the provider — `provider_tools`
+
+Some tools run on the provider's servers: its own web search, for one. Nexo never sees their
+calls, so it cannot ask about one or refuse one. An agent may have such a tool only when its
+permissions allow the capability for **every** call:
+
+```ruby
+class Researcher < Nexo::Agent
+  permissions Nexo::Permissions.new(mode: :read_only, allow: %i[read glob search])
+  provider_tools :web_search, capability: :search
+end
+```
+
+Under `:auto`, or with the capability in `allow:`, the tool is attached. Under `:read_only`
+without it, and under `:ask` and `:approve` (which decide call by call), it is left out.
+`capability:` is required. Declaring `provider_tools` inside the `llm` block is refused.
 
 ### A long catalogue — `defer: true`
 

@@ -118,6 +118,16 @@ module Nexo
         full
       end
 
+      # Deletes the file at `path` (guarded) inside the container. The path is an
+      # argument, never part of a script.
+      def delete(path)
+        full = guard_path(path)
+        out = exec!("rm", "--", full)
+        raise Errno::ENOENT, path.to_s unless out[:status].zero?
+
+        full
+      end
+
       # Returns the container paths matching the glob `pattern` (guarded). Empty
       # output yields `[]`.
       #
@@ -222,7 +232,9 @@ module Nexo
       end
 
       # Lazily starts (or, when reconnecting, reuses) the container and memoizes
-      # its id. Raises Nexo::Error on a start failure.
+      # its id. Raises Nexo::Error on a start failure, and ConfigurationError
+      # when the runtime's program is not installed (0.17; it used to surface as a
+      # bare `Errno::ENOENT`).
       def ensure_started!
         return @cid if @cid
 
@@ -233,6 +245,9 @@ module Nexo
         raise Nexo::Error, "container start failed: #{err.strip}" unless status.success?
 
         @cid = out.strip
+      rescue Errno::ENOENT
+        raise Nexo::ConfigurationError, "the `#{@bin}` command was not found on PATH — install the #{@runtime} " \
+          "runtime, or choose another with `runtime:`"
       end
 
       # Reconnect path: find the container previously created under `@name` by its

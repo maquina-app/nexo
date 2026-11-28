@@ -8,7 +8,7 @@
 #   ruby -Ilib examples/artifact_from_template.rb
 #
 # This is the mechanics of use case #2 (file-upload -> artifact) with the "improve" step
-# left out (that needs an agent — see Spec 8 / examples/inbox_digest_task.rb).
+# left out (that needs an agent — see examples/inbox_digest_task.rb).
 require "nexo"
 
 class BuildDigest < Nexo::Workflow

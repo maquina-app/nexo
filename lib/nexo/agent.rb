@@ -24,7 +24,7 @@ module Nexo
     # configuration instead of silently resetting to defaults.
     CONFIG_IVARS = %i[
       @model @assume_model_exists @provider @sandbox @permissions @instructions
-      @skills @mcp @mcp_allow @fetch_allow @search_backend @requires @produces @tools
+      @skills @mcp @mcp_allow @fetch_allow @search_backend @requires @produces @tools @provider_tools
       @file_tools
     ].freeze
 
@@ -261,10 +261,21 @@ module Nexo
       # context until the provider's tool search loads the ones it needs — for a
       # long catalogue. A provider without tool search gets them as ordinary
       # tools. A deferred tool is gated exactly like any other.
-      def tools(*list, capability: nil, defer: nil)
+      #
+      # `detail:` (0.17) says what identifies one call of a gated tool: a callable
+      # given the call's arguments (Symbol keys) and returning a String. It is
+      # what `ask_when`/`on_ask` are told and what an approval is filed under.
+      # Without it the detail is the tool's name and all its arguments, so a
+      # free-text argument makes every call look new:
+      #
+      # ```ruby
+      # tools IssueRefund, capability: :write, detail: ->(args) { "refund #{args[:order]}" }
+      # ```
+      def tools(*list, capability: nil, defer: nil, detail: nil)
         return @tools || [] if list.empty?
+        raise ConfigurationError, "`detail:` needs `capability:` — an ungated tool has no call to identify" if detail && capability.nil?
 
-        @tools = (@tools || []) + list.flatten.map { |tool| {tool: tool, capability: capability, defer: defer} }
+        @tools = (@tools || []) + list.flatten.map { |tool| {tool: tool, capability: capability, defer: defer, detail: detail} }
       end
 
       # Declares an MCP server for this agent (Spec 6). Accumulating: multiple
@@ -324,6 +335,29 @@ module Nexo
       # also run under `:auto` or carry an explicit `allow: [..., :search]`.
       def search_backend(obj = nil)
         obj.nil? ? @search_backend : (@search_backend = obj)
+      end
+
+      # Declares tools that run on the PROVIDER's servers (0.17) — its own web
+      # search, say — passed to `ruby_llm`'s `with_provider_tools`. With no
+      # arguments it reads the declarations.
+      #
+      # ```ruby
+      # provider_tools :web_search, capability: :search
+      # provider_tools capability: :search, web_search: {allowed_domains: ["ruby-lang.org"]}
+      # ```
+      #
+      # `capability:` is required and says what the tool does in Nexo's terms. Nexo
+      # never sees a provider tool's calls, so it cannot ask about one or refuse
+      # one: the tool is attached only when the agent's permissions allow that
+      # capability for every call (`:auto`, or the capability in `allow:`), and
+      # left out otherwise — including under `:ask` and `:approve`, which decide
+      # call by call. A provider without the tool raises
+      # `RubyLLM::UnsupportedServerToolError` when the request is made.
+      def provider_tools(*names, capability: nil, **with_options)
+        return @provider_tools || [] if names.empty? && with_options.empty?
+        raise ConfigurationError, "provider_tools needs `capability:` (what the tool does: :search, :fetch, :shell…)" if capability.nil?
+
+        @provider_tools = (@provider_tools || []) + [{tools: names.flatten, options: with_options, capability: capability}]
       end
     end
 
@@ -414,6 +448,7 @@ module Nexo
       apply_mcp(c)
       apply_fetch(c)
       apply_search(c)
+      apply_provider_tools(c)
       apply_tool_options(c)
       apply_tool_backstop(c)
       c
@@ -430,10 +465,17 @@ module Nexo
     # it answers true the prompt stops with `RubyLLM::CancelledError`. It is
     # passed on only when given, so a loop backend of your own that does not
     # take it keeps working.
-    def prompt(text, max_turns: 25, cancel: nil, &on_event)
+    #
+    # `continue:` (0.17) is the `transcript` of a Nexo::ApprovalRequired or
+    # Nexo::InputRequired this prompt raised earlier. With it the conversation is
+    # restored and the paused tool call carries on, so the model is not asked
+    # again and a tool that already ran does not run twice. `text` is used only
+    # if the transcript cannot be restored.
+    def prompt(text, max_turns: 25, cancel: nil, continue: nil, &on_event)
       verify_environment!
       options = {agent: self, prompt: text, max_turns: max_turns}
       options[:cancel] = cancel if cancel
+      options[:continue] = continue if continue
       @loop.run(**options, &on_event)
     end
 
@@ -549,6 +591,21 @@ module Nexo
     # The developer picks the prompt, not the model, so no permission gate
     # applies; the tools the model then calls are gated as always.
     def mcp_prompt(name, prompt, **arguments) = mcp_server(name).prompt(prompt, **arguments)
+
+    # The resource templates the server declared as `name` offers: resources
+    # whose address takes arguments (`file:///{path}`), each with a `name`, a
+    # `uri` (the template) and a `description`.
+    def mcp_resource_templates(name) = mcp_server(name).resource_templates
+
+    # What the server suggests for the arguments of its prompt `prompt`, given
+    # what has been typed so far: `mcp_prompt_suggestions(:github, :code_review,
+    # language: "ru")` → `["ruby", "rust"]`. For completing a form before
+    # #mcp_prompt is called.
+    def mcp_prompt_suggestions(name, prompt, **typed)
+      found = mcp_prompts(name).find { |candidate| candidate.name.to_s == prompt.to_s } or
+        raise ConfigurationError, "mcp :#{name} offers no prompt named #{prompt}"
+      found.suggest(**typed)
+    end
 
     # Releases any MCP server connections held by this agent instance. Clients are
     # memoized on the instance and reused across prompts (Spec 6 lifecycle default),
@@ -798,7 +855,10 @@ module Nexo
     def core_file_tools
       store = SandboxFileStore.new(@sandbox)
       groups = {read: :read}
-      groups = groups.merge(write: :write, edit: :write) unless @permissions.never_allows?(:write)
+      unless @permissions.never_allows?(:write)
+        groups = groups.merge(write: :write, edit: :write)
+        groups[:delete] = :write if @sandbox.respond_to?(:deletes?) && @sandbox.deletes?
+      end
       groups.flat_map do |group, capability|
         ::RubyLLM::FileStore::Tools.classes([group]).map do |tool|
           Nexo::GatedTool.new(tool: tool.new(store: -> { store }), permissions: @permissions,
@@ -810,13 +870,15 @@ module Nexo
 
     # `arguments` with an absolute `:path` inside the sandbox's working directory
     # made relative to it. The directory itself becomes no path at all, which the
-    # listing and search tools read as "everything". Any other path is left alone.
+    # listing and search tools read as "everything". A relative path is left
+    # alone; an absolute one outside the directory is refused, where `ruby_llm`
+    # would quietly look for it inside (0.17).
     def sandbox_relative(arguments)
       path = arguments[:path]
       root = @sandbox.cwd.to_s.chomp("/") if @sandbox.respond_to?(:cwd)
-      return arguments unless path.is_a?(String) && root && !root.empty?
+      return arguments unless path.is_a?(String) && root && !root.empty? && path.start_with?("/")
       return arguments.except(:path) if path.chomp("/") == root
-      return arguments unless path.start_with?("#{root}/")
+      raise Permissions::Denied, "#{path} is outside the workspace (#{root})" unless path.start_with?("#{root}/")
 
       arguments.merge(path: path.delete_prefix("#{root}/"))
     end
@@ -839,7 +901,9 @@ module Nexo
       return [] if capability && @permissions.never_allows?(capability)
 
       build_host_tools(entry[:tool]).map do |tool|
-        capability ? Nexo::GatedTool.new(tool: tool, permissions: @permissions, capability: capability) : tool
+        next tool unless capability
+
+        Nexo::GatedTool.new(tool: tool, permissions: @permissions, capability: capability, detail: entry[:detail])
       end
     end
 
@@ -964,6 +1028,16 @@ module Nexo
       )
     end
 
+    # Attaches the declared provider-side tools the agent's permissions allow for
+    # every call (see the `provider_tools` macro).
+    def apply_provider_tools(chat)
+      self.class.provider_tools.each do |entry|
+        next unless @permissions.always_allows?(entry[:capability])
+
+        chat.with_provider_tools(*entry[:tools], **entry[:options])
+      end
+    end
+
     # Resolves this agent's sandbox declaration via the shared resolver (Spec 15),
     # passing the agent's instance `@cwd` as the host working directory (used only
     # by `:local`; container tiers keep their own `/workspace` default).
@@ -975,7 +1049,9 @@ module Nexo
       # A user-supplied Permissions sets its own mcp_allow: — leave it untouched.
       # Thread the run's approval answers through a non-mutating copy (Spec 16)
       # so a shared, class-level :approve instance is never clobbered.
-      return (decisions ? value.with_decisions(decisions) : value) if value.is_a?(Permissions)
+      # A copy either way: the loop hangs a per-prompt hook on the gate
+      # (Permissions#on_decline), which must not land on a shared instance.
+      return (decisions ? value.with_decisions(decisions) : value.dup) if value.is_a?(Permissions)
 
       # Thread the class-level mcp_allow into each symbol branch (Spec 6) so the
       # MCP capability axis is populated alongside the sandbox axis.

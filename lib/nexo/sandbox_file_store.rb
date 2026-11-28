@@ -16,8 +16,8 @@ module Nexo
   # applies: `RubyLLM::FileStore.path` refuses `..` before the store is asked, and
   # Sandboxes::Local raises `SecurityError` for a symlink that leaves `cwd`.
   #
-  # A sandbox has no delete, so neither has this store; `delete_file` is not
-  # among the tools Agent attaches.
+  # Deleting goes through Sandbox#delete, for a sandbox that has one (0.17);
+  # Agent attaches `delete_file` only then.
   #
   # VERIFIED (ruby_llm 2.2.3): a store implements `list`, `[]`, `read`, `write`
   # and `delete`; the tools also use the inherited `with_lock`, `read_digest`,
@@ -59,9 +59,18 @@ module Nexo
       stored(path, byte_size: content.bytesize, content: content, content_type: content_type)
     end
 
-    # A sandbox cannot delete, so this store cannot either.
-    def delete(_path)
-      raise NotImplementedError, "a sandbox-backed file store cannot delete files"
+    # Deletes the file at `path` through the sandbox, for a sandbox that can
+    # (see Sandbox#deletes?), and returns its StoredFile, or `nil` when there
+    # was none.
+    def delete(path)
+      path = ::RubyLLM::FileStore.path(path)
+      raise NotImplementedError, "this sandbox cannot delete files" unless @sandbox.deletes?
+
+      file = self[path] or return
+      with_lock { @sandbox.delete(path) }
+      file
+    rescue Errno::ENOENT, Errno::EISDIR
+      nil
     end
 
     private

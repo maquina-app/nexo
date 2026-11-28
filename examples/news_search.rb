@@ -8,25 +8,38 @@
 # backend; Fetch reads the allow-listed hosts. Nexo ships NO search backend — the
 # host injects one where marked below.
 #
-#   NEXO_LIVE=1 NEXO_MODEL=gemma3:12b ruby -Ilib examples/news_search.rb
+#   NEXO_LIVE=1 NEXO_MODEL=gemma3:12b NEXO_PROVIDER=ollama ruby -Ilib examples/news_search.rb
 #
 # Nothing provider-specific: set NEXO_MODEL to any ruby_llm-supported model.
 require "nexo"
+require_relative "support/model"
+
+# A stand-in search backend: it answers every query with the same three pages.
+class StaticIndex
+  PAGES = [
+    {title: "Hacker News front page", url: "https://hnrss.org/frontpage", snippet: "Today's most discussed technology stories."},
+    {title: "NPR text-only", url: "https://text.npr.org/", snippet: "Top US and world news, text only."},
+    {title: "CNN Lite", url: "https://lite.cnn.com/", snippet: "Latest headlines, text only."}
+  ].freeze
+
+  def search(_query) = PAGES
+end
 
 class NewsSearch < Nexo::Agent
-  model ENV.fetch("NEXO_MODEL")
+  Examples.model(self)
 
   # :search + :fetch are default-denied (like :shell). Grant both explicitly.
   permissions Nexo::Permissions.new(mode: :read_only, allow: %i[read glob fetch search])
 
-  # Nexo ships NO backend. Inject your own provider adapter here — any object
-  # responding to `search(query, **opts) -> [{title:, url:, snippet:}]`:
-  #
-  #   search_backend YourAdapter.new(ENV.fetch("SEARCH_API_KEY"))
+  # Nexo ships NO backend: a search provider is yours to choose. A backend is any
+  # object responding to `search(query) -> [{title:, url:, snippet:}]`. This one
+  # is a stand-in so the example runs; replace it with an adapter for a real
+  # provider, e.g. `search_backend YourAdapter.new(ENV.fetch("SEARCH_API_KEY"))`.
+  search_backend StaticIndex.new
 
   fetch_allow %w[lite.cnn.com text.npr.org hnrss.org]
 
-  skills :news_summary # teaches WHICH sites + HOW to summarize (examples/skills/news_summary)
+  skills "news-summary" # teaches WHICH sites + HOW to summarize (examples/skills/news-summary)
 
   instructions <<~TXT
     Use the search tool to discover today's top stories, then fetch the most relevant
@@ -39,10 +52,6 @@ Nexo.configure { |c| c.skills_path = File.expand_path("skills", __dir__) }
 
 if __FILE__ == $PROGRAM_NAME
   abort "set NEXO_LIVE=1 to run this live example" unless ENV["NEXO_LIVE"]
-
-  unless NewsSearch.search_backend
-    abort "inject a search_backend in examples/news_search.rb before running (Nexo ships none)"
-  end
 
   summary = NewsSearch.new.prompt("Search for and summarize today's top stories.")
   puts summary.content

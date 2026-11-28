@@ -74,7 +74,7 @@ class AgentTest < Minitest::Test
     chat = PermissiveVirtualAgent.new.chat
     tool_classes = chat.tools.values.map(&:class)
 
-    assert_equal %i[edit_file list_files read_file search_files write_file], chat.tools.keys.sort
+    assert_equal %i[delete_file edit_file list_files read_file search_files write_file], chat.tools.keys.sort
     assert(chat.tools.values.all?(Nexo::GatedTool), "every file tool is behind the gate")
     # The :virtual sandbox has no shell, so Shell is not attached (Spec 14 R2)
     # even though this agent's gate would permit it.
@@ -159,12 +159,18 @@ class AgentTest < Minitest::Test
     end
   end
 
-  def test_prebuilt_permissions_instance_is_accepted_as_is
+  # The agent works on its own copy (0.17): the loop hangs a per-prompt hook on
+  # the gate, which must not land on an instance other agents share.
+  def test_prebuilt_permissions_are_used_through_a_copy
     gate = Nexo::Permissions.new(mode: :ask, on_ask: ->(_c, _d) { true })
 
     agent = NoModelAgent.new(model: TEST_MODEL, permissions: gate)
 
-    assert_same gate, agent.permissions
+    refute_same gate, agent.permissions
+    assert_equal :ask, agent.permissions.mode
+    assert agent.permissions.authorize!(:write, "a.txt"), "the copy keeps the hook"
+    agent.permissions.on_decline = -> {}
+    assert_nil gate.on_decline
   end
 
   def test_default_agent_passes_only_model_to_ruby_llm_chat

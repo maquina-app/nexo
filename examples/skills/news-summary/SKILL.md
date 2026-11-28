@@ -1,5 +1,5 @@
 ---
-name: news_summary
+name: news-summary
 description: Summarize current headlines from a small set of allow-listed, text-friendly news sites.
 ---
 

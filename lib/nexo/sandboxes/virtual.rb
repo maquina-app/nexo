@@ -23,6 +23,11 @@ module Nexo
         @files[norm(path)] = content
       end
 
+      # Removes the file at `path`; raises `Errno::ENOENT` when there is none.
+      def delete(path)
+        @files.delete(norm(path)) { raise Errno::ENOENT, path.to_s }
+      end
+
       def glob(pattern)
         normalized = norm(pattern)
         @files.keys.select { |key| File.fnmatch(normalized, key) }

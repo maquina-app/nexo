@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "digest"
+require "monitor"
 require "time"
 require "erb"
 require "json"
@@ -48,7 +50,11 @@ module Nexo
     # buffering choice — Spec 5). ::cleared_state strips these when a run reaches
     # `"done"`; #checkpoint_all refuses a step named after any of them (Spec 21).
     RESERVED_STATE_KEYS = %w[__suspend__ __approval__ __approvals_pending__ __approvals__ __input__ __answers__
-      __buffer_events__].freeze
+      __chat__ __buffer_events__].freeze
+
+    # The statuses ::retry accepts: a run that raised, and one whose process
+    # died (see ::reconcile_interrupted!).
+    RETRYABLE = %w[failed interrupted].freeze
 
     # Control-flow signal raised by #suspend! and caught by ::execute to pause
     # a run durably — NOT a failure. It transitions the run to `"suspended"`
@@ -313,10 +319,6 @@ module Nexo
         costs = events.map { |data| data["cost"] }
         {"tokens" => tokens, "cost" => (costs.sum unless costs.empty? || costs.any?(&:nil?)), "prompts" => events.size}
       end
-
-      # The statuses ::retry accepts: a run that raised, and one whose process
-      # died (see ::reconcile_interrupted!).
-      RETRYABLE = %w[failed interrupted].freeze
 
       # Runs a `"failed"` or `"interrupted"` run again (0.16), re-entering `#call`
       # from the top with the run's original payload — the same re-entry as
@@ -715,15 +717,20 @@ module Nexo
     # back the same shape after the ActiveRecord backend's JSON round-trip; the
     # caller-supplied `data` hash is stored verbatim (symbol keys survive the
     # in-memory store, stringify through the json column). Returns the event hash.
+    #
+    # Safe to call from several #checkpoint_all steps at once (0.17): appending
+    # and saving happen under one lock, so two steps cannot interleave a write.
     def emit(type, data = {})
       ev = {"type" => type.to_s, "data" => data, "at" => Time.now.utc.iso8601}
-      if @buffer_events
-        # Defer the DB hit — accumulate in memory and persist once in
-        # #flush_events! (called from Workflow.run's ensure).
-        @event_buffer << ev
-      else
-        @run.push_event(ev)
-        @run.save_events! if @run.respond_to?(:save_events!)
+      emit_lock.synchronize do
+        if @buffer_events
+          # Defer the DB hit — accumulate in memory and persist once in
+          # #flush_events! (called from Workflow.run's ensure).
+          @event_buffer << ev
+        else
+          @run.push_event(ev)
+          @run.save_events! if @run.respond_to?(:save_events!)
+        end
       end
       # Live broadcast (Spec 11 R2): fires regardless of buffering — persistence
       # stays separate/buffered above, but the notification is live. A no-op without
@@ -977,26 +984,23 @@ module Nexo
       options[:answers] = answers unless answers.empty?
       agent = klass.new(**options)
       prompt = prompt.call(agent) if prompt.respond_to?(:call)
-      traced(klass.name || "agent") do
+      response = traced(klass.name || "agent") do
         drive(agent, prompt, max_turns) { |type, payload| emit_agent_event(type, payload) }
       end
+      forget_paused_chat!
+      response
     rescue ::RubyLLM::CancelledError
       raise Cancelled
     rescue Nexo::InputRequired => i
       # A tool asked the person something. Persist the questions so a host can
       # show them, then suspend; ::resume with `{answers: {key => value}}`.
-      @run.state = (@run.state || {}).merge("__input__" => i.questions.map(&:to_h))
-      @run.save_state! if @run.respond_to?(:save_state!)
+      pause_run!(prompt, i, "__input__" => i.questions.map(&:to_h))
       suspend!(reason: "input: #{i.questions.map(&:message).compact.join(" / ")}", resume_key: i.questions.first&.key)
     rescue Nexo::ApprovalRequired => a
       # Persist the pending call (immediately, like a checkpoint) so a host can
       # render the approval prompt, then suspend — the existing Workflow.execute
       # `rescue Suspended` path marks the run "suspended" and returns it.
-      @run.state = (@run.state || {}).merge(
-        "__approval__" => a.to_h.except("key"),
-        "__approvals_pending__" => a.pending
-      )
-      @run.save_state! if @run.respond_to?(:save_state!)
+      pause_run!(prompt, a, "__approval__" => a.to_h.except("key"), "__approvals_pending__" => a.pending)
       suspend!(reason: "approval: #{a.detail}", resume_key: a.detail.to_s)
     ensure
       # Collect BEFORE teardown, and in the ensure so it also runs when the agent
@@ -1014,6 +1018,10 @@ module Nexo
 
     private
 
+    # Serializes event writes. A Monitor, not a Mutex: #checkpoint_all emits while
+    # it already holds its own lock, and an emit can be reached from inside one.
+    def emit_lock = (@emit_lock ||= Monitor.new)
+
     # Runs the block as a named step of this run's ruby_llm workflow context, so
     # the events inside it are attributed to that step (a checkpoint, an agent).
     # A plain `yield` when the instance is driven outside ::execute.
@@ -1023,11 +1031,51 @@ module Nexo
 
     # Runs the agent's prompt. The `cancel:` hook is passed only to an agent
     # whose #prompt takes it, so a spy or a custom agent class keeps working.
+    #
+    # When this prompt paused on an earlier pass, its saved conversation is
+    # handed back the same way (`continue:`), so the paused call carries on and
+    # the model is not asked again.
     def drive(agent, prompt, max_turns, &on_event)
-      takes_cancel = agent.method(:prompt).parameters.any? { |kind, name| name == :cancel || kind == :keyrest }
-      return agent.prompt(prompt, max_turns: max_turns, &on_event) unless takes_cancel
+      accepted = agent.method(:prompt).parameters
+      takes = ->(keyword) { accepted.any? { |kind, name| name == keyword || kind == :keyrest } }
+      options = {max_turns: max_turns}
+      options[:cancel] = -> { cancel_requested? } if takes.call(:cancel)
+      transcript = paused_chat(prompt)
+      options[:continue] = transcript if transcript && takes.call(:continue)
+      agent.prompt(prompt, **options, &on_event)
+    end
 
-      agent.prompt(prompt, max_turns: max_turns, cancel: -> { cancel_requested? }, &on_event)
+    # Records why the agent paused and, with it, the conversation so far under
+    # the reserved `"__chat__"` key, tagged with the prompt it belongs to. A
+    # signal with no transcript (a custom agent class, a chat double) records
+    # none, and the resume asks the prompt again as before 0.17.
+    def pause_run!(prompt, signal, entries)
+      state = (@run.state || {}).merge(entries)
+      transcript = signal.respond_to?(:transcript) ? signal.transcript : nil
+      state = transcript ? state.merge("__chat__" => {"prompt" => prompt_tag(prompt), "messages" => transcript}) : state.except("__chat__")
+      @run.state = state
+      @run.save_state! if @run.respond_to?(:save_state!)
+    end
+
+    # The conversation saved for `prompt` on an earlier pass, or nil. A workflow
+    # can prompt more than once; only the prompt that paused is continued.
+    def paused_chat(prompt)
+      saved = (@run.state || {})["__chat__"]
+      saved["messages"] if saved && saved["prompt"] == prompt_tag(prompt)
+    end
+
+    # Drops the saved conversation once its prompt has finished.
+    def forget_paused_chat!
+      return unless (@run.state || {}).key?("__chat__")
+
+      @run.state = @run.state.except("__chat__")
+      @run.save_state! if @run.respond_to?(:save_state!)
+    end
+
+    # What identifies a prompt within a run: its text, or an MCP prompt's name.
+    def prompt_tag(prompt)
+      text = prompt.respond_to?(:name) ? "mcp-prompt:#{prompt.name}" : prompt.to_s
+      Digest::SHA256.hexdigest(text)[0, 16]
     end
 
     # Raises Cancelled when the run was asked to stop.
@@ -1087,7 +1135,11 @@ module Nexo
       first_key = Permissions.approval_key(first["capability"], first["tool"], first["args"])
       keys = [first_key, *Array(pending).map { |call| call["key"] }].uniq
       answers = resume_input[:approvals].to_h.transform_keys(&:to_s).slice(*keys).transform_values { |v| !!v }
-      answers[first_key] = !!resume_input[:approved] if resume_input.key?(:approved)
+      if resume_input.key?(:approved)
+        answers[first_key] = !!resume_input[:approved]
+        # `remember: true` also files the answer for every later call of that kind.
+        answers[Permissions.remembered_key(first["capability"], first["tool"])] = !!resume_input[:approved] if resume_input[:remember]
+      end
       answers
     end
 
@@ -1148,7 +1200,7 @@ module Nexo
     # - `:done`        → the final response `Message#content`.
     def serializable(type, payload)
       case type
-      when :tool_call then reduce_tool_call(payload)
+      when :tool_call, :tool_declined then reduce_tool_call(payload)
       when :tool_result then reduce_tool_result(payload)
       when :done then reduce_done(payload)
       when :usage then reduce_usage(payload)

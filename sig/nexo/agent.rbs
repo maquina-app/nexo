@@ -9,7 +9,8 @@ module Nexo
     def self.search_backend: (?untyped obj) -> untyped
     def self.file_tools: (?Symbol value) -> Symbol
     def self.llm: () ?{ () [self: singleton(RubyLLM::Agent)] -> void } -> untyped
-    def self.tools: (*untyped list, ?capability: Symbol?, ?defer: bool?) -> Array[Hash[Symbol, untyped]]
+    def self.tools: (*untyped list, ?capability: Symbol?, ?defer: bool?, ?detail: (^(Hash[Symbol, untyped]) -> String?)?) -> Array[Hash[Symbol, untyped]]
+    def self.provider_tools: (*untyped names, ?capability: Symbol?, **untyped with_options) -> Array[Hash[Symbol, untyped]]
 
     attr_reader cwd: String
     attr_reader model: untyped
@@ -24,8 +25,10 @@ module Nexo
     def mcp_server: (untyped name) -> untyped
     def mcp_prompts: (untyped name) -> Array[untyped]
     def mcp_prompt: (untyped name, untyped prompt, **untyped arguments) -> untyped
+    def mcp_resource_templates: (untyped name) -> Array[untyped]
+    def mcp_prompt_suggestions: (untyped name, untyped prompt, **untyped typed) -> Array[String]
     def chat: (?base: untyped) -> RubyLLM::Chat
     attr_reader answers: Hash[String, untyped]
-    def prompt: (String text, ?max_turns: Integer?, ?cancel: (^() -> boolish)?) ?{ (Symbol, untyped) -> void } -> untyped
+    def prompt: (String text, ?max_turns: Integer?, ?cancel: (^() -> boolish)?, ?continue: Array[Hash[untyped, untyped]]?) ?{ (Symbol, untyped) -> void } -> untyped
   end
 end

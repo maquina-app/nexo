@@ -150,4 +150,17 @@ class RunStoreDiskTest < Minitest::Test
     reader.close
     value
   end
+
+  # 0.17: newest first by when a run STARTED, whatever was written last.
+  def test_all_lists_runs_by_creation_not_by_file_time
+    Dir.mktmpdir do |dir|
+      store = Nexo::RunStore::Disk.new(dir: dir)
+      first = store.create(workflow_class: "X", payload: {})
+      sleep 0.002 # ids order by the millisecond they were made in
+      second = store.create(workflow_class: "X", payload: {})
+      first.update!(status: "interrupted") # rewrites the older file last
+
+      assert_equal [second.id, first.id], store.all.map(&:id)
+    end
+  end
 end

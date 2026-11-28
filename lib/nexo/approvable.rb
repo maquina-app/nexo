@@ -30,7 +30,11 @@ module Nexo
     # Reads the recorded decision for a call: `true`, `false`, or `nil` while
     # nobody has decided.
     def approval_resolver
-      ->(tool_call) { @permissions.decision_for(*approval_subject(approval_arguments(tool_call))) }
+      lambda do |tool_call|
+        decision = @permissions.decision_for(*approval_subject(approval_arguments(tool_call)))
+        @permissions.on_decline&.call(tool_call) if decision == false
+        decision
+      end
     end
 
     # The capability, detail and arguments a call is authorized and decided

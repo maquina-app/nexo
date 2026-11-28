@@ -34,9 +34,9 @@ module Nexo
       tools: "the `tools` macro, which puts a tool behind the permission gate",
       mcp: "the `mcp` macro, which puts each MCP tool behind the permission gate",
       skills: "the `skills` macro",
-      provider_tools: "nothing — a provider-side tool runs outside the permission gate",
+      provider_tools: "the `provider_tools` macro on the agent, which checks its permissions before attaching one",
       file_store: "the `file_tools` macro, which gates the same tools",
-      code_execution: "a sandbox with a shell — `run_code` runs outside the permission gate"
+      code_execution: "a sandbox with a shell — `ruby_llm` builds `run_code` inside the chat, where no gate can wrap it"
     }.freeze
 
     # These two have no reader form: any call declares.

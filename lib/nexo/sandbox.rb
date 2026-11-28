@@ -21,6 +21,15 @@ module Nexo
       raise NotImplementedError
     end
 
+    # Deletes the file at `path` (0.17). A sandbox that cannot delete leaves this
+    # as it is, and its agents get no `delete_file` tool.
+    def delete(path)
+      raise NotImplementedError
+    end
+
+    # Whether this sandbox implements #delete.
+    def deletes? = method(:delete).owner != Nexo::Sandbox
+
     # Runs `command` and returns `{ stdout:, stderr:, status: }` (status is the
     # integer exit code). `timeout` is in seconds.
     def shell(command, timeout: 30)

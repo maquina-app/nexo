@@ -10,13 +10,14 @@
 #
 # Requires: `npx` on PATH, and a model. MCP ships with ruby_llm — no extra gem.
 #
-#   NEXO_LIVE=1 NEXO_MODEL=gemma3:12b ruby -Ilib examples/mcp_filesystem.rb /tmp
+#   NEXO_LIVE=1 NEXO_MODEL=gemma3:12b NEXO_PROVIDER=ollama ruby -Ilib examples/mcp_filesystem.rb /tmp
 #
 # Nothing here is provider-specific: set NEXO_MODEL to any ruby_llm-supported model.
 require "nexo"
+require_relative "support/model"
 
 class FileExplorer < Nexo::Agent
-  model ENV.fetch("NEXO_MODEL")          # provider-neutral; e.g. gemma3:12b via Ollama
+  Examples.model(self) # NEXO_MODEL, plus NEXO_PROVIDER=ollama for a local model
   permissions :read_only                 # safe default
 
   # The server names its tools like ruby_llm's file tools (read_file, search_files),

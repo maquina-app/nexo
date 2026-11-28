@@ -72,6 +72,7 @@ Things to know:
 | `:tool_call` | `RubyLLM::ToolCall` | before each tool call |
 | `:tool_progress` | `{tool_call:, progress:}` — a `RubyLLM::Progress` (`message`, `value`, `total`) | when a tool reports progress (0.16) |
 | `:tool_result` | the tool's return value | after each tool call |
+| `:tool_declined` | `RubyLLM::ToolCall` | when a recorded decision refuses a call under `:approve` (0.17); no `:tool_call` or `:tool_result` follows |
 | `:fallback` | `RubyLLM::Fallback` (`from`, `to`, `error`) | after a request moved to a fallback model declared in the `llm` block (0.16) |
 | `:done` | the final `RubyLLM::Message` | when the prompt ends |
 | `:usage` | `{tokens: {input_tokens:, output_tokens:, …}, cost:}` | once per prompt, last, **even when the prompt raises** (0.16) |
@@ -125,8 +126,10 @@ These facts are not taken on trust: `test/real_loop_test.rb` drives `ruby_llm`'s
 conversation loop with scripted model replies and asserts the permission gate, the MCP
 gate, the turn cap, and approval suspension end to end.
 
-`Open3.capture3` has no `timeout:` keyword on the target Ruby, so `Local#shell` bounds the
-command with `Timeout.timeout`.
+`Local#shell` runs a command through `Nexo::Sandboxes::Subprocess`: in its own process group,
+with only the environment it is given, and with the whole group killed when the timeout
+passes. (`Timeout.timeout` around `Open3.capture3` reports a timeout without stopping the
+command, which is what Nexo did until 0.14.)
 
 ## Live smoke (optional)
 

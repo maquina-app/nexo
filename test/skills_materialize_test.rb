@@ -28,10 +28,10 @@ class SkillsMaterializeTest < Minitest::Test
 
   def with_skill(&)
     Dir.mktmpdir do |root|
-      dir = File.join(root, "dashboard_designer")
+      dir = File.join(root, "dashboard-designer")
       FileUtils.mkdir_p(File.join(dir, "scripts"))
       FileUtils.mkdir_p(File.join(dir, "assets"))
-      File.write(File.join(dir, "SKILL.md"), "---\nname: dashboard_designer\ndescription: d\n---\n\nBody\n")
+      File.write(File.join(dir, "SKILL.md"), "---\nname: dashboard-designer\ndescription: d\n---\n\nBody\n")
       File.write(File.join(dir, "scripts", "render.rb"), "puts :rendered\n")
       File.write(File.join(dir, "assets", "template.html"), "<html>__DIGEST_JSON__</html>\n")
 

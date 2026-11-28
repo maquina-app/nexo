@@ -139,6 +139,11 @@ module Nexo
       # acceptable for v1.
       def find(id) = self.class.mutex.synchronize { self.class.runs.fetch(id) }
 
+      # Every run in the table, newest first by when it started (a run's id is a
+      # UUIDv7, which sorts by creation). Like Disk#all, a convenience for a host,
+      # not part of what Workflow calls.
+      def all = self.class.mutex.synchronize { self.class.runs.values.sort_by { |run| run.id.to_s }.reverse }
+
       # Records that someone asked for the running `run` to stop (0.16).
       def request_cancel!(run) = self.class.mutex.synchronize { self.class.cancels << run.id }
 
@@ -284,14 +289,16 @@ module Nexo
         hydrate(JSON.parse(::File.read(path)), path)
       end
 
-      # Every run in the directory, newest-written first. Not part of the store
-      # contract Workflow calls — it is here because a host with a run directory
-      # inevitably wants to list it ("what did the last run produce?").
+      # Every run in the directory, newest first by when it STARTED: a run's id is
+      # a UUIDv7, which sorts by creation. (Until 0.17 this was by file time, which
+      # a sweep of interrupted runs rewrites.) Not part of the store contract
+      # Workflow calls — it is here because a host with a run directory inevitably
+      # wants to list it ("what did the last run produce?").
       def all
         return [] unless ::File.directory?(@dir)
 
         Dir.glob(::File.join(@dir, "*.json"))
-          .sort_by { |p| -::File.mtime(p).to_f }
+          .sort_by { |p| ::File.basename(p, ".json") }.reverse
           .filter_map do |p|
             hydrate(JSON.parse(::File.read(p)), p)
           rescue JSON::ParserError, SystemCallError

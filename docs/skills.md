@@ -58,13 +58,25 @@ Referencing a skill that does not exist raises `Nexo::Error` naming the missing
 > longer used (and it pins `ruby_llm` 1.x). The `skills` macro, `Nexo::Skills.find` and
 > `Nexo::Skills.materialize` are unchanged.
 
-### Why not `ruby_llm`'s own skills?
+### What comes from `ruby_llm`, and what does not
 
-`ruby_llm` 2.2 ships skills too (`chat.with_skills`). Nexo does not use them, for two
-reasons. Its loader enforces the Agent Skills naming rule — lowercase words joined by
-hyphens — and so rejects the underscore names Nexo resolves from a symbol (`skills
-:email_triage`). And it works by giving the model a `load_skill` tool, where Nexo's rule is
-that a skill adds instructions and nothing else.
+Since 0.17 a skill is **parsed** by `ruby_llm`'s own `RubyLLM::Skill`, which follows the
+Agent Skills specification:
+
+- `name` and `description` are required.
+- The name is lower-case letters, digits and single hyphens (`email-triage`), and equal to
+  the folder's name.
+- `compatibility`, `license`, `allowed-tools` and `metadata` are read and checked.
+
+What Nexo does **not** take is how a skill reaches the model. `ruby_llm` (`chat.with_skills`)
+gives the model a `load_skill` tool that reads the skill's files from the host when asked.
+Nexo's rule is that a skill adds instructions and nothing else: the text goes into the
+system prompt, and the model gets nothing new to call.
+
+**Coming from underscore names.** Before 0.17 Nexo read skills itself and accepted
+`email_triage`. Rename the folder and its `name:` to `email-triage`. `skills :email_triage`
+keeps working, because a name given with underscores resolves to the hyphenated folder.
+Until 0.18 an underscore-named skill still loads and prints a notice saying what to rename.
 
 ## Say what a skill needs with `compatibility:`
 

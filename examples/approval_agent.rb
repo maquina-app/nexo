@@ -24,18 +24,21 @@
 # so the suspended run survives across processes, and resume from a controller/job
 # once a human clicks "approve" (`MyWorkflow.resume_later(run.id, approved: true)`).
 require "nexo"
+require "tmpdir"
+require_relative "support/model"
 
-# A local, in-memory sandbox is enough — the agent writes a file the model chooses;
-# :approve gates that write for a human decision.
+# A local sandbox in a throwaway directory — the agent writes a file the model
+# chooses; :approve gates that write for a human decision.
+WORKSPACE = Dir.mktmpdir("nexo-approval")
 class Scribe < Nexo::Agent
-  model ENV.fetch("NEXO_MODEL", "gpt-4o-mini")
+  Examples.model(self, default: "gpt-4o-mini")
   sandbox :local
   permissions :approve # every write/shell needs a human decision (undecided ⇒ suspend)
-  instructions "You write short files when asked. Use the write tool."
+  instructions "You write short files when asked. Use the write_file tool."
 end
 
 class ApprovedWrite < Nexo::Workflow
-  cwd Dir.pwd
+  cwd WORKSPACE # not the directory you run this from
   sandbox :local
   agent Scribe
 
@@ -56,9 +59,20 @@ if __FILE__ == $PROGRAM_NAME
 
   # 2) A human approves. Resume threads {approved: true} into the agent, so the
   #    same gate now allows and the run completes. (Denying — resume(approved:
-  #    false) — instead lets the tool return {error:}; the model adapts and the run
-  #    still completes "done", without the write.)
+  #    false) — instead has the call refused; the model adapts and the run still
+  #    completes "done", without the write.)
+  #
+  #    One answer decides one call, and a resume asks the model again: if it asks
+  #    for something different this time, that is a new call and the run suspends
+  #    for it. So a host answers until the run stops asking.
   resumed = ApprovedWrite.resume(run.id, approved: true)
+  2.times do
+    break unless resumed.status == "suspended"
+
+    puts "asked again for:          #{resumed.state["__approval__"].inspect}"
+    resumed = ApprovedWrite.resume(resumed.id, approved: true)
+  end
   puts "status after resume:      #{resumed.status}"                    # => "done"
   puts "result:                   #{resumed.result.inspect}"
+  puts "written:                  #{File.join(WORKSPACE, "notes/approval_demo.txt")}"
 end

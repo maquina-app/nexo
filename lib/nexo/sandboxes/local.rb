@@ -129,6 +129,17 @@ module Nexo
         end
       end
 
+      # Deletes the file at `path`, guarded like every other path. A directory is
+      # not a file and is refused.
+      def delete(path)
+        offload do
+          full = absolute(path)
+          raise Errno::EISDIR, path.to_s if File.directory?(full)
+
+          File.delete(full)
+        end
+      end
+
       # A plain-text description of this host environment for the agent's system
       # prompt: the host cwd, and what a shell command can and cannot reach.
       def instructions

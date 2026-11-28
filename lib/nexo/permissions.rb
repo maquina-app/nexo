@@ -42,6 +42,11 @@ module Nexo
     # other mode.
     attr_reader :decisions
 
+    # Called when a recorded decision refuses a call before it runs (0.17), with
+    # the tool call. The loop sets it to report `:tool_declined`; `ruby_llm`
+    # answers such a call itself, so no other event would say it happened.
+    attr_accessor :on_decline
+
     # The key one gated call is decided under: the capability and its detail (a
     # path, a command, a URL), plus a digest of the arguments when there are any
     # (MCP calls). Two calls share a key only when they are the same call, which
@@ -53,6 +58,12 @@ module Nexo
       return key if args.nil? || (args.respond_to?(:empty?) && args.empty?)
 
       "#{key}:#{Digest::SHA256.hexdigest(JSON.generate(canonical(args)))[0, 16]}"
+    end
+
+    # The key that decides every call of a kind (see #decision_for): the
+    # capability, or for an MCP tool its name, followed by `*`.
+    def self.remembered_key(capability, detail = nil)
+      (capability.to_s == "mcp") ? "mcp:#{detail}:*" : "#{capability}:*"
     end
 
     # `value` with Hash keys stringified and sorted, recursively, so equal
@@ -133,6 +144,14 @@ module Nexo
         else raise Denied, "#{capability} (#{detail}) not approved"
         end
       end
+    end
+
+    # Whether `capability` is allowed for EVERY call without asking anyone:
+    # under `:auto`, or when it is listed in `allow:`. This is what a tool that
+    # runs on the provider's servers needs (see the `provider_tools` macro):
+    # Nexo never sees its calls, so it cannot ask about one or refuse one.
+    def always_allows?(capability)
+      @mode == :auto || @allow.include?(capability)
     end
 
     # Whether `capability` can NEVER be authorized by this gate, for any call.
@@ -225,8 +244,15 @@ module Nexo
 
     # The recorded answer for one gated call under `:approve`: `true`, `false`,
     # or `nil` when nobody has decided it (see #decisions).
+    #
+    # A decision can also cover every call of a kind (0.17): `"write:*"` answers
+    # any `:write` call, and `"mcp:<tool>:*"` any call of that MCP tool. The
+    # exact call's own decision wins over it.
     def decision_for(capability, detail = nil, args = nil)
-      @decisions && @decisions[self.class.approval_key(capability, detail, args)]
+      return nil unless @decisions
+
+      exact = @decisions[self.class.approval_key(capability, detail, args)]
+      exact.nil? ? @decisions[self.class.remembered_key(capability, detail)] : exact
     end
   end
 end
