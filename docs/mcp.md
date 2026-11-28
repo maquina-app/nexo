@@ -191,6 +191,7 @@ itself (the tools the model then calls are gated as always):
 
 ```ruby
 agent.mcp_prompts(:github).map(&:name)         # => ["code_review", …]
+agent.mcp_prompt_suggestions(:github, :code_review, language: "ru")   # => ["ruby", "rust"] (0.17)
 agent.prompt(agent.mcp_prompt(:github, :code_review, code: diff))
 ```
 

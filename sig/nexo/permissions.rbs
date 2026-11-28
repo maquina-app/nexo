@@ -18,6 +18,9 @@ module Nexo
                      ?decisions: Hash[untyped, bool]?) -> void
     def needs_approval?: (Symbol capability, ?untyped detail, ?untyped args) -> bool
     def decision_for: (Symbol capability, ?untyped detail, ?untyped args) -> bool?
+    def always_allows?: (Symbol capability) -> bool
+    def self.remembered_key: (untyped capability, ?untyped detail) -> String
+    attr_accessor on_decline: (^(untyped) -> void)?
     def with_decisions: (Hash[untyped, bool]? decisions) -> Permissions
     def never_allows?: (capability capability) -> bool
     def never_allows_mcp?: (untyped tool_name) -> bool

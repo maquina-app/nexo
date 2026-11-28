@@ -10,6 +10,9 @@
 #   * `LookupOrder` reads, so it has no gate
 #   * `IssueRefund` and `PageOnCall` are declared `capability: :write`; under
 #     `:approve` each call suspends the run until a person decides
+#   * after the decision the paused call carries on: the model is not asked
+#     again, so the refund is issued once (before 0.17 a resume re-ran the prompt,
+#     and this example refunded the same order three times)
 require "nexo"
 require_relative "support/model"
 
@@ -21,7 +24,7 @@ ORDERS = {
   "A-1003" => {item: "USB hub", total: 39.00, delivered_days_ago: 61}
 }.freeze
 
-LEDGER = {} # what actually happened, keyed so nothing can happen twice
+LEDGER = [] # what actually happened, so the example can show it
 
 class LookupOrder < RubyLLM::Tool
   description "Looks up an order by its number: the item, the total paid, and how many days ago it was delivered."
@@ -32,39 +35,25 @@ class LookupOrder < RubyLLM::Tool
   end
 end
 
-# Two rules for a tool that acts and waits for approval, both visible below.
-#
-# 1. Its arguments are facts, not prose. An approval is filed under what the call
-#    does — the tool and its arguments — and a resume asks the model again. A
-#    free-text `reason` would be worded differently the second time, which makes
-#    it a different call, which asks the person again.
-# 2. It is idempotent. Everything outside a checkpoint runs again on a resume,
-#    tool calls included, so "refund this order" must be safe to hear twice.
 class IssueRefund < RubyLLM::Tool
-  description "Refunds an amount on an order to the customer's original payment method. An order is refunded at most once."
+  description "Refunds an amount on an order to the customer's original payment method."
   parameter :order, type: :string, description: "The order number"
   parameter :amount, type: :number, description: "The amount to refund, in dollars"
+  parameter :reason, type: :string, description: "Why, in a few words"
 
-  def execute(order:, amount:)
-    return "#{order} was already refunded: #{LEDGER["refund:#{order}"]}." if LEDGER.key?("refund:#{order}")
-
-    LEDGER["refund:#{order}"] = "$#{format("%.2f", amount)}"
+  def execute(order:, amount:, reason:)
+    LEDGER << "refunded $#{format("%.2f", amount)} on #{order} (#{reason})"
     "Refunded $#{format("%.2f", amount)} on #{order}."
   end
 end
 
 class PageOnCall < RubyLLM::Tool
-  REASONS = %w[large_refund suspected_fraud angry_customer].freeze
+  description "Pages the on-call support lead with a short message."
+  parameter :message, type: :string, description: "What they need to know"
 
-  description "Pages the on-call support lead about an order. One page per order and reason."
-  parameter :order, type: :string, description: "The order number"
-  parameter :reason, type: :string, description: "One of: #{REASONS.join(", ")}"
-
-  def execute(order:, reason:)
-    return {error: "reason must be one of #{REASONS.join(", ")}"} unless REASONS.include?(reason)
-
-    LEDGER["page:#{order}:#{reason}"] ||= "paged"
-    "The on-call lead was paged about #{order} (#{reason})."
+  def execute(message:)
+    LEDGER << "paged on-call: #{message}"
+    "The on-call lead was paged."
   end
 end
 
@@ -74,7 +63,11 @@ class SupportAgent < Nexo::Agent
   file_tools :none       # it works through its tools; it needs no files
   skills :refunds
   tools LookupOrder                              # reads: no gate
-  tools IssueRefund, PageOnCall, capability: :write # acts: a person decides each call
+  # These act, so a person decides each call. `detail:` says what identifies a
+  # call: the order and the amount, not the free-text reason, which a model
+  # words differently every time it is asked.
+  tools IssueRefund, capability: :write, detail: ->(args) { "refund $#{args[:amount]} on #{args[:order]}" }
+  tools PageOnCall, capability: :write, detail: ->(_args) { "page the on-call lead" }
 
   instructions "You are a support agent for an online shop. Follow the refunds skill. Use your tools; do not invent order details."
 end

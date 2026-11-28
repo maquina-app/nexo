@@ -38,9 +38,10 @@ if __FILE__ == $PROGRAM_NAME
 
   totals = Hash.new(0)
   show_stats = ->(response) do
-    totals[:input] += response.input_tokens.to_i
-    totals[:output] += response.output_tokens.to_i
-    puts "— #{response.model_id}: in=#{response.input_tokens} out=#{response.output_tokens}"
+    tokens = response.tokens # ruby_llm 2: a message's usage is on #tokens
+    totals[:input] += tokens.input.to_i
+    totals[:output] += tokens.output.to_i
+    puts "— #{response.model_id}: in=#{tokens.input} out=#{tokens.output}"
   end
 
   # Stage this very file into the agent's in-memory sandbox: the review target.

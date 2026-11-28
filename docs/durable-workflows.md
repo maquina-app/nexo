@@ -204,9 +204,10 @@ Booking.resume(run.id, answers: {"book:seat" => "aisle"})
 ```
 
 Answers accumulate on the run (`"__answers__"`), like approvals: a later, different question
-suspends it again. Resume re-runs the prompt, so the model has to ask for the tool again; when
-it does, the stored answer is sent and the turn carries on. An answer for a key that was not
-asked is ignored.
+suspends it again. The resume carries the paused conversation on (0.17): the tool that asked
+is given the answer and the model is not asked again. `ruby_llm` re-enters a tool that calls
+`ask` from the top with the answer in hand, so code before the `ask` runs again; keep side
+effects after it. An answer for a key that was not asked is ignored.
 
 ## Durable **agent** approval — `:approve` (bridge a mid-run gate to a suspend)
 
@@ -281,19 +282,27 @@ resumed.status                                 # => "done" (the gate allowed the
   durable, cross-process sibling for `run_later`/`resume_later`.
 
 **Caveats (read before relying on it):**
-- **Re-entry, not replay.** On resume the agent re-drives `#call` from the top; a
-  non-idempotent tool call *before* the approval gate re-runs on resume (agent tool calls
-  generally aren't checkpointable). Put approval gates **early**, or after the expensive
-  work is already `checkpoint`ed by the workflow.
+- **The paused conversation carries on (0.17).** When `run_agent` suspends, the conversation
+  so far is saved with the run under `"__chat__"`. The resume restores it and continues:
+  the held call runs (or is refused), a tool that ran before the pause does **not** run again,
+  and the model is asked only for what comes next. Before 0.17 the prompt was asked again
+  from the start, which could run a tool twice. Two limits remain: the workflow's own
+  `#call` is still re-entered from the top, so work outside a `checkpoint` and outside the
+  paused `run_agent` runs again; and a run suspended by an older version has no saved
+  conversation and is asked again.
+- **Say what identifies a call.** An approval is filed under the tool and its arguments. For
+  a tool with a free-text argument, declare the part that matters:
+  `tools IssueRefund, capability: :write, detail: ->(args) { "refund #{args[:order]}" }`.
+- **Approve a kind of call once.** `resume(id, approved: true, remember: true)` also answers
+  every later call with the same capability (or the same MCP tool) in that run.
 - **One answer decides one call.** `resume(approved:)` answers the call recorded under
   `run.state["__approval__"]`, and nothing else. The answer is filed in
   `run.state["__approvals__"]` under that call's key (capability plus path, command or URL; for
   an MCP tool, its name plus a digest of the arguments). A *different* gated call later in the
   same prompt **suspends again**, and the next resume decides it. Before 0.14 the first answer
   silently applied to every later call.
-- **A re-driven model may ask for something else.** Resume runs the prompt again, and nothing
-  forces the model to repeat the call you approved. If it writes `b.txt` where it asked for
-  `a.txt`, that is a new call and the run suspends for it. This is the safe direction.
+- **A declined call is on the record.** It is logged as `agent_tool_declined`, with the tool
+  and its arguments.
 - **`approved:` with nothing pending approves nothing.** An answer is recorded only when a call
   is waiting.
 - **Cross-process approval needs the ActiveRecord store + ActiveJob** (like all durable resume).

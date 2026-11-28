@@ -72,6 +72,7 @@ Things to know:
 | `:tool_call` | `RubyLLM::ToolCall` | before each tool call |
 | `:tool_progress` | `{tool_call:, progress:}` — a `RubyLLM::Progress` (`message`, `value`, `total`) | when a tool reports progress (0.16) |
 | `:tool_result` | the tool's return value | after each tool call |
+| `:tool_declined` | `RubyLLM::ToolCall` | when a recorded decision refuses a call under `:approve` (0.17); no `:tool_call` or `:tool_result` follows |
 | `:fallback` | `RubyLLM::Fallback` (`from`, `to`, `error`) | after a request moved to a fallback model declared in the `llm` block (0.16) |
 | `:done` | the final `RubyLLM::Message` | when the prompt ends |
 | `:usage` | `{tokens: {input_tokens:, output_tokens:, …}, cost:}` | once per prompt, last, **even when the prompt raises** (0.16) |

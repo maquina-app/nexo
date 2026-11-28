@@ -1,7 +1,64 @@
 ## [Unreleased]
 
+## [0.17.0] - 2026-11-27
+
+Closes what 0.16 left open. The headline: a resume no longer asks the model again.
+
+**Upgrading:**
+
+1. **Skill names are hyphenated.** Skills are read by ruby_llm's parser, which follows the
+   Agent Skills specification: `name` and `description` are required, and the name is
+   lower-case letters, digits and single hyphens, equal to its folder. Rename
+   `app/skills/email_triage/` to `email-triage/` and its `name:` with it. `skills
+   :email_triage` keeps resolving to the renamed folder. An underscore-named skill still
+   loads in 0.17, with a notice, and stops loading in 0.18. A skill with no `description`,
+   or whose `name:` differs from its folder, now raises `Nexo::Error`.
+2. **A resume carries the conversation on.** If a test scripts the model's replies, the
+   resume now needs only what comes AFTER the approved call (see below).
+3. **`Skill#metadata`** is the front matter's `metadata` mapping, not the whole front matter.
+4. **A custom agent class given a `Permissions` instance** works on a copy of it.
+5. `RunStore::Disk#all` lists runs by creation, newest first, not by file time.
+6. Agents that may write get one more tool, `delete_file`.
+
+### Changed
+
+- **A resume continues the paused conversation instead of asking the prompt again.** When
+  `run_agent` suspends for an approval or a question, the conversation is saved with the run
+  (reserved state key `"__chat__"`). The resume restores it and carries on: the held call
+  runs or is refused, nothing before it runs again, and the model is asked only for what
+  comes next. Before, the whole prompt was asked again, so a tool that had already run could
+  run twice and a model could ask for something different the second time. It works on all
+  three run stores. A run suspended by an older version, which has no saved conversation,
+  is asked again as before. A direct caller does the same with
+  `agent.prompt(text, continue: error.transcript)`.
+- **Skills are parsed by `RubyLLM::Skill`** (see Upgrading). Nexo still puts a skill's text in
+  the instructions itself and never attaches ruby_llm's `load_skill` tool.
+- **A timed-out MCP task answers its call with an error**, so the model hears it and the
+  prompt goes on, where it used to fail the prompt.
+- **An absolute path outside the sandbox is refused by name** (`… is outside the workspace`)
+  where the file tools used to report it as not found.
+- `Workflow#emit` is safe to call from several `checkpoint_all` steps at once.
+
 ### Added
 
+- **`tools X, capability: :write, detail: ->(args) { … }`** says what identifies one call of a
+  gated tool. Without it the identity is the tool and all its arguments, so a free-text
+  argument made every attempt a new call that had to be approved again.
+- **`:tool_declined`**: a call a recorded decision refuses is reported to the prompt's block
+  and logged on a run as `agent_tool_declined`. ruby_llm answers such a call itself, so it
+  used to leave no trace.
+- **Remembered approvals.** A decision keyed `"write:*"` (or `"mcp:<tool>:*"`) answers every
+  later call of that kind, and `resume(id, approved: true, remember: true)` files one. The
+  exact call's own decision still wins.
+- **`delete_file`**, for a sandbox that can delete (`Sandbox#delete` on Virtual, Local and
+  Container), gated as `:write`.
+- **`provider_tools :web_search, capability: :search`** on an agent attaches a tool that runs
+  on the provider's servers, but only when the agent's permissions allow that capability for
+  every call (`:auto`, or listed in `allow:`): Nexo never sees those calls, so it cannot ask
+  about one. New `Permissions#always_allows?`.
+- **`Agent#mcp_resource_templates`** and **`Agent#mcp_prompt_suggestions`**.
+- `RunStore::Memory#all`. `Nexo::Workflow::RETRYABLE` is reachable as a constant.
+- `Nexo::ApprovalRequired#transcript`, `Nexo::InputRequired#transcript`, `Permissions#on_decline`.
 - **Twelve examples.** One for each headline 0.16 feature — `retry_and_cancel`,
   `confined_shell`, `usage_report`, `tool_question`, `multiple_approvals`, `llm_options`,
   `deferred_tools` — and five after the templates Vercel's Eve ships: `support_agent`,
@@ -13,6 +70,29 @@
 - `examples/inbox_digest_task.rb` triages three staged files, so it runs with nothing but a
   model; `inbox_digest.rb` and `inbox_digest_http.rb`, which needed a Gmail MCP server, are
   removed. `news_search.rb` ships a stand-in search backend so it runs.
+
+### Verified
+
+- **Against Anthropic** (`claude-haiku-5-5`; `test/live_smoke_test.rb -n /anthropic/`): deferred
+  tools found through the provider's own tool search, with no call to ruby_llm's
+  `tool_search`; a session with automatic compaction switched on in the `llm` block (the
+  request is accepted and the session remembers; the conversation was too short to make the
+  provider compact anything); and a workflow that suspends for approval, resumes, and writes
+  its file with exactly one `write_file` call.
+- Every example, on a local model through an OpenAI-compatible server.
+
+### Still declined, with the reason
+
+- **`code_execution` (`run_code`).** ruby_llm builds that tool inside the chat with private
+  wiring and attaches it outside `with_tools`, so no gate can wrap it. It stays refused in
+  the `llm` block. The gated `Shell` tool, in a confined or container sandbox, is Nexo's way
+  to run code.
+- **`file_store`** stays refused: the agent's sandbox is the store.
+- **Push updates for MCP tasks (`listen`).** Tasks are polled. Nothing here could be tested
+  against a server that pushes.
+
+Not exercised: OpenAI's own tool search and compaction (no key), a compaction that
+actually fires, and compaction on a persisted chat.
 
 ### Fixed
 

@@ -244,4 +244,93 @@ class LiveSmokeTest < Minitest::Test
   ensure
     Object.send(:remove_const, :LiveApprovalFlow) if Object.const_defined?(:LiveApprovalFlow)
   end
+
+  # --- 0.17: against Anthropic, for what a local model cannot show ---------------
+  #
+  #   NEXO_LIVE=1 ANTHROPIC_API_KEY=... bundle exec ruby -Itest test/live_smoke_test.rb -n /anthropic/
+
+  def anthropic_agent(&declarations)
+    skip "set NEXO_LIVE=1 and ANTHROPIC_API_KEY to run the Anthropic checks" unless ENV["NEXO_LIVE"] == "1" && ENV["ANTHROPIC_API_KEY"]
+
+    RubyLLM.configure { |config| config.anthropic_api_key = ENV["ANTHROPIC_API_KEY"] }
+    Class.new(Nexo::Agent) do
+      model ENV.fetch("NEXO_ANTHROPIC_MODEL", "claude-haiku-5-5")
+      provider :anthropic
+      assume_model_exists true
+      class_eval(&declarations) if declarations
+    end
+  end
+
+  # Anthropic searches deferred tools itself: no `tool_search` call of ruby_llm's
+  # appears, and the tool the model found still runs behind the gate.
+  def test_live_anthropic_native_tool_search
+    klass = anthropic_agent do
+      file_tools :none
+      tools Stock, Weather, Clock, defer: true
+    end
+    calls = []
+
+    response = klass.new.prompt("How many units of SKU A-17 are in the warehouse? Use your tools.") do |type, payload|
+      calls << payload.name.to_s if type == :tool_call
+    end
+
+    assert(calls.any? { |name| name.end_with?("stock") }, "the model called the deferred tool: #{calls.inspect}")
+    refute_includes calls, "tool_search", "the provider searched; ruby_llm's own search tool was not needed"
+    assert_includes response.content.to_s, "42"
+  end
+
+  # Automatic compaction is a provider feature switched on in the `llm` block.
+  # This proves the request is accepted with it on and a session keeps working;
+  # the conversation is far too short to make the provider compact anything.
+  def test_live_anthropic_accepts_automatic_compaction
+    klass = anthropic_agent do
+      file_tools :none
+      llm { compaction true }
+      instructions "Answer in one short sentence."
+    end
+    session = Nexo::Session.resume(klass, "live-compaction-#{Process.pid}")
+
+    first = session.prompt("Remember the number 7341.")
+    second = session.prompt("Which number did I ask you to remember?")
+
+    refute_empty first.content.to_s
+    assert_includes second.content.to_s, "7341"
+  ensure
+    session&.close
+  end
+
+  # 0.17: after an approval the paused call carries on. The write happens once
+  # and the model is not asked to plan the task a second time.
+  def test_live_anthropic_resume_continues_after_approval
+    require "tmpdir"
+    Nexo::RunStore::Memory.reset!
+    klass = anthropic_agent do
+      permissions :approve
+      instructions "You write files with the write_file tool when asked. Do not ask for confirmation."
+    end
+
+    Dir.mktmpdir do |dir|
+      flow = Class.new(Nexo::Workflow) do
+        agent klass
+        sandbox :local
+        cwd dir
+
+        def call(_payload) = {"said" => run_agent("Create the file note.txt containing exactly: hello").content}
+      end
+      Object.const_set(:LiveContinueFlow, flow)
+
+      run = LiveContinueFlow.run
+      assert_equal "suspended", run.status, run.error.to_s
+      assert run.state["__chat__"], "the conversation was saved with the run"
+
+      run = Nexo::Workflow.resume(run.id, approved: true)
+
+      assert_equal "done", run.status, run.error.to_s
+      assert_includes File.read(File.join(dir, "note.txt")), "hello"
+      writes = run.events.count { |event| event["type"] == "agent_tool_call" && event["data"]["name"] == "write_file" }
+      assert_equal 1, writes, "one write across the suspend and the resume"
+    end
+  ensure
+    Object.send(:remove_const, :LiveContinueFlow) if Object.const_defined?(:LiveContinueFlow)
+  end
 end

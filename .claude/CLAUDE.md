@@ -1,7 +1,7 @@
 # CLAUDE.md
 
 Nexo (`nexo_ai`): an agent harness over `ruby_llm ~> 2.2.0`. It adds a Sandbox + Permissions
-seam and a durable WorkflowRun lifecycle. Pre-1.0, released through 0.16.
+seam and a durable WorkflowRun lifecycle. Pre-1.0, released through 0.16.1; 0.17 in progress.
 
 ## Naming rule (violating this is a bug)
 
@@ -182,8 +182,13 @@ Do not trust memory of the 1.x API.
   `<id>.cancel` file; ActiveRecord: status `"cancelling"`), because the worker rewrites its
   state on every save. Checked in `checkpoint`, `run_agent` and the loop's tool callbacks.
 - `run_agent` turns `Nexo::InputRequired` into a suspend (`"__input__"`, answers in
-  `"__answers__"`), as it does `ApprovalRequired`. A resume re-runs the prompt, so a test must
-  `stub_replies` again before resuming or the model never asks for the tool a second time.
+  `"__answers__"`), as it does `ApprovalRequired`.
+- **A resume continues the paused conversation (0.17), it does not ask the prompt again.**
+  `run_agent` saves `chat.messages.map(&:to_h)` under `"__chat__"` (tagged with a digest of the
+  prompt) and the resume restores it and calls `chat.complete`. So a test that scripts the
+  model stubs only what comes AFTER the held call before resuming (`stub_replies "Done."`),
+  not the tool call again. A run with no saved conversation falls back to asking again.
+  `ruby_llm` re-enters a tool that calls `ask` from the top with the answer in hand.
 
 - `Workflow.run(payload = nil, buffer_events:, **kwargs)` then `payload ||= kwargs`: keep both
   call forms working when adding a keyword.
@@ -222,6 +227,26 @@ Do not trust memory of the 1.x API.
   `test/sandboxes/container_live_test.rb`, `container_reconnect_smoke.rb`,
   `container_runner_test.rb` (`NEXO_CONTAINER_RUNTIME=apple` for Apple), `live_smoke_test.rb`.
 
+## Skills (0.17)
+
+- `Nexo::Skills::Skill` parses through `RubyLLM::Skill` (name and description required, name
+  hyphenated and equal to the folder). Nexo still injects `content` into the instructions and
+  never calls `with_skills`. An underscore-named skill goes through the pre-0.17 reader with a
+  notice; that path is deleted in 0.18. `Skills.find(:email_triage)` resolves `email-triage/`.
+
+## More rules from 0.17
+
+- `Agent#resolve_permissions` always works on a COPY of a supplied `Permissions`, because the
+  loop sets a per-prompt `on_decline` hook on it. Never set that hook on a shared instance.
+- `tools X, capability:, detail:` and `GatedTool`'s `prepare:` must agree with
+  `approval_subject`: both paths (approval and call) derive the key from the same arguments.
+- `provider_tools` attaches only under `Permissions#always_allows?`; a provider-side call is
+  never seen by Nexo, so `:ask` and `:approve` cannot cover it.
+- `Sandbox#delete` is optional (`#deletes?`); `delete_file` is attached only then.
+- Local model for live checks: `NEXO_MODEL=Inkling-2-Mini-oQ4e-mtp NEXO_PROVIDER=ollama
+  OLLAMA_API_BASE=http://127.0.0.1:8090/v1 API_KEY=<ask>` (oMLX), or Ollama.
+- An example "passing" means its exit status is 0. Do not judge by the tail of its output.
+
 ## This machine
 
 - Docker is OrbStack and usually stopped: `orbctl start` / `orbctl stop`.
@@ -246,8 +271,11 @@ Do not trust memory of the 1.x API.
 - A sign-in against a third-party OAuth MCP server (the flow is verified over real HTTP
   against a local server; discovery against `getliminal.app/mcp` works). Not pursued: that
   server takes only a Client ID Metadata Document, which the host application serves, not Nexo.
-- Anthropic's and OpenAI's own tool search and automatic compaction, and compaction on a
-  persisted chat. (Fallback, ruby_llm's `tool_search`, manual compaction and an `:approve`
-  workflow were run live on Ollama in 0.16: `NEXO_LIVE=1 NEXO_MODEL=glm-5.3-flash:cloud`,
-  `test/live_smoke_test.rb`. The `deepseek-v4-flash` model installed here was retired.)
+- OpenAI's own tool search and compaction (no key), a compaction that actually fires, and
+  compaction on a persisted chat. Anthropic's native tool search, a session with automatic
+  compaction switched on, and resume-after-approval were run live in 0.17
+  (`NEXO_LIVE=1 ANTHROPIC_API_KEY=… test/live_smoke_test.rb -n /anthropic/`). Fallback,
+  ruby_llm's `tool_search`, manual compaction and an `:approve` workflow ran on a local model.
+- `code_execution` stays refused: ruby_llm builds `run_code` inside the chat and attaches it
+  outside `with_tools`, so no gate can wrap it. MCP task push updates (`listen`) are not used.
 - "Faraday yields under the fiber scheduler" on 2.2 (practical evidence only: `nexo-mail`).
