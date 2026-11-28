@@ -232,7 +232,9 @@ module Nexo
       end
 
       # Lazily starts (or, when reconnecting, reuses) the container and memoizes
-      # its id. Raises Nexo::Error on a start failure.
+      # its id. Raises Nexo::Error on a start failure, and ConfigurationError
+      # when the runtime's program is not installed (0.17; it used to surface as a
+      # bare `Errno::ENOENT`).
       def ensure_started!
         return @cid if @cid
 
@@ -243,6 +245,9 @@ module Nexo
         raise Nexo::Error, "container start failed: #{err.strip}" unless status.success?
 
         @cid = out.strip
+      rescue Errno::ENOENT
+        raise Nexo::ConfigurationError, "the `#{@bin}` command was not found on PATH — install the #{@runtime} " \
+          "runtime, or choose another with `runtime:`"
       end
 
       # Reconnect path: find the container previously created under `@name` by its
