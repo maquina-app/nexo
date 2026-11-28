@@ -34,7 +34,13 @@ module Nexo
       private
 
       def skill_root
-        File.join("app", "skills", file_name)
+        File.join("app", "skills", skill_name)
+      end
+
+      # The skill's name in the form the Agent Skills specification asks for:
+      # lower case with hyphens (`rails g nexo:skill issue_triage` → `issue-triage`).
+      def skill_name
+        file_name.tr("_", "-")
       end
 
       # A human-readable heading from the skill name ("issue_triage" / "issue-triage"

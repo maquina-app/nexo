@@ -210,8 +210,9 @@ mcp :builds, transport: :http, url: "https://mcp.example.com/mcp", tasks: true
 
 The prompt then waits for the task, checking at the interval the server asks for; the
 server's status messages arrive as `:tool_progress` events. After
-`Nexo.config.mcp_task_timeout` seconds (default `300`) the task is cancelled and the prompt
-raises `Nexo::Error`. `Workflow.cancel` cancels the task too. The task is held in memory: if
+`Nexo.config.mcp_task_timeout` seconds (default `300`) the task is cancelled and its call is
+answered with an error, so the model hears it and the prompt goes on (0.17; before, the
+prompt failed). `Workflow.cancel` cancels the task too. The task is held in memory: if
 the process dies while it waits, a retry makes the call again and the server starts a new
 task. Without `tasks: true` the extension is not declared and a server answers in one go.
 

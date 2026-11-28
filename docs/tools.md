@@ -61,7 +61,7 @@ class Editor < Nexo::Agent
 end
 
 Editor.new.chat.tools.keys
-# => [:list_files, :read_file, :search_files, :write_file, :edit_file]
+# => [:list_files, :read_file, :search_files, :write_file, :edit_file, :delete_file]
 ```
 
 Reading, listing and searching are `:read`; writing and editing are `:write`, and under
@@ -84,7 +84,7 @@ The `file_tools` macro chooses the set per agent, and `Nexo.config.file_tools` f
 
 | `file_tools` | What the agent gets |
 |---|---|
-| `:core` (default) | `list_files`, `read_file`, `search_files`, `write_file`, `edit_file` |
+| `:core` (default) | `list_files`, `read_file`, `search_files`, and for an agent that may write `write_file`, `edit_file`, `delete_file` |
 | `:none` | No file tools. For an agent whose files come from somewhere else, such as a filesystem MCP server. |
 
 ### An MCP server with the same tool names

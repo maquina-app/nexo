@@ -38,6 +38,8 @@ Closes what 0.16 left open. The headline: a resume no longer asks the model agai
 - **An absolute path outside the sandbox is refused by name** (`… is outside the workspace`)
   where the file tools used to report it as not found.
 - `Workflow#emit` is safe to call from several `checkpoint_all` steps at once.
+- `rails g nexo:skill issue_triage` creates `app/skills/issue-triage/` with a matching
+  `name:`, the form skills now need.
 - A container sandbox on a machine without the runtime raises `Nexo::ConfigurationError`
   naming the missing command, where it raised a bare `Errno::ENOENT`.
 

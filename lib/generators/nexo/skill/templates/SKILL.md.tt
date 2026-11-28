@@ -1,5 +1,5 @@
 ---
-name: <%= file_name %>
+name: <%= skill_name %>
 description: One-line summary of when the model should use this skill.
 ---
 

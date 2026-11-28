@@ -305,7 +305,8 @@ resumed.status                                 # => "done" (the gate allowed the
   and its arguments.
 - **`approved:` with nothing pending approves nothing.** An answer is recorded only when a call
   is waiting.
-- **Cross-process approval needs the ActiveRecord store + ActiveJob** (like all durable resume).
+- **Cross-process approval needs a durable store** (ActiveRecord with ActiveJob, or the Disk
+  store for a single-machine program), like all durable resume.
   In-process `resume` works with the Memory store; a Memory run does not survive the process.
 - **It depends on `ruby_llm`'s approval hooks.** The chat asks the registered tool
   `requires_approval?(tool_call)` and reads its `approval_resolver` (verified on 2.2.3 through
@@ -339,10 +340,11 @@ capture, so this is **not** replay:
   retried.
 - **Checkpoint values must be json-serializable** — they round-trip the store exactly
   like `result`/`events`.
-- **Cross-process resume needs the ActiveRecord store.** A run suspended under the
-  in-memory store resumes only *in-process* (which is what the test suite exercises);
-  a run that must survive the process (and be resumed by a controller/job elsewhere)
-  needs the AR store with a shared database.
+- **Cross-process resume needs a store that outlives the process.** A run suspended under
+  the in-memory store resumes only *in-process*. Across processes on several machines, use
+  the ActiveRecord store with a shared database. For a single-machine program such as a CLI,
+  `Nexo::RunStore::Disk.new(dir:)` keeps each run as a file; its claim is atomic within one
+  process only, so do not point two workers at one directory.
 - **Never `suspend!` inside a `checkpoint` block** (undefined — unsupported), and
   never name a checkpoint `"__suspend__"` (reserved for the suspend metadata) or
   `"__approval__"` (reserved for the pending approval call — see the durable-approval

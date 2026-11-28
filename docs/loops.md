@@ -126,8 +126,10 @@ These facts are not taken on trust: `test/real_loop_test.rb` drives `ruby_llm`'s
 conversation loop with scripted model replies and asserts the permission gate, the MCP
 gate, the turn cap, and approval suspension end to end.
 
-`Open3.capture3` has no `timeout:` keyword on the target Ruby, so `Local#shell` bounds the
-command with `Timeout.timeout`.
+`Local#shell` runs a command through `Nexo::Sandboxes::Subprocess`: in its own process group,
+with only the environment it is given, and with the whole group killed when the timeout
+passes. (`Timeout.timeout` around `Open3.capture3` reports a timeout without stopping the
+command, which is what Nexo did until 0.14.)
 
 ## Live smoke (optional)
 

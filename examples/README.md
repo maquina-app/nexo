@@ -62,7 +62,7 @@ ruby -Ilib examples/<name>.rb
 | Example | Shows |
 |---|---|
 | [`inbox_digest_task.rb`](inbox_digest_task.rb) | A Task: `agent` + `run_agent` over staged files, with the result kept as an artifact |
-| [`support_agent.rb`](support_agent.rb) | A policy in a skill, a lookup tool, and two tools that act and wait for approval — and why such tools must be idempotent |
+| [`support_agent.rb`](support_agent.rb) | A policy in a skill, a lookup tool, and two tools that act and wait for approval; the approved call runs once, and `detail:` says what identifies it |
 | [`software_factory.rb`](software_factory.rb) | A coder and a read-only reviewer with the tests run as plain code between them; `emit_agent_event` |
 | [`marketing_team.rb`](marketing_team.rb) | Three specialists working one brief concurrently with `checkpoint_all`, then an editor |
 
